@@ -113,6 +113,7 @@ namespace ego_planner
     ros::Time last_density_eval_time_{ros::Time(0)};
 
     bool have_trigger_, have_target_, have_odom_, cur_traj_to_cur_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
+    bool if_handle_yaw_{false};
     bool has_been_modified_;
     bool pending_goal_finish_trigger_;
     ros::Time goal_finish_stable_start_time_;
@@ -142,7 +143,7 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, odom_sub_,
+    ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, odom_sub_, if_handle_yaw_sub_,
                     trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_;
     ros::Publisher data_disp_pub_, broadcast_ploytraj_pub_, ground_height_pub_, state_pub_, exec_finish_trigger_pub_, ego_state_trigger_pub_;
     ros::Publisher ego_plan_state_pub_;
@@ -177,6 +178,7 @@ namespace ego_planner
 
     /* input-output */
     void mandatoryStopCallback(const std_msgs::Empty &msg);
+    void ifHandleYawCallback(const std_msgs::BoolConstPtr &msg);
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void triggerCallback(const geometry_msgs::PoseStampedPtr &msg);
     void RecvBroadcastMINCOTrajCallback(const traj_utils::MINCOTrajConstPtr &msg);

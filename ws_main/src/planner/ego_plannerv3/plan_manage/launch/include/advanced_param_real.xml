@@ -62,6 +62,13 @@
         <param name="fsm/battery_thr" value="14.0" type="double"/>
         <param name="fsm/enable_area_prediction" value="false" type="bool"/> 
 
+        <!-- ego state trigger -->
+        <param name="fsm/ego_state_trigger_pos_thresh" value="0.30" type="double"/>
+        <param name="fsm/ego_state_trigger_vel_thresh" value="0.15" type="double"/>
+        <param name="fsm/ego_state_trigger_acc_thresh" value="0.30" type="double"/>
+        <param name="fsm/ego_state_trigger_yaw_rate_thresh" value="0.20" type="double"/>
+        <param name="fsm/ego_state_trigger_hold_time" value="0.50" type="double"/>
+
         <!-- <param name="grid_map/resolution" value="0.1" /> -->
         <!-- local_map的size必须比depth_filter_maxdist大两个resoluiton -->
         <param name="grid_map/local_update_range_x" value="8.0" />

@@ -16,6 +16,7 @@ namespace ego_planner
     mandatory_stop_         = false;
     cur_traj_to_cur_target_ = false;
     has_been_modified_      = false;
+    if_handle_yaw_          = false;
 
     pending_goal_finish_trigger_ = false;
     goal_finish_stable_start_time_ = ros::Time(0);
@@ -60,6 +61,7 @@ namespace ego_planner
 
     odom_sub_ = nh.subscribe("odom_world", 50, &EGOReplanFSM::odometryCallback, this);
     mandatory_stop_sub_ = nh.subscribe("mandatory_stop", 10, &EGOReplanFSM::mandatoryStopCallback, this);
+    if_handle_yaw_sub_ = nh.subscribe("if_handle_yaw", 10, &EGOReplanFSM::ifHandleYawCallback, this);
 
     /* Use MINCO trajectory to minimize the message size in wireless communication */
     broadcast_ploytraj_pub_ = nh.advertise<traj_utils::MINCOTraj>("planning/broadcast_traj_send", 10);
@@ -1171,12 +1173,14 @@ namespace ego_planner
     if (aim_direction_ < -M_PI)
       aim_direction_ += 2 * M_PI;
 
-    changeFSMExecState(HANDLE_YAW, "Recv Aim Callback");
-
-    // if (planNextWaypoint(target_pos_, target_yaw_, target_look_forward_, target_yaw_low_speed_))
-    // {
-    //   have_trigger_ = true;
-    // }
+    if (if_handle_yaw_)
+    {
+      changeFSMExecState(HANDLE_YAW, "Recv Aim Callback");
+    }
+    else if (planNextWaypoint(target_pos_, target_yaw_, target_look_forward_, target_yaw_low_speed_))
+    {
+      have_trigger_ = true;
+    }
 
   }
 
@@ -1213,6 +1217,12 @@ namespace ego_planner
     ROS_ERROR("Received a mandatory stop command!");
     changeFSMExecState(EMERGENCY_STOP, "Mandatory Stop");
     enable_fail_safe_ = false;
+  }
+
+  void EGOReplanFSM::ifHandleYawCallback(const std_msgs::BoolConstPtr &msg)
+  {
+    if_handle_yaw_ = msg->data;
+    ROS_INFO("[Ego-FSM] if_handle_yaw_ updated to %s", if_handle_yaw_ ? "true" : "false");
   }
 
   void EGOReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
