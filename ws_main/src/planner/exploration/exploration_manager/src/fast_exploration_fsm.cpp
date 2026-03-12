@@ -123,7 +123,7 @@ void FastExplorationFSM::triggerCallback(const geometry_msgs::PoseStamped::Const
 }
 
 void FastExplorationFSM::egoPlannerGoalCallback(const quadrotor_msgs::GoalSet::ConstPtr &msg) {
-  pubLocalGoal( Eigen::Vector3d(msg->goal.front().x, msg->goal.front().y, 1.0f), msg->yaw.front(), msg->look_forward, false);
+  pubLocalGoal( Eigen::Vector3d(msg->goal.front().x, msg->goal.front().y, msg->goal.front().z), msg->yaw.front(), msg->look_forward, false);
   // pubLocalGoal( Eigen::Vector3d(msg->goal.front().x, msg->goal.front().y, 1.5f), 30 * M_PI / 180.0, false);
 }
 
