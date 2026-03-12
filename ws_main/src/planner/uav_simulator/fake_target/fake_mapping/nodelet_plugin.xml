@@ -1,0 +1,5 @@
+<library path="lib/libfake_mapping_nodelet">
+  <class name="fake_mapping/Nodelet" type="fake_mapping::Nodelet" base_class_type="nodelet::Nodelet">
+    <description></description>
+  </class>
+</library>

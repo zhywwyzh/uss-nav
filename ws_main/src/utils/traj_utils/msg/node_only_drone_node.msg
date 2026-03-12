@@ -1,0 +1,2 @@
+int8 drone_id
+int8 node_already_reastart

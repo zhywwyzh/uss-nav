@@ -1,0 +1,29 @@
+<launch>
+    <node pkg="skeleton_generation" type="yolo_recv_test" name="yolo_recv_test" output="screen">
+        <param name="obj/camera_fx" type="double" value="442.0250167097101"/>
+        <param name="obj/camera_fy" type="double" value="442.0250167097101"/>
+        <param name="obj/camera_cx" type="double" value="320.0"/>
+        <param name="obj/camera_cy" type="double" value="240.0"/>
+
+        <param name="obj/use_camera_intrinsics" type="bool" value="false"/>
+        <param name="obj/fov_vertical" type="double" value="57.0"/>
+        <param name="obj/fov_horizontal" type="double" value="71.0"/>
+        <param name="obj/cam_resolution_h" type="int" value="480"/>
+        <param name="obj/cam_resolution_w" type="int" value="640"/>
+        <param name="obj/max_depth" type="double" value="5.0"/>
+        <param name="obj/min_depth" type="double" value="0.2"/>
+
+        <param name="obj/voxel_size" type="double" value="0.07"/>
+        <param name="obj/mean_k" type="int" value="60"/>
+        <param name="obj/std_dev_thresh" type="double" value="0.01"/>
+        <param name="obj/obj_cloud_num_thresh" type="int" value="20"/>
+        <param name="obj/detection_counter_thresh" type="int" value="5"/>
+
+        <param name="obj/filter_run_duration" type="double" value="3.0"/>
+        <param name="obj/obj_main_thread_run_hz" type="int" value="5"/>
+
+        <param name="obj/seg_result_topic" type="string" value="/yoloe/encodemask"/>
+        <param name="obj/depth_cloud_disp_all" type="bool" value="false"/>
+        <param name="obj/max_threads" type="int" value="4"/>
+    </node>
+</launch>

@@ -1,0 +1,2 @@
+int16 drone_formation_id
+int16 car_formation_id

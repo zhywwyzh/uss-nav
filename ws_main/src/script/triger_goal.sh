@@ -1,0 +1,2 @@
+rostopic pub /swarm_info  ego_planner/swarm_info '{swarm_id: 0, robot_ids: [0,1], role_types: [4,4]}'  & sleep 2;
+rostopic pub /swarm_info  ego_planner/swarm_info "{swarm_id: 1, robot_ids: [$DRONE_ID], role_types: [$ROLE_TYPE]}"

@@ -1,0 +1,50 @@
+{
+  "areas": [
+    {
+      "dimensions": {
+        "height": "6.30",
+        "unit": "meters",
+        "width": "7.04"
+      },
+      "id": "4",
+      "objects": [
+        {
+          "info": "curtain,-13.32,-1.38"
+        },
+        {
+          "info": "curtain,-14.60,-1.33"
+        },
+        {
+          "info": "houseplant,-13.28,1.76"
+        },
+        {
+          "info": "stool,-14.79,0.98"
+        },
+        {
+          "info": "houseplant,-15.89,0.71"
+        },
+        {
+          "info": "sofa,-16.45,0.19"
+        },
+        {
+          "info": "chair,-14.70,2.81"
+        },
+        {
+          "info": "chair,-15.63,1.80"
+        },
+        {
+          "info": "pillow,-15.68,1.61"
+        },
+        {
+          "info": "pillow,-14.86,2.50"
+        },
+        {
+          "info": "pillow,-14.74,2.82"
+        },
+        {
+          "info": "pillow,-14.86,3.05"
+        }
+      ]
+    }
+  ]
+}

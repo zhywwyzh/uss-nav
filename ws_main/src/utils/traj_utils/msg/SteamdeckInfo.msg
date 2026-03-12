@@ -1,0 +1,3 @@
+# command_realted
+geometry_msgs/PoseStamped traj_start_trigger
+traj_utils/FormationId formation_ids

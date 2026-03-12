@@ -1,0 +1,2 @@
+uint8 id
+geometry_msgs/PointStamped anonymous_bearing

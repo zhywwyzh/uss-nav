@@ -1,0 +1,3 @@
+<launch>
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mission_fsm)/config/default.rviz" required="true" />
+</launch>

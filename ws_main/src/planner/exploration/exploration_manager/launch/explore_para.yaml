@@ -1,0 +1,20 @@
+# drone_0_box_min_x: -50.0
+# drone_0_box_min_y: -30.0
+# drone_0_box_min_z: 0.0
+# drone_0_box_max_x: 30.0
+# drone_0_box_max_y: 30.0
+# drone_0_box_max_z: 2.0
+
+drone_0_box_min_x: -1.0
+drone_0_box_min_y: -6.0
+drone_0_box_min_z: 0.0
+drone_0_box_max_x: 50.0
+drone_0_box_max_y: 6.0
+drone_0_box_max_z: 2.0
+
+# drone_0_box_min_x: -15.0
+# drone_0_box_min_y: -20.0
+# drone_0_box_min_z: 0.0
+# drone_0_box_max_x: 20.0
+# drone_0_box_max_y: 20.0
+# drone_0_box_max_z: 2.0

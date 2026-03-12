@@ -1,0 +1,118 @@
+<launch>
+
+  <!-- <node pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">
+    <rosparam file="$(find uav_simulator)/config/mockamap.yaml"/>
+    <remap from="/mock_map" to="/global_map"/>
+  </node> -->
+
+  <!-- <node pkg="local_sensing_node" type="pcl_render_node" name="pcl_render_node" output="screen">
+    <rosparam command="load" file="$(find local_sensing_node)/params/camera.yaml" />
+    <param name="sensing_horizon" value="10.0" />
+    <param name="sensing_rate" value="30.0"/>
+    <param name="estimation_rate" value="30.0"/>
+
+    <remap from="~global_map" to="/global_map"/>
+    <remap from="~odometry" to="/dual_chaser/wrapper/desired_odom"/>
+    <remap from="~depth" to="depth"/>
+    <remap from="~local_cloud" to="local_cloud"/>
+  </node> -->
+
+  <group ns="target">
+
+    <node pkg="nodelet" type="nodelet" name="manager" args="manager" output="screen">
+      <param name="num_worker_threads" value="16"/>
+    </node>
+    <node pkg="nodelet" type="nodelet" name="so3_quadrotor" args="load so3_quadrotor/Nodelet manager" output="screen">
+      <rosparam file="$(find uav_simulator)/config/so3_quadrotor.yaml"/>
+      <param name="init_x" value="4" />
+      <param name="init_y" value="0.0" />
+      <param name="init_z" value="0.8" />
+      <param name="init_yaw" value="0" />
+
+      <param name="target" value="true" />
+      <remap from="~odom" to="odom"/>
+      <remap from="~imu" to="imu" />
+      <remap from="~so3cmd" to="so3cmd"/>
+      <remap from="~vis" to="vis"/>
+    </node>
+    <node pkg="nodelet" type="nodelet" name="so3_controller" args="load so3_controller/Nodelet manager" output="screen">
+      <rosparam file="$(find uav_simulator)/config/so3_controller.yaml"/>
+      <remap from="~odom" to="odom"/>
+      <remap from="~imu" to="imu" />
+      <remap from="~so3cmd" to="so3cmd"/>
+      <remap from="~position_cmd" to="position_cmd"/>
+    </node>
+    <node pkg="nodelet" type="nodelet" name="fake_mapping" args="load fake_mapping/Nodelet manager" output="screen">
+      <!-- global map parameters -->
+      <rosparam file="$(find uav_simulator)/config/mockamap.yaml"/>
+      <!-- remap topics -->
+      <remap from="~global_map" to="/map_generator/global_cloud"/>
+      <remap from="~gridmap" to="gridmap"/>
+      <remap from="~gridmap_inflate" to="gridmap_inflate"/>
+      <!-- mapping parameters -->
+      <param name="resolution" value="0.15"/>
+      <param name="inflate_size" value="2"/>
+      <param name="use_global_map" value="true"/>
+    </node>
+    <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization_car" output="screen">
+      <remap from="~odom" to="odom" />
+      <param name="mesh_resource" value="package://odom_visualization/meshes/car.dae"/>
+      <param name="robot_scale" value="0.1"/>
+    </node>
+
+    <node pkg="nodelet" type="nodelet" name="fake_planning" args="load fake_planning/Nodelet manager" output="screen">
+      <remap from="~odom" to="odom"/>
+      <remap from="~gridmap_inflate" to="gridmap_inflate"/>
+      <remap from="~heartbeat" to="heartbeat"/>
+      <remap from="~trajectory" to="trajectory"/>
+      <remap from="~replanState" to="replanState"/>
+      <remap from="~triger" to="/move_base_simple/goal"/>
+
+      <param name="plan_hz" value="10"/>
+
+      <param name="K" value="8"/>
+      <!-- car vel change -->
+      <!-- <param name="vmax" value="10.5"/>
+      <param name="amax" value="5.5"/> -->
+
+      <!-- <param name="vmax" value="7.5"/>
+      <param name="amax" value="2.0"/> -->
+
+      <param name="vmax" value="1.5"/>
+      <param name="amax" value="2.0"/>
+
+      <param name="rhoT" value="100.0"/>
+      <param name="rhoP" value="10000.0"/>
+      <param name="rhoV_t" value="1000.0"/>
+      <param name="rhoA_t" value="1000.0"/>
+      <param name="clearance_d" value="0.2"/>
+      <param name="tolerance_d" value="0.5"/>
+      <param name="tracking_dist" value="0.1"/>
+      <param name="debug" value="false"/>
+      <param name="fake" value="true"/>
+
+    </node>
+
+    <!-- <node pkg="dynamic_planner" type="dynamic_planner_test_node" name="main_planner" output="screen">
+          <remap from="~dynamic_odom" to="odom"/>
+          <remap from="~position_cmd" to="position_cmd"/>
+          <remap from="~joy" to="/joy_main"/>
+
+          <param name="planning/init_state_x" value="4.0"/>
+          <param name="planning/init_state_y" value="0.0"/>
+          <param name="planning/init_state_z" value="0.8"/>
+          <param name="planning/isAuto" value="false"/>
+          <param name="planning/vehicleRadius" value="0.9"/>
+          <param name="planning/collisionDistance" value="3.0"/>
+          <param name="planning/plan_hz" value="10"/>
+          <param name="planning/ctrl_hz" value="40"/>
+    </node> -->
+
+    <node pkg="fake_planning" name="fake_traj_server" type="fake_traj_server" output="screen">
+      <remap from="~position_cmd" to="position_cmd"/>
+      <remap from="~trajectory" to="trajectory"/>
+      <remap from="~heartbeat" to="heartbeat"/>
+      <param name="time_forward" value="1.0" type="double"/>
+    </node>
+  </group>
+</launch>

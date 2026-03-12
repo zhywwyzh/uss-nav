@@ -1,0 +1,19 @@
+
+<launch>
+
+    <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch" />
+
+    <node pkg="mission_fsm" type="unity_time_sync" name="unity_time_sync" output="screen"/>
+    <node pkg="mission_fsm" type="lidar_body_world" name="lidar_body_world" output="screen">
+        <param name="odom_topic" value="/unity_odom_sync"/>
+        <param name="cloud_topic" value="/livox/lidar_sync"/>
+        <param name="output_frame" value="world"/>
+        <param name="filter_distance" value="0.5"/>
+        <param name="approximate_sync_threshold" value="0.05"/>
+        <param name="queue_size" value="10"/>
+        <param name="debug" value="false"/>
+    </node>
+
+    <include file="$(find mission_fsm)/launch/rviz.launch" />
+
+</launch>

@@ -1,0 +1,36 @@
+{
+  "areas": [
+    {
+      "id": "area-D-78-sparse-hallway", "dimensions": { "width": 8.0, "height": 1.2, "unit": "meters" },
+      "objects": []
+    },
+    {
+      "id": "area-E-90-sparse-conflicting", "dimensions": { "width": 3.0, "height": 3.0, "unit": "meters" },
+      "objects": [
+        { "info": "desk,1.0,1.5" },
+        { "info": "microwave,2.5,1.5" }
+      ]
+    },
+    {
+      "id": "area-G-22-dense-multi-function", "dimensions": { "width": 8.0, "height": 6.0, "unit": "meters" },
+      "objects": [
+        { "info": "sofa,4.0,1.5" },
+        { "info": "television,4.0,5.0" },
+        { "info": "coffee_table,4.0,3.0" },
+        { "info": "dining_table,7.0,3.0" },
+        { "info": "dining_chair,6.5,2.5" },
+        { "info": "dining_chair,7.5,2.5" }
+      ]
+    },
+    {
+      "id": "area-H-33-dense-primary-function", "dimensions": { "width": 4.0, "height": 5.0, "unit": "meters" },
+      "objects": [
+        { "info": "bed,2.0,1.0" },
+        { "info": "closet,0.5,3.0" },
+        { "info": "nightstand,0.5,1.0" },
+        { "info": "desk,3.0,4.0" },
+        { "info": "chair,3.0,3.5" }
+      ]
+    }
+  ]
+}

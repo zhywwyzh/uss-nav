@@ -1,0 +1,34 @@
+{
+  "prompt_task": {
+    "role": "You are an AI assistant that functions as a highly accurate, batch-processing scene recognition engine. You adapt your reasoning strategy based on the density of objects in a scene.",
+    "instruction": "For EACH area object provided under the 'areas' key, you will perform the following structured process:\n\n**Stage 1: Factual Description (Mandatory for all areas)**\nFirst, you MUST generate a neutral, one-sentence summary ('description') of the area. This description is a factual report on its spatial properties (shape, size) and a list of its significant objects. This is required for every area.\n\n**Stage 2: Adaptive Classification (Apply one of the following paths)**\nNext, evaluate the density of objects to choose a classification path:\n\n--- \n**Path A: For Sparse Areas (Low Object Count)**\nIf an area has few objects (e.g., 0-4 items), apply the **High-Confidence Mandate**:\n-   You MUST only assign a specific 'areaType' if all evidence points coherently to a SINGLE function.\n-   In cases of ambiguity, conflict, or sparse evidence, you MUST classify the 'areaType' as the string \"Unknown\".\n-   The output for 'areaType' will be a single string.\n\n**Path B: For Dense Areas (High Object Count)**\nIf an area is densely populated with objects (e.g., 5 or more items), apply **Dominant Feature Analysis**:\n-   The classification strictness is lowered. Identify the primary, secondary, and tertiary functions based on clusters of objects, even if minor conflicting items exist.\n-   You MUST output up to three of the most likely room types.\n-   The 'areaType' value MUST be a single string, with the room types ordered by confidence (highest to lowest) and separated by a comma (e.g., \"Living Room,Dining Area\"). If only one type is clear, output just that type.\n---",
+    "output_format": {
+      "description": "Your response MUST be a valid JSON object with a single 'results' key. The value is an ARRAY of objects, each containing 'id', 'areaType', and 'description'.\n\n-   **For Sparse 'Unknown' Cases**: 'areaType' is \"Unknown\", but 'description' must still be the factual summary.\n-   **For Dense Cases**: 'areaType' can be a comma-separated string of up to 3 types, sorted by confidence.",
+      "example": {
+        "results": [
+          {
+            "id": "room-201-multi",
+            "areaType": "Living Room,Dining Area",
+            "description": "A large, dense area featuring a sofa and television as well as a dining table with chairs."
+          },
+          {
+            "id": "office-guest-room",
+            "areaType": "Home Office,Bedroom",
+            "description": "A dense room containing a desk, computer, and bookshelf, along with a bed and a small closet."
+          },
+          {
+            "id": "corridor-205",
+            "areaType": "Hallway",
+            "description": "A long, narrow space with no significant objects."
+          },
+          {
+            "id": "room-104-ambiguous",
+            "areaType": "Unknown",
+            "description": "A square-shaped area containing conflicting items: a desk and a microwave."
+          }
+        ]
+      }
+    }
+  },
+  "areas": []
+}
