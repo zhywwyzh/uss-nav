@@ -239,6 +239,7 @@
         <param name="obj/lidar_cam_roll" type="double" value="0.0"/>
         <param name="obj/lidar_cam_yaw" type="double" value="0.0"/>
 
+        <param name="obj/use_realsense" type="bool" value="false"/>
         <param name="obj/use_camera_intrinsics" type="bool" value="false"/>
         <param name="obj/fov_vertical" type="double" value="57.0"/>
         <param name="obj/fov_horizontal" type="double" value="71.0"/>
