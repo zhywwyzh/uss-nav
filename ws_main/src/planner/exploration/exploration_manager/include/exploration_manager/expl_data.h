@@ -30,6 +30,7 @@ struct FSMData
   // FSM data
   bool                    trigger_, have_odom_, static_state_;
   ros::Time               last_pub_time_;
+  ros::Time               warmup_start_time_;
 
   // odometry state
   Eigen::Vector3d         odom_pos_, odom_vel_;
@@ -97,6 +98,9 @@ struct FSMParam
   double                  battery_thr_;
   bool                    flag_realworld_exp_;
   bool                    enable_area_prediction_{false};
+  bool                    auto_init_scene_graph_{true};
+  double                  auto_init_delay_sec_{2.0};
+  double                  scene_graph_init_forward_dist_{1.8};
 };
 
 struct ExplorationData {

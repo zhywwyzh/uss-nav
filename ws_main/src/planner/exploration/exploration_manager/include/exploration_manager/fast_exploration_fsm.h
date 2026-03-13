@@ -91,6 +91,7 @@ private:
   
   void transitState(MISSION_FSM_STATE new_state, string pos_call);
   void stashCurStateAndTransit(MISSION_FSM_STATE new_state, string who_called);
+  bool getSceneGraphInitSeed(Eigen::Vector3d& init_seed, std::string* reason = nullptr) const;
 
   /* ROS functions */
   void FSMCallback(const ros::TimerEvent& e);

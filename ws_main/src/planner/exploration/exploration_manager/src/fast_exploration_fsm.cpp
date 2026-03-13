@@ -55,6 +55,9 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   nh.param("fsm/battery_thr",                fp_->battery_thr_,  19.0);
   nh.param("fsm/realworld_experiment",       fp_->flag_realworld_exp_, true);
   nh.param("fsm/enable_area_prediction",     fp_->enable_area_prediction_, true);
+  nh.param("fsm/auto_init_scene_graph",      fp_->auto_init_scene_graph_, true);
+  nh.param("fsm/auto_init_delay_sec",        fp_->auto_init_delay_sec_, 2.0);
+  nh.param("fsm/scene_graph_init_forward_dist", fp_->scene_graph_init_forward_dist_, 1.8);
 
   std::cout << "\n***** Target Cmd : " << fd_->target_cmd_ << "\n" << std::endl;
   std::cout << "ALL Main FSM Params loaded successfully ..." << std::endl;
@@ -96,6 +99,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   fd_->static_state_ = true;
   fd_->trigger_      = false;
   fd_->goal_replan_times_ = 0;
+  fd_->warmup_start_time_ = ros::Time(0);
 
   /* Ros sub, pub and timer */
   exec_timer_      = nh.createTimer(ros::Duration(0.1), &FastExplorationFSM::FSMCallback, this);
@@ -132,6 +136,29 @@ void FastExplorationFSM::egoPlannerGoalCallback(const quadrotor_msgs::GoalSet::C
 void FastExplorationFSM::egoExecFinishCallback(const std_msgs::Bool::ConstPtr &msg) {
   fd_->ego_exec_finished_ = msg->data;
   INFO_MSG_GREEN("--------- [FSM] EGO-Planner Execution Finished -----------");
+}
+
+bool FastExplorationFSM::getSceneGraphInitSeed(Eigen::Vector3d& init_seed, std::string* reason) const {
+  init_seed = fd_->odom_pos_;
+  init_seed.x() += fp_->scene_graph_init_forward_dist_ * std::cos(fd_->odom_yaw_);
+  init_seed.y() += fp_->scene_graph_init_forward_dist_ * std::sin(fd_->odom_yaw_);
+
+  if (!map_->isInGlobalMap(init_seed)) {
+    if (reason != nullptr) *reason = "seed out of global map";
+    return false;
+  }
+
+  if (!map_->isInLocalMap(init_seed)) {
+    if (reason != nullptr) *reason = "seed out of local map buffer";
+    return false;
+  }
+
+  if (map_->getInflateOccupancy(init_seed) == MapInterface::OCCUPIED) {
+    if (reason != nullptr) *reason = "seed in occupied region";
+    return false;
+  }
+
+  return true;
 }
 
 void FastExplorationFSM::handelThingkingProcess() {
@@ -530,6 +557,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e)
         return;
       } 
       // Go to wait trigger when odom is ok
+      fd_->warmup_start_time_ = ros::Time::now();
       transitState(MISSION_FSM_STATE::WARM_UP, "FSM");
       break;
     }
@@ -537,14 +565,32 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e)
     // warm up 10sec -> init skeleton -> start explore
     case WARM_UP:
     {
+      if (fp_->auto_init_scene_graph_ && !fd_->trigger_) {
+        const double warmup_elapsed = (ros::Time::now() - fd_->warmup_start_time_).toSec();
+        if (warmup_elapsed >= fp_->auto_init_delay_sec_) {
+          fd_->trigger_ = true;
+        } else {
+          ROS_INFO_THROTTLE(2.0, "Wait auto init delay before skeleton expand ... ");
+          return;
+        }
+      }
+
       if (!fd_->trigger_) {
         ROS_INFO_THROTTLE(10.0, "Wait Trigger For Skeleton Expand ... ");
         return;
       }
       bool new_topo = false;
       fd_->trigger_ = false;
+      Eigen::Vector3d init_seed;
+      std::string init_block_reason;
+      if (!getSceneGraphInitSeed(init_seed, &init_block_reason)) {
+        ROS_WARN_STREAM_THROTTLE(2.0, "[EXP-FSM] Scene graph init seed is not ready: " << init_block_reason);
+        return;
+      }
 
-      scene_graph_->initSceneGraph(fd_->odom_pos_, fd_->odom_yaw_);
+      ROS_INFO_STREAM("[EXP-FSM] Init scene graph from forward seed: " << init_seed.transpose()
+                      << " (yaw=" << fd_->odom_yaw_ << ")");
+      scene_graph_->initSceneGraph(init_seed, fd_->odom_yaw_);
       scene_graph_->history_visited_area_ids_.push_back(0);
 
       if (scene_graph_->skeleton_gen_->ready()) {
