@@ -1,0 +1,135 @@
+air conditioner
+alarm clock
+armchair
+backpack
+bag
+balcony
+ballpoint pen
+bath
+bath towel
+bathroom cabinet
+bathroom mirror
+battery
+bed
+bed sheet
+bedside lamp
+bin
+binder
+blanket
+blender
+book
+bottle
+broom
+bucket
+car
+cabinet
+calendar
+calculator
+call
+camera
+candle
+carpet
+ceiling fan
+chair
+cleaner
+clock
+closet
+coffee
+computer
+curtain
+cupboard
+cutlery
+desk
+dishwasher
+drawer
+drinking glass
+dryer
+display monitor
+electric fan
+electric kettle
+envelope
+extension cord
+fan
+faucet
+file cabinet
+fireplace
+floor lamp
+flower bushes
+flower vase
+fridge
+frying pan
+garbage can
+guardrail
+hair dryer
+hand towel
+heater
+highlighter
+hoodie
+houseplant
+iron
+ironing board
+kettle
+keyboard
+lamp
+laundry basket
+light
+locker
+lotion
+lunch box
+makeup
+microwave
+mop
+mouse
+mousepad
+monitor
+nightstand
+notebook
+office desk
+oven
+paper towel
+pen
+phone
+photograph
+pillow
+plant pot
+plate
+plug
+printer
+projector
+rack
+remote control
+rug
+scissors
+sofa
+shampoo
+shelf
+shoe rack
+shower
+sink
+slipper
+soap
+spoon
+stapler
+stool
+storage box
+stove
+switch
+table lamp
+tablet
+tissue
+toaster
+toilet
+toothbrush
+towel
+tv
+vacuum cleaner
+vase
+wall clock
+wardrobe
+washing machine
+water bottle
+water dispenser
+window curtain
+wipes
+writing desk
+wall
