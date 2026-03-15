@@ -2,6 +2,7 @@
 #include <Eigen/src/Core/Matrix.h>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <exploration_manager/mission_data.h>
 #include <map_interface/map_interface.hpp>
 #include <ostream>
@@ -33,6 +34,14 @@
 using Eigen::Vector4d;
 
 namespace ego_planner {
+namespace {
+double normalizeAngle(double angle) {
+  while (angle > M_PI) angle -= 2.0 * M_PI;
+  while (angle < -M_PI) angle += 2.0 * M_PI;
+  return angle;
+}
+}  // namespace
+
 void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map) 
 {
   md_ = std::make_shared<MissionData>();
@@ -84,6 +93,8 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   md_->state_str_[MISSION_FSM_STATE::WAIT_TRIGGER]      = "WAIT_TRIGGER";
   md_->state_str_[MISSION_FSM_STATE::PLAN_EXPLORE]      = "PLAN_REGULAR_EXPLORE";
   md_->state_str_[MISSION_FSM_STATE::LLM_PLAN_EXPLORE]  = "PLAN_LLM_EXPLORE";
+  md_->state_str_[MISSION_FSM_STATE::PLAN_TRACK]        = "PLAN_TRACK";
+  md_->state_str_[MISSION_FSM_STATE::APPROACH_TRACK]    = "APPROACH_TRACK";
   md_->state_str_[MISSION_FSM_STATE::THINKING]          = "THINKING";
   md_->state_str_[MISSION_FSM_STATE::YAW_HANDLE]        = "YAW_HANDLE";
   md_->state_str_[MISSION_FSM_STATE::APPROACH_EXPLORE]  = "APPROACH_EXPLORE";
@@ -98,6 +109,9 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   fd_->have_odom_    = false;
   fd_->static_state_ = true;
   fd_->trigger_      = false;
+  fd_->track_trigger_ = false;
+  fd_->track_init_ = false;
+  fd_->track_pos_.setZero();
   fd_->goal_replan_times_ = 0;
   fd_->warmup_start_time_ = ros::Time(0);
 
@@ -114,6 +128,10 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   trigger_sub_     = nh.subscribe("/move_base_simple/goal", 2, &FastExplorationFSM::triggerCallback, this, ros::TransportHints().tcpNoDelay());
   egoplanner_goal_sub_ = nh.subscribe("/goal_with_id_from_station", 2, &FastExplorationFSM::egoPlannerGoalCallback, this, ros::TransportHints().tcpNoDelay());
   ego_exec_finish_sub_ = nh.subscribe("exec_finish_trigger", 10, &FastExplorationFSM::egoExecFinishCallback, this, ros::TransportHints().tcpNoDelay());
+  track_command_sub_ = nh.subscribe("/planning/track_command", 2, &FastExplorationFSM::trackCommandCallback, this,
+                                    ros::TransportHints().tcpNoDelay());
+  target_sub_ = nh.subscribe("/tracking_target", 2, &FastExplorationFSM::targetCallbackReal, this,
+                             ros::TransportHints().tcpNoDelay());
 
   ego_goal_pub_         = nh.advertise<quadrotor_msgs::EgoGoalSet>("local_goal", 10);
   vis_marker_pub_       = nh.advertise<visualization_msgs::Marker>("planning/fsm_vis", 10);
@@ -136,6 +154,92 @@ void FastExplorationFSM::egoPlannerGoalCallback(const quadrotor_msgs::GoalSet::C
 void FastExplorationFSM::egoExecFinishCallback(const std_msgs::Bool::ConstPtr &msg) {
   fd_->ego_exec_finished_ = msg->data;
   INFO_MSG_GREEN("--------- [FSM] EGO-Planner Execution Finished -----------");
+}
+
+void FastExplorationFSM::trackCommandCallback(const quadrotor_msgs::TrackCommand::ConstPtr& msg) {
+  if (msg->robot_id != md_->drone_id_) return;
+
+  std::unique_lock<std::mutex> lck(mtx_);
+  if (!msg->enable)
+  {
+    fd_->track_trigger_ = false;
+    fd_->track_init_ = false;
+    map_->setTarget(fd_->track_pos_, false);
+    if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
+        md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK)
+    {
+      stopMotion();
+      transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "trackCommand:disable");
+    }
+    return;
+  }
+
+  fd_->track_trigger_ = true;
+  if (msg->has_target_position)
+  {
+    fd_->track_pos_ = geoPt2Vec3d(msg->target_position);
+  }
+  map_->setTarget(fd_->track_pos_, false);
+  transitState(MISSION_FSM_STATE::PLAN_TRACK, "trackCommand:enable");
+}
+
+void FastExplorationFSM::targetCallbackReal(const quadrotor_msgs::DetectOut::ConstPtr& msg)
+{
+  expl_manager_->vis_ptr_->visualize_a_ball(fd_->track_pos_, 0.35, "track_pos", visualization::Color::blue);
+  if (msg->global_poses.empty()) return;
+
+  const auto& first_pose = msg->global_poses.front();
+  if (first_pose.x == -1 && first_pose.y == -1 && first_pose.z == -1) return;
+
+  std::unique_lock<std::mutex> lck(mtx_);
+  if (!fd_->track_trigger_)
+  {
+    ROS_WARN_STREAM_THROTTLE(2.0, "Wait for track command, ignore tracking target.");
+    return;
+  }
+
+  double min_dist = std::numeric_limits<double>::max();
+  int min_index = -1;
+  for (int i = 0; i < static_cast<int>(msg->global_poses.size()); ++i)
+  {
+    const auto& pose = msg->global_poses[i];
+    if (pose.x == -1 && pose.y == -1 && pose.z == -1) continue;
+
+    const Eigen::Vector3d candidate = geoPt2Vec3d(pose);
+    const double dist = (candidate - fd_->track_pos_).norm();
+    if (dist < min_dist)
+    {
+      min_dist = dist;
+      min_index = i;
+    }
+  }
+
+  if (min_index < 0) return;
+
+  const Eigen::Vector3d candidate = geoPt2Vec3d(msg->global_poses[min_index]);
+  if (!fd_->track_init_ || min_dist < expl_manager_->ep_->track_detect_error_)
+  {
+    fd_->track_pos_ = candidate;
+    fd_->track_init_ = true;
+    ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] Update target: " << fd_->track_pos_.transpose());
+  }
+  else
+  {
+    ROS_WARN_STREAM_THROTTLE(1.0, "[TRACK] Ignore target jump, candidate: " << candidate.transpose()
+                             << " previous: " << fd_->track_pos_.transpose());
+    return;
+  }
+
+  if (map_->isInited())
+  {
+    map_->setTarget(fd_->track_pos_, fd_->track_init_);
+  }
+
+  if (md_->mission_state_ != MISSION_FSM_STATE::PLAN_TRACK &&
+      md_->mission_state_ != MISSION_FSM_STATE::APPROACH_TRACK)
+  {
+    transitState(MISSION_FSM_STATE::PLAN_TRACK, "trackTargetUpdate");
+  }
 }
 
 bool FastExplorationFSM::getSceneGraphInitSeed(Eigen::Vector3d& init_seed, std::string* reason) const {
@@ -491,6 +595,132 @@ void FastExplorationFSM::approachRegularExplore() {
   }
 }
 
+void FastExplorationFSM::planTrack() {
+  ROS_INFO("\033[1;31mPlan TRACK!\033[0m");
+
+  if (!fd_->track_trigger_) {
+    transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "planTrack:no trigger");
+    return;
+  }
+
+  if (!fd_->track_init_) {
+    ROS_WARN_THROTTLE(1.0, "[TRACK] Wait tracking target initialization.");
+    return;
+  }
+
+  const Eigen::Vector3d target_vec = fd_->track_pos_ - fd_->odom_pos_;
+  if (target_vec.norm() < 1e-3) {
+    ROS_WARN_THROTTLE(1.0, "[TRACK] Target too close to current position, skip planning.");
+    return;
+  }
+
+  fd_->path_res_.clear();
+  fd_->aim_pos_ = fd_->track_pos_ - target_vec.normalized() * expl_manager_->ep_->track_dist_;
+  fd_->aim_pos_.z() = 1.0;
+  fd_->aim_yaw_ = atan2(target_vec.y(), target_vec.x());
+
+  ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] track pos: " << fd_->track_pos_.transpose()
+                           << " aim pos: " << fd_->aim_pos_.transpose()
+                           << " odom pos: " << fd_->odom_pos_.transpose()
+                           << " aim yaw: " << fd_->aim_yaw_);
+
+  const double pos_err = (fd_->aim_pos_ - fd_->odom_pos_).norm();
+  const double yaw_err = std::fabs(normalizeAngle(fd_->aim_yaw_ - fd_->odom_yaw_));
+  if (pos_err < expl_manager_->ep_->track_replan_dist_ &&
+      yaw_err < expl_manager_->ep_->track_yaw_thr_) {
+    ROS_WARN_THROTTLE(1.0, "[TRACK] Already close to tracking aim, skip planning.");
+    return;
+  }
+
+  const int res = callTrackPlanner(fd_->aim_pos_, fd_->aim_vel_, fd_->aim_yaw_, fd_->path_res_);
+  if (res != SUCCEED) {
+    ROS_WARN_THROTTLE(1.0, "[TRACK] Tracking target not directly reachable yet.");
+    return;
+  }
+
+  fd_->path_inx_ = 0;
+  fd_->local_aim_pos_ = fd_->aim_pos_;
+
+  const double dis_2_aim_2d = (fd_->aim_pos_ - fd_->odom_pos_).head(2).norm();
+  const bool look_forward = dis_2_aim_2d >= expl_manager_->ep_->track_turn_yaw_dist_;
+
+  pubLocalGoal(fd_->path_res_.back(), fd_->aim_yaw_, look_forward, !look_forward);
+  INFO_MSG_GREEN("[TRACK] [look_forward = " << look_forward << "] aim: "
+                 << fd_->path_res_.back().transpose() << ", yaw: " << fd_->aim_yaw_);
+
+  fd_->has_rotated_ = !look_forward;
+  fd_->last_pub_time_ = ros::Time::now();
+  transitState(MISSION_FSM_STATE::APPROACH_TRACK, "planTrack");
+}
+
+void FastExplorationFSM::approachTrack() {
+  ROS_INFO_STREAM_THROTTLE(0.5, "\033[1;33mApproach TRACK...\033[0m");
+
+  if (!fd_->track_trigger_) {
+    transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "approachTrack:disable");
+    return;
+  }
+
+  if (!fd_->track_init_) {
+    transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:wait target");
+    return;
+  }
+
+  const double dis_2_aim = (fd_->aim_pos_ - fd_->odom_pos_).norm();
+  const double dis_2_aim_2d = (fd_->aim_pos_ - fd_->odom_pos_).head(2).norm();
+  const double dis_2_local_aim = (fd_->local_aim_pos_ - fd_->odom_pos_).norm();
+  const double angle_2_aim = std::fabs(normalizeAngle(fd_->aim_yaw_ - fd_->odom_yaw_));
+  const double t_cur = (ros::Time::now() - fd_->last_pub_time_).toSec();
+
+  ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] Dis to aim: " << dis_2_aim_2d
+                           << " local aim: " << dis_2_local_aim
+                           << " yaw err: " << angle_2_aim
+                           << " t_cur: " << t_cur);
+
+  if (dis_2_aim < fp_->arrive_dis_thr_ && angle_2_aim < expl_manager_->ep_->track_yaw_thr_) {
+    transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:arrived");
+    return;
+  }
+
+  if (t_cur > fp_->replan_thresh3_) {
+    transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:periodic");
+    return;
+  }
+
+  const Eigen::Vector3d target_vec = fd_->track_pos_ - fd_->odom_pos_;
+  if (target_vec.norm() < 1e-3) {
+    transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:target too close");
+    return;
+  }
+
+  Eigen::Vector3d aim_pos_new = fd_->track_pos_ - target_vec.normalized() * expl_manager_->ep_->track_dist_;
+  aim_pos_new.z() = 1.0;
+  if ((fd_->aim_pos_ - aim_pos_new).norm() > expl_manager_->ep_->track_replan_dist_) {
+    INFO_MSG_GREEN("[TRACK] aim_pos_old: " << fd_->aim_pos_.transpose()
+                   << " aim_pos_new: " << aim_pos_new.transpose());
+    transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:moved");
+    return;
+  }
+
+  const double current_dir = atan2(target_vec.y(), target_vec.x());
+  if (!fd_->has_rotated_ && dis_2_aim_2d < expl_manager_->ep_->track_turn_yaw_dist_) {
+    fd_->has_rotated_ = true;
+    fd_->aim_yaw_ = current_dir;
+    pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, true);
+    INFO_MSG_GREEN("[TRACK] Switch to yaw-lock, aim: " << fd_->aim_pos_.transpose()
+                   << ", yaw: " << fd_->aim_yaw_);
+    return;
+  }
+
+  if (fd_->has_rotated_ &&
+      std::fabs(normalizeAngle(current_dir - fd_->aim_yaw_)) > expl_manager_->ep_->track_yaw_thr_) {
+    fd_->aim_yaw_ = current_dir;
+    pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, true);
+    INFO_MSG_GREEN("[TRACK] Update yaw-lock, aim: " << fd_->aim_pos_.transpose()
+                   << ", yaw: " << fd_->aim_yaw_);
+  }
+}
+
 void FastExplorationFSM::handleYawChange() {
   // 左右各转向30°，最终回到原方向
   if (!fd_->ego_exec_finished_) {
@@ -651,8 +881,18 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e)
       break;
     }
 
+    case PLAN_TRACK: {
+      planTrack();
+      break;
+    }
+
     case APPROACH_EXPLORE: {
       approachRegularExplore();
+      break;
+    }
+
+    case APPROACH_TRACK: {
+      approachTrack();
       break;
     }
 
@@ -1004,6 +1244,17 @@ int FastExplorationFSM::callExplorationLLMPlanner(Eigen::Vector3d &aim_pose, Eig
   return res;
 }
 
+int FastExplorationFSM::callTrackPlanner(Eigen::Vector3d& aim_pose, Eigen::Vector3d& aim_vel,
+                                         double& aim_yaw, vector<Eigen::Vector3d>& path_res)
+{
+  (void)aim_vel;
+  (void)aim_yaw;
+  map_->Lock();
+  int res = expl_manager_->planTrackGoal(fd_->odom_pos_, fd_->odom_vel_, aim_pose, path_res);
+  map_->Unlock();
+  return res;
+}
+
 void FastExplorationFSM::frontierCallback(const ros::TimerEvent& e) {
   static int delay = 0;
   if (!scene_graph_->skeleton_gen_->ready()) {
@@ -1245,12 +1496,14 @@ void FastExplorationFSM::displayMissionState()
     case INIT: text += "Init"; break;
     case PLAN_EXPLORE: text += "PExplore"; break;
     case LLM_PLAN_EXPLORE: text += "LLMExplore"; break;
+    case PLAN_TRACK: text += "PTrack"; break;
     case WAIT_TRIGGER: text += "WTrigger"; break;
     case WARM_UP : text += "WarmUp"; break;
     case THINKING: text += "Thinking"; break;
     case YAW_HANDLE: text += "YawHandle"; break;
     case FINISH: text += "Finish"; break;
     case APPROACH_EXPLORE: text+="ApproExplore"; break;
+    case APPROACH_TRACK: text+="ApproTrack"; break;
     case GO_TARGET_OBJECT: text+="Go-Obj"; break;
     case DF_DEMO: text+="DFDemo"; break;
     default: text += "Unknown"; break;

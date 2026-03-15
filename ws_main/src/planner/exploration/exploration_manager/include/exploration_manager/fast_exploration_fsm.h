@@ -17,6 +17,8 @@
 #include <quadrotor_msgs/PerceptionMsg.h>
 #include <quadrotor_msgs/EgoGoalSet.h>
 #include <quadrotor_msgs/GoalSet.h>
+#include <quadrotor_msgs/DetectOut.h>
+#include <quadrotor_msgs/TrackCommand.h>
 
 #include <algorithm>
 #include <iostream>
@@ -70,6 +72,7 @@ private:
   ros::NodeHandle node_;
   ros::Timer exec_timer_, frontier_timer_;
   ros::Subscriber trigger_sub_, odom_sub_, goal_from_station_sub_, egoplanner_goal_sub_, ego_exec_finish_sub_;
+  ros::Subscriber track_command_sub_, target_sub_;
   ros::Subscriber instruction_sub_, ego_plan_res_sub_, battery_sub_, perception_data_sub_;
   ros::Publisher ego_goal_pub_, perception_data_pub_, instruction_resp_pub_;
   ros::Publisher vis_marker_pub_, vis_path_pub_;
@@ -88,6 +91,8 @@ private:
                              vector<Eigen::Vector3d>& path_res);
   int callExplorationLLMPlanner(Eigen::Vector3d& aim_pose, Eigen::Vector3d& aim_vel, double& aim_yaw,
                                 vector<Eigen::Vector3d>& path_res);
+  int callTrackPlanner(Eigen::Vector3d& aim_pose, Eigen::Vector3d& aim_vel, double& aim_yaw,
+                       vector<Eigen::Vector3d>& path_res);
   
   void transitState(MISSION_FSM_STATE new_state, string pos_call);
   void stashCurStateAndTransit(MISSION_FSM_STATE new_state, string who_called);
@@ -99,6 +104,8 @@ private:
   void triggerCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   void egoPlannerGoalCallback(const quadrotor_msgs::GoalSet::ConstPtr& msg);
   void egoExecFinishCallback(const std_msgs::Bool::ConstPtr& msg);
+  void trackCommandCallback(const quadrotor_msgs::TrackCommand::ConstPtr& msg);
+  void targetCallbackReal(const quadrotor_msgs::DetectOut::ConstPtr& msg);
 
   void instructionCallback(const quadrotor_msgs::InstructionConstPtr& msg);
   void batteryCallBack(const sensor_msgs::BatteryState msg);
@@ -113,6 +120,8 @@ private:
   void planLLMExplore();
   void planRegularExplore();
   void approachRegularExplore();
+  void planTrack();
+  void approachTrack();
   void handleYawChange();                  // scan the area (Fov expand) and update the map
   void goTargetObject();
   void findTerminateTarget();

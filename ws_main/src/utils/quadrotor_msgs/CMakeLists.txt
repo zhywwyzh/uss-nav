@@ -46,6 +46,7 @@ add_message_files(
   GoalSet.msg
   EgoGoalSet.msg
   Instruction.msg
+  TrackCommand.msg
   EgoPlannerResult.msg
   EgoStateTrigger.msg
   OccMap3dOld.msg
@@ -100,4 +101,3 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 #     decode_msgs 
 #     encode_msgs
 # )
-

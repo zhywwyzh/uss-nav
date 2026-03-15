@@ -50,6 +50,12 @@ FrontierManager::FrontierManager(ros::NodeHandle& nh, const MapInterface::Ptr& m
 
   nh.param("exploration/radius_close_goal", ep_->radius_close_, -1.0);
   nh.param("exploration/radius_far_goal", ep_->radius_far_, -1.0);
+  nh.param("tracking/track_dist", ep_->track_dist_, 0.5);
+  nh.param("tracking/dist_far", ep_->track_dist_thr_, 5.0);
+  nh.param("tracking/replan_dist", ep_->track_replan_dist_, 0.5);
+  nh.param("tracking/turn_yaw_dist", ep_->track_turn_yaw_dist_, 0.5);
+  nh.param("tracking/yaw_threshold", ep_->track_yaw_thr_, 0.5);
+  nh.param("tracking/detect_error", ep_->track_detect_error_, 1.5);
 
   // Initialize TSP par file
   ofstream par_file(ep_->tsp_dir_ + "/single.par");
@@ -248,6 +254,37 @@ int FrontierManager::planExploreTSP(const Vector3d& pos, const Vector3d& vel, co
   ed_->path_next_goal_ = path_2_ftr;
   return SUCCEED;
 
+}
+
+int FrontierManager::planTrackGoal(const Vector3d& pos, const Vector3d& vel,
+                                   const Vector3d& far_goal, vector<Eigen::Vector3d>& path_res)
+{
+  INFO_MSG_GREEN("=================== planTrackGoal =====================");
+  (void)vel;
+
+  const Eigen::Vector3d aim_pos = far_goal;
+  ed_->path_next_goal_.clear();
+  path_res.clear();
+
+  const double dis_2_aim = (pos - aim_pos).norm();
+  if (dis_2_aim > ep_->track_dist_thr_)
+  {
+    INFO_MSG_RED("[TrackPlanner] Target is too far for direct tracking.");
+    return FAIL;
+  }
+
+  local_aim_type_ = PLAN_TO_WHAT::PATH_TO_GOAL;
+  if (!map_->isVisible(pos, aim_pos, 0.0))
+  {
+    INFO_MSG_RED("[TrackPlanner] Line-of-sight to tracking aim is blocked.");
+    return FAIL;
+  }
+
+  path_res.push_back(pos);
+  path_res.push_back(aim_pos);
+  ed_->path_next_goal_ = path_res;
+  INFO_MSG("[TrackPlanner] direct visible goal.");
+  return SUCCEED;
 }
 
 /**

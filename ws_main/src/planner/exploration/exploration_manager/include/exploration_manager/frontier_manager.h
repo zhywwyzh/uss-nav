@@ -49,6 +49,9 @@ class FrontierManager{
   int planExploreTSP(const Vector3d& pos, const Vector3d& vel, const double& yaw,
                      Vector3d& aim_pos, Vector3d& aim_vel, double& aim_yaw, vector<Eigen::Vector3d>& path_res);
 
+  int planTrackGoal(const Vector3d& pos, const Vector3d& vel,
+                    const Vector3d& far_goal, vector<Eigen::Vector3d>& path_res);
+
   void findVPGlobalTour(std::vector<Viewpoint::Ptr> &vps, const Eigen::MatrixXd& cost_mat,
                         const Eigen::Vector3d &cur_pos, const double & cur_yaw, const Eigen::Vector3d &cur_vel);
 

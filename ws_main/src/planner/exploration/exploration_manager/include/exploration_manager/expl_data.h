@@ -52,6 +52,9 @@ struct FSMData
   double                  aim_yaw_;
   bool                    has_rotated_;
   bool                    is_lookforward_;
+  Eigen::Vector3d         track_pos_;
+  bool                    track_trigger_;
+  bool                    track_init_;
   bool                    directly_connect_to_goal;  // [gwq] fsm 中关于是否直接连接到目标点的flag （包括从机跟随和Instruct主动控制情况）
   bool                    instruct_directly_to_goal;  // [gwq] Instruct 强制使用ego规划目标点 (相较于前者优先级更高)
 
@@ -156,6 +159,12 @@ struct ExplorationParam
   double       relax_time_;
   double       radius_close_;
   double       radius_far_;
+  double       track_dist_;
+  double       track_dist_thr_;
+  double       track_replan_dist_;
+  double       track_turn_yaw_dist_;
+  double       track_yaw_thr_;
+  double       track_detect_error_;
 
   typedef std::shared_ptr<ExplorationParam> Ptr;
 };

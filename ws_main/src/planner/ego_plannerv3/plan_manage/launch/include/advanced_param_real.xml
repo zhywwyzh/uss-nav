@@ -35,6 +35,7 @@
         <remap from="~grid_map/pose"   to = "/drone_$(arg drone_id)_$(arg camera_pose_topic)"/>
         <remap from="~grid_map/depth" to = "/drone_$(arg drone_id)_$(arg depth_topic)"/>
         <remap from="/position_cmd" to="/setpoint_cmd"/>
+        <remap from="/tracking_target" to="/target_dist_calculator/detect_out"/>
 
         <!-- traj_server -->
         <param name="traj_server/time_forward" value="1.0" type="double"/>
@@ -189,6 +190,14 @@
         <param name="exploration/w_dir" value="2.0" type="double"/>
         <param name="exploration/tsp_dir" value="$(find lkh_tsp_solver)/resource" type="string"/>
         <param name="exploration/relax_time" value="1.0" type="double"/>
+
+        <!-- tracking -->
+        <param name="tracking/track_dist" value="2.5" type="double"/>
+        <param name="tracking/dist_far" value="6.0" type="double"/>
+        <param name="tracking/replan_dist" value="0.25" type="double"/>
+        <param name="tracking/turn_yaw_dist" value="100.0" type="double"/>
+        <param name="tracking/yaw_threshold" value="0.15" type="double"/>
+        <param name="tracking/detect_error" value="2.0" type="double"/>
 
         <!-- skeleton -->
         <param name="skeleton/local_x_max" value="4"/>
