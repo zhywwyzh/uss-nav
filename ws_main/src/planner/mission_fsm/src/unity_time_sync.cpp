@@ -46,8 +46,8 @@ int main(int argc, char** argv) {
     // 创建转发器实例（根据需要修改消息类型）
     TimeSyncMessageForwarder<sensor_msgs::PointCloud2> 
                 lidar("/livox/lidar", "/livox/lidar_sync",10);
-    // TimeSyncMessageForwarder<sensor_msgs::CompressedImage>
-    //             color("/camera/color/image/compressed", "/camera/color/image_sync/compressed", 10);
+    TimeSyncMessageForwarder<sensor_msgs::CompressedImage>
+                color("/camera1/color/image/compressed", "/camera1/color_sync/image/compressed", 10);
     // TimeSyncMessageForwarder<sensor_msgs::CompressedImage>
     //             depth("/camera/depth/image/compressed", "/camera/depth/image_sync/compressed", 10);
     TimeSyncMessageForwarder<nav_msgs::Odometry>
