@@ -42,7 +42,7 @@ class YoloeDetectorNode:
         self.use_clip            = rospy.get_param('~use_clip', True)
         self.resize_width        = rospy.get_param('~resize_width', 640)
         self.queue_size          = rospy.get_param('~queue_size', 10)
-        self.visualize           = rospy.get_param('~visualize', True)
+        self.visualize           = rospy.get_param('~visualize', False)
         self.debug               = rospy.get_param('~debug', False)
         self.time_slop           = rospy.get_param('~time_slop', 0.01)
 
