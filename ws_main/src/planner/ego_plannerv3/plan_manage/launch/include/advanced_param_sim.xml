@@ -192,7 +192,7 @@
 
         <!-- tracking -->
         <param name="tracking/track_dist" value="2.5" type="double"/>
-        <param name="tracking/dist_far" value="6.0" type="double"/>
+        <param name="tracking/dist_far" value="10.0" type="double"/>
         <param name="tracking/replan_dist" value="0.25" type="double"/>
         <param name="tracking/turn_yaw_dist" value="100.0" type="double"/>
         <param name="tracking/yaw_threshold" value="0.15" type="double"/>
