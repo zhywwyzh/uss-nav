@@ -74,7 +74,7 @@ private:
   ros::Subscriber trigger_sub_, odom_sub_, goal_from_station_sub_, egoplanner_goal_sub_, ego_exec_finish_sub_;
   ros::Subscriber track_command_sub_, target_sub_;
   ros::Subscriber instruction_sub_, ego_plan_res_sub_, battery_sub_, perception_data_sub_;
-  ros::Publisher ego_goal_pub_, perception_data_pub_, instruction_resp_pub_;
+  ros::Publisher ego_goal_pub_, goal_from_station_pub_, perception_data_pub_, instruction_resp_pub_;
   ros::Publisher vis_marker_pub_, vis_path_pub_;
 
   // LLM related
