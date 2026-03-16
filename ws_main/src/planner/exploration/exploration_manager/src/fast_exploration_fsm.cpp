@@ -144,11 +144,91 @@ void FastExplorationFSM::triggerCallback(const geometry_msgs::PoseStamped::Const
   fd_->trigger_ = true;
 }
 
-void FastExplorationFSM::egoPlannerGoalCallback(const quadrotor_msgs::GoalSet::ConstPtr &msg) {
-  pubLocalGoal( Eigen::Vector3d(msg->goal.front().x, msg->goal.front().y, 1.0f), msg->yaw.front(), msg->look_forward, false);
-  // pubLocalGoal( Eigen::Vector3d(msg->goal.front().x, msg->goal.front().y, msg->goal.front().z), msg->yaw.front(), msg->look_forward, false);
+void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::Point>& goals,
+                                               const std::vector<float>& yaws,
+                                               bool look_forward,
+                                               const std::string& source) {
+  if (goals.empty()) {
+    ROS_WARN_STREAM("[GOAL] Ignore empty goal instruction from " << source);
+    return;
+  }
 
-  // pubLocalGoal( Eigen::Vector3d(msg->goal.front().x, msg->goal.front().y, 1.5f), 30 * M_PI / 180.0, false);
+  const auto& first_goal = goals.front();
+  const double goal_z = std::isfinite(first_goal.z) ? static_cast<double>(first_goal.z) : 1.0;
+  const double yaw = yaws.empty() ? fd_->odom_yaw_ : static_cast<double>(yaws.front());
+
+  {
+    std::unique_lock<std::mutex> lck(mtx_);
+    fd_->track_trigger_ = false;
+    fd_->track_init_ = false;
+    map_->setTarget(fd_->track_pos_, false);
+    if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
+        md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK) {
+      stopMotion();
+    }
+    transitState(MISSION_FSM_STATE::WAIT_TRIGGER, source);
+  }
+
+  pubLocalGoal(
+      Eigen::Vector3d(first_goal.x, first_goal.y, goal_z),
+      yaw,
+      look_forward,
+      false);
+}
+
+void FastExplorationFSM::handleTrackingTarget(const std::vector<geometry_msgs::Point>& global_poses,
+                                              const std::string& source) {
+  expl_manager_->vis_ptr_->visualize_a_ball(fd_->track_pos_, 0.35, "track_pos", visualization::Color::blue);
+  if (global_poses.empty()) return;
+
+  const auto& first_pose = global_poses.front();
+  if (first_pose.x == -1 && first_pose.y == -1 && first_pose.z == -1) return;
+
+  std::unique_lock<std::mutex> lck(mtx_);
+  if (!fd_->track_trigger_) {
+    ROS_WARN_STREAM_THROTTLE(2.0, "Wait for track command, ignore tracking target.");
+    return;
+  }
+
+  double min_dist = std::numeric_limits<double>::max();
+  int min_index = -1;
+  for (int i = 0; i < static_cast<int>(global_poses.size()); ++i) {
+    const auto& pose = global_poses[i];
+    if (pose.x == -1 && pose.y == -1 && pose.z == -1) continue;
+
+    const Eigen::Vector3d candidate = geoPt2Vec3d(pose);
+    const double dist = (candidate - fd_->track_pos_).norm();
+    if (dist < min_dist) {
+      min_dist = dist;
+      min_index = i;
+    }
+  }
+
+  if (min_index < 0) return;
+
+  const Eigen::Vector3d candidate = geoPt2Vec3d(global_poses[min_index]);
+  if (!fd_->track_init_ || min_dist < expl_manager_->ep_->track_detect_error_) {
+    fd_->track_pos_ = candidate;
+    fd_->track_init_ = true;
+    ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] Update target: " << fd_->track_pos_.transpose());
+  } else {
+    ROS_WARN_STREAM_THROTTLE(1.0, "[TRACK] Ignore target jump, candidate: " << candidate.transpose()
+                             << " previous: " << fd_->track_pos_.transpose());
+    return;
+  }
+
+  if (map_->isInited()) {
+    map_->setTarget(fd_->track_pos_, fd_->track_init_);
+  }
+
+  if (md_->mission_state_ != MISSION_FSM_STATE::PLAN_TRACK &&
+      md_->mission_state_ != MISSION_FSM_STATE::APPROACH_TRACK) {
+    transitState(MISSION_FSM_STATE::PLAN_TRACK, source);
+  }
+}
+
+void FastExplorationFSM::egoPlannerGoalCallback(const quadrotor_msgs::GoalSet::ConstPtr &msg) {
+  handleGoalInstruction(msg->goal, msg->yaw, msg->look_forward, "goalFromStation");
 }
 
 void FastExplorationFSM::egoExecFinishCallback(const std_msgs::Bool::ConstPtr &msg) {
@@ -185,61 +265,7 @@ void FastExplorationFSM::trackCommandCallback(const quadrotor_msgs::TrackCommand
 
 void FastExplorationFSM::targetCallbackReal(const quadrotor_msgs::DetectOut::ConstPtr& msg)
 {
-  expl_manager_->vis_ptr_->visualize_a_ball(fd_->track_pos_, 0.35, "track_pos", visualization::Color::blue);
-  if (msg->global_poses.empty()) return;
-
-  const auto& first_pose = msg->global_poses.front();
-  if (first_pose.x == -1 && first_pose.y == -1 && first_pose.z == -1) return;
-
-  std::unique_lock<std::mutex> lck(mtx_);
-  if (!fd_->track_trigger_)
-  {
-    ROS_WARN_STREAM_THROTTLE(2.0, "Wait for track command, ignore tracking target.");
-    return;
-  }
-
-  double min_dist = std::numeric_limits<double>::max();
-  int min_index = -1;
-  for (int i = 0; i < static_cast<int>(msg->global_poses.size()); ++i)
-  {
-    const auto& pose = msg->global_poses[i];
-    if (pose.x == -1 && pose.y == -1 && pose.z == -1) continue;
-
-    const Eigen::Vector3d candidate = geoPt2Vec3d(pose);
-    const double dist = (candidate - fd_->track_pos_).norm();
-    if (dist < min_dist)
-    {
-      min_dist = dist;
-      min_index = i;
-    }
-  }
-
-  if (min_index < 0) return;
-
-  const Eigen::Vector3d candidate = geoPt2Vec3d(msg->global_poses[min_index]);
-  if (!fd_->track_init_ || min_dist < expl_manager_->ep_->track_detect_error_)
-  {
-    fd_->track_pos_ = candidate;
-    fd_->track_init_ = true;
-    ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] Update target: " << fd_->track_pos_.transpose());
-  }
-  else
-  {
-    ROS_WARN_STREAM_THROTTLE(1.0, "[TRACK] Ignore target jump, candidate: " << candidate.transpose()
-                             << " previous: " << fd_->track_pos_.transpose());
-    return;
-  }
-
-  if (map_->isInited())
-  {
-    map_->setTarget(fd_->track_pos_, fd_->track_init_);
-  }
-
-  if (md_->mission_state_ != MISSION_FSM_STATE::PLAN_TRACK &&
-      md_->mission_state_ != MISSION_FSM_STATE::APPROACH_TRACK)
-  {
-    transitState(MISSION_FSM_STATE::PLAN_TRACK, "trackTargetUpdate");
-  }
+  handleTrackingTarget(msg->global_poses, "trackTargetUpdate");
 }
 
 bool FastExplorationFSM::getSceneGraphInitSeed(Eigen::Vector3d& init_seed, std::string* reason) const {
@@ -1376,10 +1402,14 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
   // check recv time frequncy
   static bool ic_first_recv_flag = true;
   static ros::Time ic_last_recv_time;
+  const bool bypass_freq_limit =
+      msg->instruction_type == quadrotor_msgs::Instruction::TURN_GOAL ||
+      msg->instruction_type == quadrotor_msgs::Instruction::TURN_TRACKING;
   if (ic_first_recv_flag){
     ic_first_recv_flag = false;
     ic_last_recv_time = ros::Time::now();
-  }else if ( !ic_first_recv_flag && (ros::Time::now() - ic_last_recv_time).toSec() < 0.8){
+  }else if (!bypass_freq_limit && !ic_first_recv_flag &&
+            (ros::Time::now() - ic_last_recv_time).toSec() < 0.8){
     ic_last_recv_time = ros::Time::now();
     std::cout << "[InstructionCallback] : recv too frequent, skip once!" << std::endl;
     return;
@@ -1427,6 +1457,47 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       fd_->target_cmd_ = msg->command;
       scene_graph_->setTargetAndPriorKnowledge(fd_->target_cmd_, fd_->prior_knowledge_);
       transitState(MISSION_FSM_STATE::DF_DEMO, "instructionCallback");
+      break;
+
+    case quadrotor_msgs::Instruction::TURN_GOAL:
+      handleGoalInstruction(msg->goal, msg->yaw, msg->look_forward, "instructionCallback:goal");
+      break;
+
+    case quadrotor_msgs::Instruction::TURN_TRACKING:
+      if (!msg->enable)
+      {
+        std::unique_lock<std::mutex> lck(mtx_);
+        fd_->track_trigger_ = false;
+        fd_->track_init_ = false;
+        map_->setTarget(fd_->track_pos_, false);
+        if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
+            md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK)
+        {
+          stopMotion();
+          transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "instructionCallback:tracking_disable");
+        }
+        break;
+      }
+
+      {
+        std::unique_lock<std::mutex> lck(mtx_);
+        fd_->track_trigger_ = true;
+        if (msg->has_target_position)
+        {
+          fd_->track_pos_ = geoPt2Vec3d(msg->target_position);
+        }
+        map_->setTarget(fd_->track_pos_, false);
+        if (md_->mission_state_ != MISSION_FSM_STATE::PLAN_TRACK &&
+            md_->mission_state_ != MISSION_FSM_STATE::APPROACH_TRACK)
+        {
+          transitState(MISSION_FSM_STATE::PLAN_TRACK, "instructionCallback:tracking_enable");
+        }
+      }
+
+      if (!msg->global_poses.empty())
+      {
+        handleTrackingTarget(msg->global_poses, "instructionCallback:tracking_target");
+      }
       break;
 
     default:

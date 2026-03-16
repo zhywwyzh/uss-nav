@@ -106,6 +106,9 @@ private:
   void egoExecFinishCallback(const std_msgs::Bool::ConstPtr& msg);
   void trackCommandCallback(const quadrotor_msgs::TrackCommand::ConstPtr& msg);
   void targetCallbackReal(const quadrotor_msgs::DetectOut::ConstPtr& msg);
+  void handleGoalInstruction(const std::vector<geometry_msgs::Point>& goals, const std::vector<float>& yaws,
+                             bool look_forward, const std::string& source);
+  void handleTrackingTarget(const std::vector<geometry_msgs::Point>& global_poses, const std::string& source);
 
   void instructionCallback(const quadrotor_msgs::InstructionConstPtr& msg);
   void batteryCallBack(const sensor_msgs::BatteryState msg);
