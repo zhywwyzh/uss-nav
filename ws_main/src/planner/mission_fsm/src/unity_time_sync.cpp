@@ -48,8 +48,8 @@ int main(int argc, char** argv) {
                 lidar("/livox/lidar", "/livox/lidar_sync",10);
     TimeSyncMessageForwarder<sensor_msgs::CompressedImage>
                 color("/camera1/color/image/compressed", "/camera1/color_sync/image/compressed", 10);
-    // TimeSyncMessageForwarder<sensor_msgs::CompressedImage>
-    //             depth("/camera/depth/image/compressed", "/camera/depth/image_sync/compressed", 10);
+    TimeSyncMessageForwarder<sensor_msgs::CompressedImage>
+                depth("/camera1/depth/image/compressed", "/camera1/depth_sync/image/compressed", 10);
     TimeSyncMessageForwarder<nav_msgs::Odometry>
                 odom("/unity_odom", "/unity_odom_sync", 10);
     ros::AsyncSpinner spinner(4);
