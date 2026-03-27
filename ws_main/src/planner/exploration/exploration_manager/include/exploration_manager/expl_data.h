@@ -74,11 +74,14 @@ struct FSMData
 
   // input info
   Eigen::Vector3d next_given_goal_;
+  Eigen::Vector3d waypoint_target_;
+  double          waypoint_target_yaw_;
 
   //scene graph
   std::string target_cmd_, prior_knowledge_;
   int object_target_id_;
   u_int8_t go_object_process_phase{0};
+  u_int8_t go_waypoint_process_phase{0};
   bool new_topo_need_predict_immediately_{false};
   bool regular_explore_{false};
   bool find_terminate_target_mode_{false};

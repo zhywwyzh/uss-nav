@@ -127,6 +127,7 @@ private:
   void approachTrack();
   void handleYawChange();                  // scan the area (Fov expand) and update the map
   void goTargetObject();
+  void goTargetWithWaypoint();
   void findTerminateTarget();
   void execDFDemo();
 

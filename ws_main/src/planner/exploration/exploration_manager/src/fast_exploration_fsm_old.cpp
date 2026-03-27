@@ -101,7 +101,6 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   md_->state_str_[MISSION_FSM_STATE::STOP]              = "STOP";
   md_->state_str_[MISSION_FSM_STATE::UNKONWN]           = "UNKNOWN";
   md_->state_str_[MISSION_FSM_STATE::GO_TARGET_OBJECT]  = "GO_TARGET_OBJECT";
-  md_->state_str_[MISSION_FSM_STATE::GO_TARGET_WITH_WAYPOINT] = "GO_TARGET_WITH_WAYPOINT";
   md_->state_str_[MISSION_FSM_STATE::FIND_TERMINATE_TARGET] = "FIND_TERMINATE_TARGET";
   md_->state_str_[MISSION_FSM_STATE::FINISH]            = "FINISH";
   md_->state_str_[MISSION_FSM_STATE::DF_DEMO]           = "DF_DEMO";
@@ -113,8 +112,6 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   fd_->track_trigger_ = false;
   fd_->track_init_ = false;
   fd_->track_pos_.setZero();
-  fd_->waypoint_target_.setZero();
-  fd_->waypoint_target_yaw_ = 0.0;
   fd_->goal_replan_times_ = 0;
   fd_->warmup_start_time_ = ros::Time(0);
 
@@ -993,17 +990,14 @@ void FastExplorationFSM::goTargetObject() {
       return;
     }
 
-    // crash recovery 1
     if (fd_->ego_exec_finished_ && fd_->ego_modify_status_ 
          && (dis_2_local_aim > 1.0 || dis_yaw > 10.0f / 180.0f * M_PI) 
          && fd_->path_inx_ == fd_->path_res_.size() - 1){
       fd_->last_pub_time_ = ros::Time::now();
       ROS_WARN("-------------> RePublish LocalGoal: crash recovery, forcely rotate yaw<----------------");
       pubLocalGoal(fd_->odom_pos_, fd_->aim_yaw_, false, false);
-      // INFO_MSG_GREEN("[Targ Obj] [PubNxtLocalAim] aim: " << fd_->aim_pos_.transpose() << ", local_aim: " << fd_->local_aim_pos_.transpose());
     }
 
-    // Replan after some time
     if (t_cur > fp_->replan_thresh3_ && fd_->odom_vel_.norm() <= 0.1) {
       ROS_WARN("-------------> Replan: periodic call <-------------");
       ROS_WARN("t_cur: %f s", t_cur);
@@ -1012,7 +1006,6 @@ void FastExplorationFSM::goTargetObject() {
       return;
     }
 
-    // Close to aim, rotate yaw
     if ((fd_->path_inx_ >= fd_->path_res_.size() - 1 || fd_->path_res_.size() == 2) &&
         dis_2_aim_2d < expl_manager_->ep_->radius_close_ && !fd_->has_rotated_ && fd_->ego_exec_finished_){
       INFO_MSG_GREEN("[TARG Obj] [Rotate Yaw] yaw: " << fd_->odom_yaw_ << ", target yaw: " << fd_->aim_yaw_
@@ -1026,7 +1019,6 @@ void FastExplorationFSM::goTargetObject() {
       return;
     }
 
-    // Local goal
     if (fd_->path_res_.size() > 2 && dis_2_local_aim < 2.0){
       if (fd_->path_inx_ == fd_->path_res_.size() - 1 && dis_2_local_aim < 1.0 
           && fd_->ego_exec_finished_ && fd_->ego_modify_status_) {  
@@ -1034,116 +1026,6 @@ void FastExplorationFSM::goTargetObject() {
         fd_->go_object_process_phase = 0;
         transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "can't reach local goal");
         return ;
-      }
-      getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
-      fd_->last_pub_time_ = ros::Time::now();
-      // INFO_MSG_GREEN("[TARG Obj] [PubNxtLocalAim] aim: " << fd_->aim_pos_.transpose() << ", local_aim: " << fd_->local_aim_pos_.transpose());
-    }
-  }
-}
-
-
-void FastExplorationFSM::goTargetWithWaypoint() {
-  if (fd_->go_waypoint_process_phase == 0) {
-    scene_graph_->mountCurPoly(fd_->odom_pos_, fd_->odom_yaw_);
-
-    if (scene_graph_->getCurPoly() == nullptr) {
-      fd_->go_waypoint_process_phase = 0;
-      transitState(WAIT_TRIGGER, "** FIND WAYPOINT TOPO FAILED: CUR POLY NULL **");
-      return;
-    }
-
-    auto target_poly = scene_graph_->skeleton_gen_->mountCurTopoPoint(fd_->waypoint_target_, true);
-    if (target_poly == nullptr) {
-      fd_->go_waypoint_process_phase = 0;
-      transitState(WAIT_TRIGGER, "** FIND WAYPOINT TOPO FAILED: TARGET POLY NULL **");
-      return;
-    }
-
-    fd_->path_res_.clear();
-    const double topo_dis =
-        scene_graph_->skeleton_gen_->astarSearch(scene_graph_->getCurPoly(), target_poly, fd_->path_res_);
-    if (topo_dis >= 99999.0 || fd_->path_res_.empty()) {
-      fd_->go_waypoint_process_phase = 0;
-      transitState(WAIT_TRIGGER, "** FIND WAYPOINT TOPO PATH FAILED **");
-      return;
-    }
-
-    if ((fd_->path_res_.back() - fd_->waypoint_target_).norm() > 1e-3) {
-      fd_->path_res_.push_back(fd_->waypoint_target_);
-    }
-
-    fd_->aim_pos_ = fd_->waypoint_target_;
-    fd_->aim_yaw_ = fd_->waypoint_target_yaw_;
-
-    INFO_MSG_GREEN("[Targ Wpt] | find path to waypoint success, size: " << fd_->path_res_.size());
-    getAndPublishNextAim(fd_->path_res_, true, 0.0f);
-    fd_->path_inx_      = 0;
-    fd_->has_rotated_   = false;
-    fd_->last_pub_time_ = ros::Time::now();
-    INFO_MSG("[Targ Wpt] | PubNxtLocalAim, aim: " << fd_->local_aim_pos_ << ", global aim: " << fd_->aim_pos_);
-
-    displayPath();
-    fd_->go_waypoint_process_phase++;
-  }
-
-  if (fd_->go_waypoint_process_phase == 1) {
-    double dis_2_aim_2d    = (fd_->aim_pos_       - fd_->odom_pos_).head(2).norm();
-    double dis_2_local_aim = (fd_->local_aim_pos_ - fd_->odom_pos_).norm();
-    double dis_yaw         = abs(fd_->aim_yaw_ - fd_->odom_yaw_);
-    double t_cur = (ros::Time::now() - fd_->last_pub_time_).toSec();
-    std::string ego_plan_status_str_   = fd_->ego_plan_status_ ? "True" : "False";
-    std::string ego_modify_status_str_ = fd_->ego_modify_status_ ? "True" : "False";
-    ROS_INFO_STREAM_THROTTLE(0.5, "\033[1;33mApproach Waypoint...\033[0m \n"
-                                  "   * Dis to Aim: " << dis_2_aim_2d << "\n"
-                                  "   * Dis to LocalAim: " << dis_2_local_aim << "\n"
-                                  "   * Dis to yaw: " << dis_yaw);
-    ROS_INFO_STREAM_THROTTLE(0.5, "[Targ Wpt] : ego local goal -> (" << fd_->ego_local_goal_.transpose() << ")");
-    ROS_INFO_STREAM_THROTTLE(0.5, "[Targ Wpt] : ego plan times: " << fd_->ego_plan_times_
-                                                                  << "  ego plan statue: " << ego_plan_status_str_
-                                                                  << "  ego modify status: " << ego_modify_status_str_);
-
-    if (dis_2_aim_2d < fp_->replan_dis_thresh_ && fabs(fd_->odom_yaw_ - fd_->aim_yaw_) / 3.14 * 180.0f < 5.0) {
-      ROS_WARN("-------------> Finish: [Reach Both Pos&Yaw Aim] <-------------");
-      ROS_INFO_STREAM("t_cur: " << t_cur);
-      fd_->go_waypoint_process_phase = 0;
-      transitState(WAIT_TRIGGER, "Go Target Waypoint Finish");
-      return;
-    }
-
-    if (fd_->ego_exec_finished_ && fd_->ego_modify_status_
-         && (dis_2_local_aim > 1.0 || dis_yaw > 10.0f / 180.0f * M_PI)
-         && fd_->path_inx_ == fd_->path_res_.size() - 1) {
-      fd_->last_pub_time_ = ros::Time::now();
-      ROS_WARN("-------------> RePublish LocalGoal: crash recovery, forcely rotate yaw<----------------");
-      pubLocalGoal(fd_->odom_pos_, fd_->aim_yaw_, false, false);
-    }
-
-    if (t_cur > fp_->replan_thresh3_ && fd_->odom_vel_.norm() <= 0.1) {
-      ROS_WARN("-------------> Replan: periodic call <-------------");
-      ROS_WARN("t_cur: %f s", t_cur);
-      fd_->go_waypoint_process_phase = 0;
-      transitState(WAIT_TRIGGER, "Go Target Waypoint Replan");
-      return;
-    }
-
-    if ((fd_->path_inx_ >= fd_->path_res_.size() - 1 || fd_->path_res_.size() == 2) &&
-        dis_2_aim_2d < expl_manager_->ep_->radius_close_ && !fd_->has_rotated_ && fd_->ego_exec_finished_) {
-      INFO_MSG_GREEN("[TARG Wpt] [Rotate Yaw] yaw: " << fd_->odom_yaw_ << ", target yaw: " << fd_->aim_yaw_
-          << ", err : " << (fd_->odom_yaw_ - fd_->aim_yaw_) / 3.14 * 180.0f << "deg");
-
-      pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, true);
-      fd_->has_rotated_ = true;
-      return;
-    }
-
-    if (fd_->path_res_.size() > 2 && dis_2_local_aim < 2.0) {
-      if (fd_->path_inx_ == fd_->path_res_.size() - 1 && dis_2_local_aim < 1.0
-          && fd_->ego_exec_finished_ && fd_->ego_modify_status_) {
-        INFO_MSG_YELLOW("[TARG Wpt] Force Replan, because local goal can't reach!");
-        fd_->go_waypoint_process_phase = 0;
-        transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "can't reach local goal");
-        return;
       }
       getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
       fd_->last_pub_time_ = ros::Time::now();
@@ -1522,7 +1404,6 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
   static ros::Time ic_last_recv_time;
   const bool bypass_freq_limit =
       msg->instruction_type == quadrotor_msgs::Instruction::TURN_GOAL ||
-      msg->instruction_type == quadrotor_msgs::Instruction::TURN_WAYPOINT_NAV ||
       msg->instruction_type == quadrotor_msgs::Instruction::TURN_TRACKING;
   if (ic_first_recv_flag){
     ic_first_recv_flag = false;
@@ -1548,24 +1429,6 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       fd_->find_terminate_target_mode_ = false;
       transitState(MISSION_FSM_STATE::GO_TARGET_OBJECT, "instructionCallback");
       break;
-
-    case quadrotor_msgs::Instruction::TURN_WAYPOINT_NAV: {
-      if (msg->nav_waypoint.empty()) {
-        INFO_MSG_RED("[InstructionCallback]: TURN_WAYPOINT_NAV has empty nav_waypoint, switch to WAIT_TRIGGER");
-        transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "instructionCallback:empty_waypoint");
-        break;
-      }
-
-      const auto& nav_waypoint = msg->nav_waypoint.front();
-      const double waypoint_z = std::isfinite(nav_waypoint.z) ? static_cast<double>(nav_waypoint.z) : 1.0;
-      fd_->waypoint_target_ = Eigen::Vector3d(nav_waypoint.x, nav_waypoint.y, waypoint_z);
-      fd_->waypoint_target_yaw_ =
-          msg->nav_yaw.empty() ? fd_->odom_yaw_ : static_cast<double>(msg->nav_yaw.front());
-      fd_->go_waypoint_process_phase = 0;
-      fd_->find_terminate_target_mode_ = false;
-      transitState(MISSION_FSM_STATE::GO_TARGET_WITH_WAYPOINT, "instructionCallback");
-      break;
-    }
 
     case quadrotor_msgs::Instruction::TURN_OBJECT_NAV: 
       fd_->regular_explore_ = false;
@@ -1713,7 +1576,6 @@ void FastExplorationFSM::displayMissionState()
     case APPROACH_EXPLORE: text+="ApproExplore"; break;
     case APPROACH_TRACK: text+="ApproTrack"; break;
     case GO_TARGET_OBJECT: text+="Go-Obj"; break;
-    case GO_TARGET_WITH_WAYPOINT: text+="Go-Wpt"; break;
     case DF_DEMO: text+="DFDemo"; break;
     default: text += "Unknown"; break;
   }
