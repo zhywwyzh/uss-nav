@@ -67,6 +67,16 @@ topics:
   prefix: false
   same_prefix: false
 
+- topic_name: /drone_0_ego_planner_node/optimal_list
+  msg_type: visualization_msgs/Marker
+  srcIP:
+    - drone0
+  srcPort: 3006
+  max_freq: 10
+  dstIP:
+    - groundStation0
+  prefix: false
+  same_prefix: false
 
 
 

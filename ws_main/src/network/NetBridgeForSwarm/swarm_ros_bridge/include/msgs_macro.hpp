@@ -17,6 +17,7 @@
 #include <scene_graph/PromptMsg.h>
 #include <quadrotor_msgs/GoalSet.h>
 #include <quadrotor_msgs/Instruction.h>
+#include <visualization_msgs/Marker.h>
 
 // include your msg type here
 
@@ -37,7 +38,8 @@
   X("visualization_msgs/MarkerArray", visualization_msgs::MarkerArray) \
   X("scene_graph/PromptMsg", scene_graph::PromptMsg)                   \
   X("quadrotor_msgs/GoalSet", quadrotor_msgs::GoalSet)                 \
-  X("quadrotor_msgs/Instruction", quadrotor_msgs::Instruction)
+  X("quadrotor_msgs/Instruction", quadrotor_msgs::Instruction)         \
+  X("visualization_msgs/Marker", visualization_msgs::Marker)
 
 #define SRVS_MACRO \
   X("std_srvs/Empty", std_srvs::Empty) \

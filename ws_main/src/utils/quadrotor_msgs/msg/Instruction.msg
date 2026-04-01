@@ -37,3 +37,11 @@ uint8 TURN_DF_DEMO = 4                  # demo演示，给prompt
 uint8 TURN_GOAL = 5                     # vla的点到点导航
 uint8 TURN_TRACKING = 6                 # Tracking
 uint8 TURN_WAYPOINT_NAV = 7             # 给定目标点导航
+
+# Map IO
+string map_folder
+uint8 TURN_SAVE_SCENE_GRAPH = 9
+uint8 TURN_LOAD_SCENE_GRAPH = 10
+
+# Scene Graph Skill IO
+uint8 REQUEST_ALL_AREA_AND_OBJS = 11
