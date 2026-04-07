@@ -145,6 +145,11 @@ target_link_libraries(cloud_fov_limit
         ${PCL_LIBRARIES}
 )
 
+catkin_install_python(PROGRAMS
+    scripts/scene_graph_benchmark_runner.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 #add_executable(cloud_similarity_test
 #test/cloud_similarity_test.cpp)
 #target_link_libraries(cloud_similarity_test

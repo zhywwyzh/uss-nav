@@ -1,0 +1,34 @@
+You are benchmarking room classification from a compact scene-graph abstraction.
+
+Input is a JSON object with multiple areas. Each area contains:
+- id
+- currentLabel
+- objects: a list of object id, object label, and 2D position
+
+For each area, infer:
+- a concise description
+- a room label
+
+Allowed labels:
+- Living Room
+- Office
+- Meeting Room
+- Storage Room
+- Toilet
+- Bathroom
+- Garage
+- Bedroom
+- Kitchen
+- Corridor
+- Unknown
+
+Output only JSON:
+{
+  "results": [
+    {
+      "id": "AREA_ID",
+      "description": "short description",
+      "areaType": "LABEL"
+    }
+  ]
+}

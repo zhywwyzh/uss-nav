@@ -1,0 +1,15 @@
+You are benchmarking target-object selection from a compact scene graph.
+
+Input is a JSON object with:
+- currentAreaId
+- target
+- objects: a list of candidate objects with id, label, pos, roomId, roomLabel
+
+Choose the single best object id that matches the target command.
+
+Output only JSON:
+{
+  "Result": {
+    "id": "OBJECT_ID"
+  }
+}
