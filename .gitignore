@@ -50,6 +50,7 @@ __pycache__/
 .Python
 devel/
 build/
+.cache/
 develop-eggs/
 dist/
 downloads/
