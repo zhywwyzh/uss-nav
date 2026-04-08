@@ -34,6 +34,7 @@
 #include <scene_graph/scene_graph.h>
 #include <scene_graph/traj_visualizer.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 
 using Eigen::Vector3d;
 using std::vector;
@@ -76,6 +77,7 @@ private:
   ros::Subscriber instruction_sub_, ego_plan_res_sub_, battery_sub_, perception_data_sub_;
   ros::Publisher ego_goal_pub_, goal_from_station_pub_, perception_data_pub_, instruction_resp_pub_;
   ros::Publisher vis_marker_pub_, vis_path_pub_;
+  ros::Publisher fsm_state_pub_;
 
   // LLM related
   MISSION_FSM_STATE stash_state_{MISSION_FSM_STATE::UNKONWN};

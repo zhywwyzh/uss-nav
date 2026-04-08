@@ -2,11 +2,67 @@
   "areas": [
     {
       "dimensions": {
-        "height": "19.30",
+        "height": "9.63",
         "unit": "meters",
-        "width": "32.17"
+        "width": "8.50"
       },
-      "id": "0"
+      "id": "2",
+      "objects": [
+        {
+          "info": "desk,8.00,-5.33"
+        },
+        {
+          "info": "chair,8.42,-4.46"
+        },
+        {
+          "info": "chair,8.47,-2.95"
+        },
+        {
+          "info": "desk,8.78,-2.26"
+        },
+        {
+          "info": "desk,5.76,-7.88"
+        },
+        {
+          "info": "notebook,5.23,-7.65"
+        },
+        {
+          "info": "keyboard,5.26,-7.65"
+        },
+        {
+          "info": "tv,5.44,-8.17"
+        },
+        {
+          "info": "chair,4.46,-8.54"
+        },
+        {
+          "info": "tv,6.08,-8.44"
+        },
+        {
+          "info": "chair,7.12,-8.52"
+        },
+        {
+          "info": "tv,6.13,-8.41"
+        },
+        {
+          "info": "tv,9.15,-5.36"
+        },
+        {
+          "info": "chair,6.37,-7.56"
+        },
+        {
+          "info": "keyboard,9.03,-5.08"
+        },
+        {
+          "info": "tv,5.76,-8.55"
+        },
+        {
+          "info": "notebook,6.39,-8.53"
+        },
+        {
+          "info": "shelf,9.39,-7.50"
+        }
+      ]
     }
   ]
 }

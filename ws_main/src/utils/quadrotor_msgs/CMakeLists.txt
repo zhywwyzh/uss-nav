@@ -20,6 +20,8 @@ include_directories(
 
 add_message_files(
   FILES
+  GPSPosition.msg
+  AgentPrompt.msg
   AuxCommand.msg
   Corrections.msg
   Gains.msg

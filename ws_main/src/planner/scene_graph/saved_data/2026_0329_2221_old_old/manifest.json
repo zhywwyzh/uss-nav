@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "object_dir": "objects",
+  "save_name": "2026_0329_2221",
+  "saved_at": "2026-03-29 22:38:58",
+  "scene_graph_file": "scene_graph.json",
+  "summary": {
+    "area_count": 8,
+    "merged_duplicate_gate_count": 0,
+    "object_count": 57,
+    "poly_count": 195,
+    "saved_cloud_num": 57,
+    "skipped_orphan_gate_count": 216
+  }
+}

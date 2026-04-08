@@ -10,4 +10,8 @@
         </node>
     </group>
 
+    <node pkg="swarm_ros_bridge" type="scenegraph_msg_2_string.py" name="scenegraph_to_copaw" output="screen">
+        <param name="output_topic" type="string" value="/scene_graph/json_text" />
+    </node>
+
 </launch>

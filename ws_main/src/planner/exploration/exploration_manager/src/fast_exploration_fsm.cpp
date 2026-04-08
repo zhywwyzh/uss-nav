@@ -142,6 +142,8 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   vis_path_pub_         = nh.advertise<visualization_msgs::MarkerArray>("planning/fsm_path", 10);
   perception_data_pub_  = nh.advertise<quadrotor_msgs::PerceptionMsg>("/perception_data_to_bridge", 10);
   instruction_resp_pub_ = nh.advertise<quadrotor_msgs::InstructionResMsg>("/Instruct_res", 10);
+
+  fsm_state_pub_        = nh.advertise<std_msgs::String>("/planner/fsm_state", 10);
 }
 
 void FastExplorationFSM::triggerCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
@@ -800,6 +802,11 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e)
 {
   // ROS_INFO_STREAM_THROTTLE(10.0, "** [EXP-FSM]: state: " << md_->state_str_[md_->mission_state_]);
   CALL_EVERY_N_TIMES(displayMissionState, 5);
+
+  std_msgs::String fsm_state_str;
+  if (md_->mission_state_ == FINISH || md_->mission_state_ == WAIT_TRIGGER) fsm_state_str.data = "FINISH";
+  else fsm_state_str.data = "EXECING";
+  fsm_state_pub_.publish(fsm_state_str);
 
   traj_visualizer_->addPoint(fd_->odom_pos_, fd_->odom_vel_.norm());
 
@@ -1515,7 +1522,6 @@ void FastExplorationFSM::egoPlanResCallback(const quadrotor_msgs::EgoPlannerResu
 
 void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionConstPtr& msg)
 {
-  if (md_->mission_state_ == INIT || md_->mission_state_ == WARM_UP) return;
   if (msg->robot_id != md_->drone_id_) return;
   // check recv time frequncy
   static bool ic_first_recv_flag = true;
@@ -1538,6 +1544,40 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
   md_->instruction_ = msg->instruction_type;
   fd_->instruct_directly_to_goal = false; // [gwq] 防止从turn_ego_plan状态切出的时候其他状态依旧使用强制ego规划
 
+  // load map !
+  if (msg->instruction_type == quadrotor_msgs::Instruction::TURN_LOAD_SCENE_GRAPH){
+    // stopMotion();
+    const bool load_ok = scene_graph_->loadMap(msg->map_folder);
+    if (load_ok) {
+      fd_->path_res_.clear();
+      fd_->path_inx_ = 0;
+      fd_->trigger_ = false;
+      fd_->regular_explore_ = false;
+      fd_->df_demo_mode_ = false;
+      fd_->find_terminate_target_mode_ = false;
+      fd_->new_topo_need_predict_immediately_ = false;
+      fd_->llm_plan_explore_counter_ = 0;
+      has_made_area_decision_ = false;
+      need_rotate_yaw_ = false;
+      expl_area_id_ = -1;
+      hardResetExploreArea(false);
+      scene_graph_->object_factory_->runThisModule();
+      scene_graph_->refreshLoadedMapVisualization();
+      transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "instructionCallback(load scene graph)");
+      INFO_MSG_GREEN("[InstructionCallback] Load scene graph snapshot succeeded.");
+    } else {
+      INFO_MSG_RED("[InstructionCallback] Load scene graph snapshot failed.");
+    }
+    INFO_MSG("\n\n");
+    return ;
+  }else if(msg->instruction_type == quadrotor_msgs::Instruction::REQUEST_ALL_AREA_AND_OBJS){
+    INFO_MSG_CYAN("[InstructionCallback] Request all area and object info, and publish to CoPaw!");
+    string scene_graph_json_str;
+    scene_graph_->DFDemoPromptGen(scene_graph_json_str);
+    scene_graph_->sendSceneGraphJson(scene_graph_json_str);
+  }
+
+  if (md_->mission_state_ == INIT || md_->mission_state_ == WARM_UP) return;
   vector<int> target_drone_ids, source_drone_ids;
 
   switch (msg->instruction_type) 
@@ -1636,6 +1676,16 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
         handleTrackingTarget(msg->global_poses, "instructionCallback:tracking_target");
       }
       break;
+    
+    case quadrotor_msgs::Instruction::TURN_SAVE_SCENE_GRAPH: {
+      const bool save_ok = scene_graph_->saveMap(msg->map_folder);
+      if (save_ok) {
+        INFO_MSG_GREEN("[InstructionCallback] Save scene graph snapshot succeeded.");
+      } else {
+        INFO_MSG_RED("[InstructionCallback] Save scene graph snapshot failed.");
+      }
+      break;
+    }
 
     default:
       transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "instructionCallback");

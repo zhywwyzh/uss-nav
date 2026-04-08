@@ -17,10 +17,10 @@ public:
         // 参数配置
         nh_->param<std::string>("odom_topic", odom_topic_, "/ekf_quat/ekf_odom");
         nh_->param<std::string>("cloud_topic", cloud_topic_, "/cloud_registered");
-        nh_->param<std::string>("output_frame", output_frame_, "world"); 
+        nh_->param<std::string>("output_frame", output_frame_, "world");
         
         // 修复：使用浮点数除法，避免整数除法导致结果为0
-        nh_->param<double>("fov_limit_angle", fov_limit_angle_, 40.0 / 180.0 * M_PI);
+        nh_->param<double>("fov_limit_angle", fov_limit_angle_, 45.0 / 180.0 * M_PI);
 
         // 时间同步容差
         nh_->param<double>("time_sync_threshold", time_sync_threshold_, 0.05); // 稍微放宽一点阈值

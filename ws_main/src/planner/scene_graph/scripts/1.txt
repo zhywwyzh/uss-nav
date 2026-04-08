@@ -1,0 +1,40 @@
+robot_id: 0
+to_drone_ids: [1]
+header: 
+  seq: 0
+  stamp: 
+    secs: 1774941659
+    nsecs: 373471975
+  frame_id: ''
+instruction_type: 11
+target_obj_id: 0
+command: ''
+goal: []
+yaw: []
+look_forward: False
+goal_to_follower: False
+enable: False
+has_target_position: False
+target_position: 
+  x: 0.0
+  y: 0.0
+  z: 0.0
+nav_waypoint: []
+nav_yaw: []
+image: 
+  header: 
+    seq: 0
+    stamp: 
+      secs: 0
+      nsecs:         0
+    frame_id: ''
+  height: 0
+  width: 0
+  encoding: ''
+  is_bigendian: 0
+  step: 0
+  data: []
+image_camera: ''
+classes: []
+global_poses: []
+map_folder: ''

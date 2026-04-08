@@ -16,7 +16,7 @@ namespace ego_planner
     mandatory_stop_         = false;
     cur_traj_to_cur_target_ = false;
     has_been_modified_      = false;
-    if_handle_yaw_          = false;
+    if_handle_yaw_          = true;
 
     pending_goal_finish_trigger_ = false;
     goal_finish_stable_start_time_ = ros::Time(0);

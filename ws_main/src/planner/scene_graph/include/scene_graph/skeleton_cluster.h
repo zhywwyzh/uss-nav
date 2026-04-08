@@ -61,10 +61,16 @@ public:
     void getCurAreas(std::vector<PolyhedronCluster::Ptr>& clusters);
     int getAreaFromPoly(const PolyHedronPtr &poly);
     void incrementalUpdateAreas(vector<PolyHedronPtr>& new_polys);
+    
+    // load map
+    void resetForMapLoad();
+    bool registerLoadedArea(const PolyhedronCluster::Ptr& area);
+    void finishMapLoad();
     std::map<int, PolyhedronCluster::Ptr> area_map_;
     std::map<int, bool> areas_need_predict_, areas_need_delete_;
 
     // vector<int> areas_need_delete_;
+    void visualizeClusters();
 
 private:
     ros::NodeHandle& nh_;
@@ -78,7 +84,6 @@ private:
     void mutexUnlock() {mutex_.unlock();};
     void communityDetection(vector<PolyHedronPtr> &polys_all, std::unique_ptr<CPMVertexPartition>& partition_res, double resolution);
     void findCurAreaNbrs(int cur_area_id);
-    void visualizeClusters();
     void visualizeEdgeWeights(const std::vector<PolyHedronPtr>& polys, const std::vector<igraph_integer_t>& edges_data, const std::vector<double>& edge_weights);
     void drawBoundingBox(visualization_msgs::Marker& marker, const Eigen::Vector3d& min, const Eigen::Vector3d& max,
                          int id, const Eigen::Vector3d &color, float line_width);

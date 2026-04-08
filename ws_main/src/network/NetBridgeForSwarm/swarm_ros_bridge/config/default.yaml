@@ -67,17 +67,19 @@ topics:
   prefix: false
   same_prefix: false
 
-- topic_name: /drone_0_ego_planner_node/optimal_list
-  msg_type: visualization_msgs/Marker
+- topic_name: /drone_0_ego_planner_node/grid_map/occupancy
+  msg_type: sensor_msgs/PointCloud2
+  cloudCompress: true
+  cloudDownsample: -1.0
+  cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
   srcIP:
-    - drone0
+    - drone1
   srcPort: 3006
-  max_freq: 10
+  max_freq: 5
   dstIP:
     - groundStation0
-  prefix: false
-  same_prefix: false
-
+  prefix: true
+  same_prefix: true
 
 
 

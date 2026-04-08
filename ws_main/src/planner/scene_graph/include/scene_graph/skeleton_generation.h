@@ -65,6 +65,9 @@ class SkeletonGenerator {
                        std::vector<Eigen::Vector3d>& path, bool add_input_pts);
     double astarSearch(const PolyHedronPtr start_polyhedron, const PolyHedronPtr end_polyhedron,
                        std::vector<Eigen::Vector3d>& path);
+    void resetForMapLoad();
+    bool registerLoadedPolyhedron(const PolyHedronPtr& polyhedron);
+    void finishMapLoad();
 
     // mutex for skeleton
     void lock(){mutex_.lock();};
@@ -72,6 +75,7 @@ class SkeletonGenerator {
 
     std::vector<PolyHedronPtr> cur_iter_polys_;
     PolyHedronPtr              cur_iter_first_poly_{nullptr};
+    void refreshLoadedMapVisualization();
     void visualizePolyBelongsToArea();
 
   private:

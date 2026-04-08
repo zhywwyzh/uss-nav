@@ -55,7 +55,7 @@
         <arg name="max_acc" value="8.0" />
         <arg name="max_jer" value="10.0" />
         <arg name="max_sna" value="20.0" /> -->
-        <arg name="max_vel" value="0.6" />
+        <arg name="max_vel" value="1.0" />
         <arg name="max_acc" value="1.0" />
         <arg name="max_jer" value="2.0" />
         <arg name="max_sna" value="5.0" />

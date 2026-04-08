@@ -411,12 +411,14 @@ public:
     objects_.clear();
   }
 
-  void resetClusterWithPolys(std::vector<PolyHedronPtr>& polys) {
+  void resetClusterWithPolys(std::vector<PolyHedronPtr>& polys, bool reset_semantics=true) {
     box_min_ = Eigen::Vector3d(99999.0, 99999.0, 99999.0);
     box_max_ = Eigen::Vector3d(-99999.0, -99999.0, -99999.0);
     center_  = Eigen::Vector3d::Zero();
     num_ftrs_     = 0;
-    room_label_   = room_description_ = "Unknown";
+    if (reset_semantics){
+      room_label_   = room_description_ = "Unknown";
+    }
     last_obj_num_ = objects_.size();
     nbr_area_.clear();
     objects_.clear();

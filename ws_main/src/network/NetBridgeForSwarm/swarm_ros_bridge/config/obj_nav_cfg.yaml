@@ -146,17 +146,17 @@ topics:
     same_prefix: false
 
   # -- obj process -- #
-  - topic_name: /yoloe/plot/final_vis
-    msg_type: sensor_msgs/Image
-    imgResizeRate: 0.8
-    srcIP:
-      - drone1
-    srcPort: 3008
-    max_freq: 10
-    dstIP:
-      - groundStation0
-    prefix: false
-    same_prefix: false
+  # - topic_name: /yoloe/plot/final_vis
+  #  msg_type: sensor_msgs/Image
+  #  imgResizeRate: 0.8
+  #  srcIP:
+  #    - drone1
+  #  srcPort: 3008
+  #  max_freq: 10
+  #  dstIP:
+  #    - groundStation0
+  #  prefix: false
+  #  same_prefix: false
 
   - topic_name: /object_pointcloud
     msg_type: sensor_msgs/PointCloud2
@@ -166,7 +166,7 @@ topics:
     srcIP:
       - drone1
     srcPort: 3009
-    max_freq: 2
+    max_freq: 1
     dstIP:
       - groundStation0
     prefix: false
@@ -239,3 +239,86 @@ topics:
       - drone1
     prefix: false
     same_prefix: false
+
+    # flyagent prompt & state & image
+  - topic_name: /camera/color/image_raw
+    msg_type: sensor_msgs/Image
+    imgResizeRate: 0.8
+    srcIP:
+      - drone1
+    srcPort: 4012
+    max_freq: 10
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /monitor/vla_state
+    msg_type: std_msgs/Int32
+    srcIP:
+      - drone1
+    srcPort: 4013
+    max_freq: 3
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+  
+  - topic_name: /agent_run/log
+    msg_type: std_msgs/String
+    srcIP:
+      - drone1
+    srcPort: 4014
+    max_freq: -1
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /agent_prompt
+    msg_type: quadrotor_msgs/AgentPrompt
+    srcIP:
+      - groundStation0
+    srcPort: 4015
+    max_freq: -1
+    dstIP:
+      - drone1
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /rtk/gps_position
+    msg_type: quadrotor_msgs/GPSPosition
+    srcIP:
+      - drone1
+    srcPort: 4016
+    max_freq: -1
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /mavros/battery
+    msg_type: sensor_msgs/BatteryState
+    srcIP:
+      - drone1
+    srcPort: 4017
+    max_freq: 1
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+
+  - topic_name: /drone_0_ego_planner_node/grid_map/occupancy_inflate
+    msg_type: sensor_msgs/PointCloud2
+    cloudCompress: true
+    cloudDownsample: -1.0
+    cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
+    srcIP:
+      - drone1
+    srcPort: 4018
+    max_freq: 5
+    dstIP:
+      - groundStation0
+    prefix: true
+    same_prefix: true

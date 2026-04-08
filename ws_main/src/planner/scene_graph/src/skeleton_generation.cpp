@@ -90,6 +90,57 @@ int SkeletonGenerator::getNodeNum() const {
   return polyhedron_map_.size();
 }
 
+void SkeletonGenerator::resetForMapLoad() {
+  polyhedron_map_.clear();
+  cur_iter_polys_.clear();
+  cur_iter_first_poly_ = nullptr;
+  mount_polyhedron_ = nullptr;
+  last_mount_polyhedron_ = nullptr;
+  expand_pending_frontiers_.clear();
+  remain_candidate_facet_expand_pts_.clear();
+  polyhedron_kd_tree_ = std::make_shared<KD_TREE<skeleton_gen::ikdTree_PolyhedronType>>();
+  polyhedron_kd_tree_fixed_center_ = std::make_shared<KD_TREE<skeleton_gen::ikdTree_PolyhedronType_FixedCenter>>();
+  remain_candidate_facet_expand_kd_tree_ = std::make_shared<KD_TREE<skeleton_gen::ikdTree_Vectoe3dType>>();
+  has_init_polyhedron_kdtree_ = false;
+  INFO_MSG_BLUE("[SkeletonGen] | Reset runtime state for map load.");
+}
+
+bool SkeletonGenerator::registerLoadedPolyhedron(const PolyHedronPtr& polyhedron) {
+  if (polyhedron == nullptr) return false;
+  if (polyhedron_map_.find(polyhedron->origin_center_) != polyhedron_map_.end()) {
+    if (polyhedron->is_gate_) {
+      INFO_MSG_YELLOW("[SkeletonGen] | Skip duplicate gate during map load, origin center: " << polyhedron->origin_center_.transpose());
+      return true;
+    }
+    INFO_MSG_RED("[SkeletonGen] | Duplicate polyhedron during map load, origin center: " << polyhedron->origin_center_.transpose());
+    return false;
+  }
+
+  polyhedron_map_[polyhedron->origin_center_] = polyhedron;
+  PolyHedronKDTreeVector add_temp;
+  add_temp.emplace_back(polyhedron);
+  PolyHedronKDTree_FixedCenterVector add_temp_fixed_center;
+  add_temp_fixed_center.emplace_back(polyhedron);
+
+  if (has_init_polyhedron_kdtree_) {
+    polyhedron_kd_tree_->Add_Points(add_temp, false);
+    polyhedron_kd_tree_fixed_center_->Add_Points(add_temp_fixed_center, false);
+  } else {
+    polyhedron_kd_tree_->Build(add_temp);
+    polyhedron_kd_tree_fixed_center_->Build(add_temp_fixed_center);
+    has_init_polyhedron_kdtree_ = true;
+  }
+  return true;
+}
+
+void SkeletonGenerator::finishMapLoad() {
+  cur_iter_polys_.clear();
+  cur_iter_first_poly_ = nullptr;
+  mount_polyhedron_ = nullptr;
+  last_mount_polyhedron_ = nullptr;
+  INFO_MSG_GREEN("[SkeletonGen] | Finish map load. Polyhedrons: " << polyhedron_map_.size());
+}
+
 double SkeletonGenerator::astarSearch(const PolyHedronPtr start_polyhedron, const PolyHedronPtr end_polyhedron,
                                       std::vector<Eigen::Vector3d> &path) {
   skeleton_astar_->astarSearch(start_polyhedron, end_polyhedron);
@@ -173,7 +224,7 @@ PolyHedronPtr SkeletonGenerator::getFrontierTopo(const Eigen::Vector3d &cur_pos)
   PolyHedronKDTree_FixedCenterVector poly_nearest;
   getPolyhedronsNNearestWithFixedCenter(cur_pos, 5, poly_nearest);
   if (poly_nearest.empty()) {
-    ROS_ERROR("[SkeletonGen] | Can't find frontier topo, return nullptr");
+    // ROS_ERROR("[SkeletonGen] | Can't find frontier topo, return nullptr");
     return nullptr;
   }
   std::vector<Eigen::Vector3d> path;
@@ -186,7 +237,7 @@ PolyHedronPtr SkeletonGenerator::getFrontierTopo(const Eigen::Vector3d &cur_pos)
     }
   }
   if (topo_father == nullptr) {
-    INFO_MSG_YELLOW("[Ftr pather == null] Poly near num : " << poly_nearest.size());
+    // INFO_MSG_YELLOW("[Ftr pather == null] Poly near num : " << poly_nearest.size());
     for (const auto& poly : poly_nearest) {
       if (poly.polyhedron_->is_gate_) continue;          // [gwq] patch for avoiding gates
       // INFO_MSG_YELLOW("No Ftr Topo Father Found, Try to Search Path");
@@ -197,8 +248,9 @@ PolyHedronPtr SkeletonGenerator::getFrontierTopo(const Eigen::Vector3d &cur_pos)
       }
     }
   }
-  if (topo_father == nullptr)
-    ROS_ERROR("[SkeletonGen] | Can't find frontier topo, return nullptr");
+  if (topo_father == nullptr){
+    // ROS_ERROR("[SkeletonGen] | Can't find frontier topo, return nullptr");
+  }
   return topo_father;
 }
 
@@ -1785,6 +1837,26 @@ void SkeletonGenerator::visualizeAllEdges(){
   marker_array.markers.push_back(marker);
   marker_array.markers.push_back(marker_force_edge);
   skeleton_vis_pub_.publish(marker_array);
+}
+
+void SkeletonGenerator::refreshLoadedMapVisualization() {
+  visualization_msgs::MarkerArray clear_array;
+  visualization_msgs::Marker clear_marker;
+  clear_marker.header.frame_id = "world";
+  clear_marker.header.stamp = ros::Time::now();
+  clear_marker.action = visualization_msgs::Marker::DELETEALL;
+  clear_array.markers.push_back(clear_marker);
+  skeleton_vis_pub_.publish(clear_array);
+
+  std::vector<PolyHedronPtr> polyhedrons;
+  getAllPolys(polyhedrons);
+  if (polyhedrons.empty()) return;
+
+  // visualizePolygons(polyhedrons);
+  // ros::Duration(0.001).sleep();
+  visualizeAllEdges();
+  ros::Duration(0.001).sleep();
+  visualizePolyBelongsToArea();
 }
 
 void SkeletonGenerator::visualizePolyhedronVertices(PolyHedronPtr polyhedron){

@@ -2,10 +2,14 @@
 // Created by gwq on 8/14/25.
 //
 #include "../include/scene_graph/scene_graph.h"
+#include "quadrotor_msgs/Instruction.h"
+#include "scene_graph/PromptMsg.h"
 #include <json_fwd.hpp>
 #include <map>
 #include <ros/console.h>
 #include <scene_graph/data_structure.h>
+#include <scene_graph/skeleton_cluster.h>
+#include <scene_graph/skeleton_generation.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -275,42 +279,43 @@ bool SceneGraph::DFDemoPromptGen(std::string &prompt_str) {
     }
 
     nlohmann::json data;
-    auto pushObjInfoIntoArray = [&data, &double2String](std::vector<ObjectNodePtr>& obj_vec){
-        nlohmann::json obj_array;
-        for (auto& obj_raw : obj_vec){
-            obj_array["id"] = std::to_string(obj_raw->id);
-            obj_array["label"] = obj_raw->label;
-            obj_array["pos"] = { double2String(obj_raw->pos.x()), double2String(obj_raw->pos.y()) };
-            data["objects"].push_back(obj_array);
+    auto pushAreaInfoIntoArray = [&data, &double2String](const PolyhedronCluster::Ptr& area) {
+        nlohmann::json area_json;
+        area_json["id"] = std::to_string(area->id_);
+        area_json["Area"] = area->room_label_.empty() ? "unknown" : area->room_label_;
+        area_json["objects"] = nlohmann::json::array();
+
+        for (auto& obj_raw : area->objects_) {
+            nlohmann::json obj_json;
+            obj_json["id"] = std::to_string(obj_raw->id);
+            obj_json["label"] = obj_raw->label;
+            obj_json["pos"] = { double2String(obj_raw->pos.x()), double2String(obj_raw->pos.y()) };
+            area_json["objects"].push_back(obj_json);
         }
+
+        data["areas"].push_back(area_json);
     };
 
-    std::map<int, bool> area_input_flag;
-    int cur_area_id = cur_poly_->area_id_;
-    area_input_flag[cur_area_id] = true;
-    skeleton_gen_->area_handler_->areas_need_predict_[cur_area_id] = false;
-    pushObjInfoIntoArray(skeleton_gen_->area_handler_->area_map_[cur_area_id]->objects_);   
-
-    for (auto& area_iter : skeleton_gen_->area_handler_->area_map_[cur_area_id]->nbr_area_){
-        area_input_flag[area_iter.first] = true;
+    data["areas"] = nlohmann::json::array();
+    for (auto& area_iter : skeleton_gen_->area_handler_->area_map_) {
         skeleton_gen_->area_handler_->areas_need_predict_[area_iter.first] = false;
-        pushObjInfoIntoArray(skeleton_gen_->area_handler_->area_map_[area_iter.first]->objects_);
-    }
-
-    for (auto& area_iter : skeleton_gen_->area_handler_->area_map_){
-        if (area_input_flag.find(area_iter.first) != area_input_flag.end()) continue;
-        if (skeleton_gen_->area_handler_->areas_need_predict_.find(area_iter.first) != skeleton_gen_->area_handler_->areas_need_predict_.end()){
-            if (skeleton_gen_->area_handler_->areas_need_predict_[area_iter.first]){
-                area_input_flag[area_iter.first] = true;
-                skeleton_gen_->area_handler_->areas_need_predict_[area_iter.first] = false;
-                pushObjInfoIntoArray(area_iter.second->objects_);
-            }
-        }
+        pushAreaInfoIntoArray(area_iter.second);
     }
 
     data["Target"] = target_cmd_string_;
     prompt_str = data.dump();
     return true;
+}
+
+void SceneGraph::sendSceneGraphJson(std::string &scene_graph_json_str){
+    scene_graph::PromptMsg msg;
+    msg.header.stamp = ros::Time::now();
+    msg.prompt_type = scene_graph::PromptMsg::PROMPT_TYPE_SCENE_GRAPH_JSON;
+    msg.prompt      = scene_graph_json_str;
+    msg.option      = scene_graph::PromptMsg::SEND_PROMPT;
+    msg.prompt_id   = -1;
+    prompt_pub_.publish(msg);
+    INFO_MSG_CYAN("[SceneGraph] | Published scene graph json to CoPaw, json size: " << scene_graph_json_str.size() << " bytes\n");
 }
 
 int SceneGraph::handelDFDemoResult(unsigned int prompt_id){
@@ -541,6 +546,12 @@ void SceneGraph::setTargetAndPriorKnowledge(const std::string &target_cmd_str, c
         prior_knowledge_string_ = "";
 }
 
+void SceneGraph::refreshLoadedMapVisualization() {
+    skeleton_gen_->refreshLoadedMapVisualization();
+    object_factory_->visualizeResult(true);
+    skeleton_gen_->area_handler_->visualizeClusters();
+    visualizeSceneGraph();
+}
 
 void SceneGraph::visualizeSceneGraph() {
 
@@ -705,5 +716,5 @@ void SceneGraph::visualizeSceneGraph() {
         marker_array.markers.push_back(marker_room_label_text);
     }
     scene_graph_pub_.publish(marker_array);
-
+    ros::Duration(0.01).sleep();
 }

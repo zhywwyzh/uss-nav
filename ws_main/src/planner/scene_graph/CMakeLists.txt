@@ -67,6 +67,7 @@ set(skelton_cpps
         src/skeleton_cluster.cpp
         src/ikd_Tree.cpp
         src/scene_graph.cpp
+        src/scene_graph_map_io.cpp
         libs/quickhull/QuickHull.cpp
 
 )
@@ -78,6 +79,7 @@ set(skeleton_hs
         include/scene_graph/ikd_Tree.h
         include/scene_graph/data_structure.h
         include/scene_graph/scene_graph.h
+        include/scene_graph/scene_graph_map_io.h
         include/scene_graph/hungarian_alg.h
         include/scene_graph/traj_visualizer.h
 )
@@ -143,11 +145,6 @@ add_executable(cloud_fov_limit
 target_link_libraries(cloud_fov_limit
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
-)
-
-catkin_install_python(PROGRAMS
-    scripts/scene_graph_benchmark_runner.py
-    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 #add_executable(cloud_similarity_test

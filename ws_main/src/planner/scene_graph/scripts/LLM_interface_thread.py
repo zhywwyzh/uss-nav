@@ -196,6 +196,9 @@ def main():
         pkg_path = rospack.get_path('scene_graph')
         area_predict_prompt_def_path = os.path.join(pkg_path, 'prompts_definition', 'room_prediction_syspt.txt')
         area_choosen_prompt_def_path = os.path.join(pkg_path, 'prompts_definition', 'area_choose_syspt.txt')
+        # area_predict_prompt_def_path = os.path.join(pkg_path, 'prompts_definition', 'room_prediction_realworld.txt')
+        # area_choosen_prompt_def_path = os.path.join(pkg_path, 'prompts_definition', 'area_choose_realworld.txt')
+        
         terminate_obj_id_choose_prompt_def_path = os.path.join(pkg_path, 'prompts_definition', 'terminate_id_choose_syspt.txt')
         df_demo_prompt_def_path = os.path.join(pkg_path, 'prompts_definition', 'df_demo_syspt.txt')
 

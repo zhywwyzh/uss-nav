@@ -89,6 +89,10 @@ public:
                                 std::vector<std::vector<Eigen::Vector3d>>& edges);
     std::map<int, ObjectNode::Ptr>* getAllObjs(){return &object_map_;};
     bool objInGoodDetection(const ObjectNode::Ptr& obj_node) const {return obj_node->detection_count >= _detection_counter_thresh;};
+    void resetForMapLoad();
+    bool registerLoadedObject(const ObjectNode::Ptr& obj_node, bool need_more_detection);
+    void finishMapLoad();
+    void visualizeResult(bool force_full_refresh = false);
 
     // area interface
     std::map<int, ObjectNode::Ptr> object_map_, object_map_needMoreDetection_;
@@ -182,7 +186,6 @@ private:
     void visualizeObjLabel(visualization_msgs::Marker & marker, const ObjectNode::Ptr& obj_node, int id, const ros::Time &timestamp);
     void visualizeObjEdgeAll(visualization_msgs::Marker & marker);
     void visualizeUpdateObjects();
-    void visualizeResult();
     void deVisualizeObjects(const std::vector<ObjectNode::Ptr> &objs_to_delete);
 
     Eigen::Vector3d getRandomColor();

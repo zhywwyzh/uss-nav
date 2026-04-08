@@ -4,6 +4,7 @@
 #define __MSGS_MACRO__
 #include <ros/ros.h>
 
+#include <std_msgs/Int32.h>
 #include <std_msgs/String.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -17,8 +18,9 @@
 #include <scene_graph/PromptMsg.h>
 #include <quadrotor_msgs/GoalSet.h>
 #include <quadrotor_msgs/Instruction.h>
-#include <visualization_msgs/Marker.h>
-
+#include <quadrotor_msgs/AgentPrompt.h>
+#include <quadrotor_msgs/GPSPosition.h>
+#include <sensor_msgs/BatteryState.h>
 // include your msg type here
 
 #define INFO_MSG(str)        do {std::cout << str << std::endl; } while(false)
@@ -39,7 +41,10 @@
   X("scene_graph/PromptMsg", scene_graph::PromptMsg)                   \
   X("quadrotor_msgs/GoalSet", quadrotor_msgs::GoalSet)                 \
   X("quadrotor_msgs/Instruction", quadrotor_msgs::Instruction)         \
-  X("visualization_msgs/Marker", visualization_msgs::Marker)
+  X("quadrotor_msgs/AgentPrompt", quadrotor_msgs::AgentPrompt)         \
+  X("std_msgs/Int32", std_msgs::Int32)                                 \
+  X("quadrotor_msgs/GPSPosition", quadrotor_msgs::GPSPosition)         \
+  X("sensor_msgs/BatteryState", sensor_msgs::BatteryState)
 
 #define SRVS_MACRO \
   X("std_srvs/Empty", std_srvs::Empty) \

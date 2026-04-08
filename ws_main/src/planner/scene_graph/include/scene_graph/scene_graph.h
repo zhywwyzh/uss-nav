@@ -17,6 +17,8 @@
 #include <visualization_msgs/MarkerArray.h>
 #include "scene_graph/PromptMsg.h"
 
+class SceneGraphMapIO;
+
 struct SceneGraph_Data {
 std::vector<AreaHandler::Ptr> area;
 };
@@ -73,6 +75,7 @@ public:
     bool chooseAreaToGoPromptGen(std::string &prompt_str);
     bool chooseTerminateObjIdPromptGen(std::string &prompt_str);
     bool DFDemoPromptGen(std::string &prompt_str);
+    void sendSceneGraphJson(std::string &scene_graph_json_str);
 
     // result handle //
     void handleRoomPredictionResult(unsigned int prompt_id);
@@ -85,11 +88,15 @@ public:
     unsigned int getCurPromptId(){return cur_prompt_id_;}
     int getAreaFromPoly(const PolyHedronPtr& poly){return poly->area_id_;}
     bool needAreaPrediction(){ return !skeleton_gen_->area_handler_->areas_need_predict_.empty();}
+    bool saveMap(const std::string& save_name = "");
+    bool loadMap(const std::string& save_name);
 
     // visualization //
+    void refreshLoadedMapVisualization();
     void visualizeSceneGraph();
 
 private:
+    friend class SceneGraphMapIO;
     ros::NodeHandle        nh_;
     ros::Publisher         scene_graph_pub_;
     std::mutex             mutex_;

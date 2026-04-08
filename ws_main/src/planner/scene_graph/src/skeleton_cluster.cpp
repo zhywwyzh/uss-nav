@@ -260,6 +260,33 @@ int AreaHandler::getAreaFromPoly(const PolyHedronPtr &poly) {
     return poly_cluster_map_[poly->center_];
 }
 
+void AreaHandler::resetForMapLoad() {
+    area_map_.clear();
+    areas_need_predict_.clear();
+    areas_need_delete_.clear();
+    poly_cluster_map_.clear();
+    max_area_id_ = 0;
+    INFO_MSG_BLUE("[AreaHandler] Reset runtime state for map load.");
+}
+
+bool AreaHandler::registerLoadedArea(const PolyhedronCluster::Ptr& area) {
+    if (area == nullptr) return false;
+    if (area_map_.find(area->id_) != area_map_.end()) {
+        INFO_MSG_RED("[AreaHandler] Duplicate area id during map load: " << area->id_);
+        return false;
+    }
+    area_map_[area->id_] = area;
+    for (const auto& poly : area->polys_) {
+        if (poly != nullptr) poly_cluster_map_[poly->center_] = static_cast<int>(area->id_);
+    }
+    max_area_id_ = std::max(max_area_id_, static_cast<int>(area->id_) + 1);
+    return true;
+}
+
+void AreaHandler::finishMapLoad() {
+    INFO_MSG_GREEN("[AreaHandler] Finish map load. Areas: " << area_map_.size());
+}
+
 void AreaHandler::communityDetection(vector<PolyHedronPtr> &polys_all, std::unique_ptr<CPMVertexPartition>& partition_res, double resolution = 0.02) {
     auto check_igraph_error = [](igraph_error_t err, const std::string& function_name) {
         if (err != IGRAPH_SUCCESS) {
@@ -569,7 +596,7 @@ void AreaHandler::incrementalUpdateAreas(vector<PolyHedronPtr>& new_polys) {
             for (int i = 0; i < new_poly_members.size(); i++) {
                 int match_id = match_res[i];
                 PolyhedronCluster::Ptr old_area = area_map_[match_id];
-                old_area->resetClusterWithPolys(new_poly_members[i]);
+                old_area->resetClusterWithPolys(new_poly_members[i], false);
                 areas_need_predict_[old_area->id_] = true;
                 area_need_find_nbrs[old_area->id_] = true;
             }
@@ -581,7 +608,7 @@ void AreaHandler::incrementalUpdateAreas(vector<PolyHedronPtr>& new_polys) {
                     INFO_MSG_YELLOW("   | ** area [" << it->second << "] already exist, update it ...");
                     int match_id = it->second;
                     PolyhedronCluster::Ptr old_area = area_map_[match_id];
-                    old_area->resetClusterWithPolys(new_poly_members[i]);
+                    old_area->resetClusterWithPolys(new_poly_members[i], false);
                     areas_need_predict_[old_area->id_] = true;
                     area_need_find_nbrs[old_area->id_] = true;
                 }else {
@@ -603,7 +630,7 @@ void AreaHandler::incrementalUpdateAreas(vector<PolyHedronPtr>& new_polys) {
                 int match_id = match_res[i];
                 matched_areas[match_id] = true;
                 PolyhedronCluster::Ptr old_area = area_map_[match_id];
-                old_area->resetClusterWithPolys(new_poly_members[i]);
+                old_area->resetClusterWithPolys(new_poly_members[i], false);
                 areas_need_predict_[old_area->id_] = true;
                 area_need_find_nbrs[old_area->id_] = true;
             }

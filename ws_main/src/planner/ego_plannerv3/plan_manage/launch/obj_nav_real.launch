@@ -1,7 +1,7 @@
 <launch>
-    <arg name="map_size_x" value="200.0"/>
-    <arg name="map_size_y" value="200.0"/>
-    <arg name="map_size_z" value=" 3.0"/>
+    <arg name="map_size_x" value="10000.0"/>
+    <arg name="map_size_y" value="10000.0"/>
+    <arg name="map_size_z" value="30.00"/>
     <arg name="init_x" value="0.0"/>
     <arg name="init_y" value="0.0"/>
     <arg name="init_z" value="1.0"/>

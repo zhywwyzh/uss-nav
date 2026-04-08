@@ -1,4 +1,6 @@
 #include "../include/scene_graph/object_factory.h"
+#include <visualization_msgs/Marker.h>
+#include <visualization_msgs/MarkerArray.h>
 
 ObjectFactory::ObjectFactory(ros::NodeHandle& nh): nh_(nh){
     skeleton_enabled_ = false;
@@ -95,6 +97,56 @@ void ObjectFactory::stopThisModule() {
 
 bool ObjectFactory::ok() {
     return allow_thread_run_;
+}
+
+void ObjectFactory::resetForMapLoad() {
+    object_map_.clear();
+    object_map_needMoreDetection_.clear();
+    semantic_msg_queue_.clear();
+    cur_update_ids_.clear();
+    cur_update_objs_.clear();
+    cur_add_objs_.clear();
+    cur_update_all_.clear();
+    update_existing_objects_.clear();
+    cur_observe_results_.clear();
+    cur_polyhedron_ = nullptr;
+    last_polyhedron_ = nullptr;
+    object_max_id_ = -1;
+    object_kdtree_initialized_ = false;
+    object_kd_tree_ = std::make_shared<skeleton_gen::KD_TREE<skeleton_gen::ikdTree_ObjectDataType>>();
+    INFO_MSG_BLUE("[ObjFactory] Reset runtime state for map load.");
+}
+
+bool ObjectFactory::registerLoadedObject(const ObjectNode::Ptr& obj_node, bool need_more_detection) {
+    if (obj_node == nullptr) return false;
+    if (object_map_.find(obj_node->id) != object_map_.end()) {
+        INFO_MSG_RED("[ObjFactory] Duplicate object id during map load: " << obj_node->id);
+        return false;
+    }
+
+    object_map_[obj_node->id] = obj_node;
+    if (need_more_detection) object_map_needMoreDetection_[obj_node->id] = obj_node;
+    object_max_id_ = std::max(object_max_id_, obj_node->id);
+
+    ObjectKDTreeNodeVector add_tmp_nodes;
+    add_tmp_nodes.emplace_back(obj_node);
+    if (object_kdtree_initialized_) {
+        object_kd_tree_->Add_Points(add_tmp_nodes, false);
+    } else {
+        object_kd_tree_->Build(add_tmp_nodes);
+        object_kdtree_initialized_ = true;
+    }
+    return true;
+}
+
+void ObjectFactory::finishMapLoad() {
+    cur_update_ids_.clear();
+    cur_update_objs_.clear();
+    cur_add_objs_.clear();
+    cur_update_all_.clear();
+    update_existing_objects_.clear();
+    cur_observe_results_.clear();
+    INFO_MSG_GREEN("[ObjFactory] Finish map load. Objects: " << object_map_.size());
 }
 
 void ObjectFactory::objectProcessThread() {
@@ -1029,10 +1081,10 @@ geometry_msgs::Point ObjectFactory::pclToGeoPt(const pcl::PointXYZ &pt) {
     return geo_pt;
 }
 
-void ObjectFactory::visualizeResult() {
+void ObjectFactory::visualizeResult(bool force_full_refresh) {
     static ros::Time last_time = ros::Time::now();
 
-    if (ros::Time::now() - last_time > ros::Duration(2.0)) {
+    if (force_full_refresh || ros::Time::now() - last_time > ros::Duration(2.0)) {
         last_time = ros::Time::now();
         visualization_msgs::MarkerArray marker_array;
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr pt_cloud_all = pcl::PointCloud<pcl::PointXYZRGB>::Ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
