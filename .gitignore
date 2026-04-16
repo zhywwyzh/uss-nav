@@ -28,6 +28,7 @@ uav-fsm/
 logs/
 log/
 .clangd
+.codex
 ros_ws/uss-nav/ws_main/src/planner/exploration/lkh_tsp_solver/resource/
 MobileSAM/
 ros_ws/ros_utils/src/image_transport_plugins/
