@@ -203,4 +203,5 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-./ws_main/src/planner/exploration/lkh_tsp_solver/resource
+/home/wzq/catkin_ws/Fly-Agent-Diff/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/lkh_tsp_solver/resource
+# ./ws_main/src/planner/exploration/lkh_tsp_solver/resource
