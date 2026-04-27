@@ -13,6 +13,7 @@
 #include <scene_graph/data_structure.h>
 #include <scene_graph/scene_graph.h>
 #include <scene_graph/skeleton_generation.h>
+#include <std_msgs/Bool.h>
 #include <string>
 #include <traj_utils/planning_visualization.h>
 #include <exploration_manager/fast_exploration_fsm.h>
@@ -67,6 +68,9 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   nh.param("fsm/auto_init_scene_graph",      fp_->auto_init_scene_graph_, true);
   nh.param("fsm/auto_init_delay_sec",        fp_->auto_init_delay_sec_, 2.0);
   nh.param("fsm/scene_graph_init_forward_dist", fp_->scene_graph_init_forward_dist_, 1.8);
+  nh.param("tracking/finish_hold_time",       fp_->track_finish_hold_time_, 3.0);
+  nh.param("tracking/finish_move_thresh",     fp_->track_finish_move_thresh_, 0.2);
+  nh.param("tracking/finish_yaw_thresh",      fp_->track_finish_yaw_thresh_, 0.2);
 
   std::cout << "\n***** Target Cmd : " << fd_->target_cmd_ << "\n" << std::endl;
   std::cout << "ALL Main FSM Params loaded successfully ..." << std::endl;
@@ -108,11 +112,16 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
 
   /* Initialize FSM data */
   fd_->have_odom_    = false;
+  fd_->odom_pos_.setZero();
+  fd_->odom_vel_.setZero();
+  fd_->odom_yaw_ = 0.0;
   fd_->static_state_ = true;
   fd_->trigger_      = false;
   fd_->track_trigger_ = false;
   fd_->track_init_ = false;
   fd_->track_pos_.setZero();
+  resetTrackingFinishCandidate();
+  fd_->track_finish_sent_ = false;
   fd_->waypoint_target_.setZero();
   fd_->waypoint_target_yaw_ = 0.0;
   fd_->goal_replan_times_ = 0;
@@ -144,6 +153,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   instruction_resp_pub_ = nh.advertise<quadrotor_msgs::InstructionResMsg>("/Instruct_res", 10);
 
   fsm_state_pub_        = nh.advertise<std_msgs::String>("/planner/fsm_state", 10);
+  tracking_finish_pub_  = nh.advertise<std_msgs::Bool>("/tracking_finish", 10);
 }
 
 void FastExplorationFSM::triggerCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
@@ -167,6 +177,8 @@ void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::
     std::unique_lock<std::mutex> lck(mtx_);
     fd_->track_trigger_ = false;
     fd_->track_init_ = false;
+    resetTrackingFinishCandidate();
+    fd_->track_finish_sent_ = false;
     map_->setTarget(fd_->track_pos_, false);
     if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
         md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK) {
@@ -213,9 +225,13 @@ void FastExplorationFSM::handleTrackingTarget(const std::vector<geometry_msgs::P
   if (min_index < 0) return;
 
   const Eigen::Vector3d candidate = geoPt2Vec3d(global_poses[min_index]);
+  const bool was_track_init = fd_->track_init_;
   if (!fd_->track_init_ || min_dist < expl_manager_->ep_->track_detect_error_) {
     fd_->track_pos_ = candidate;
     fd_->track_init_ = true;
+    if (!was_track_init) {
+      resetTrackingFinishCandidate();
+    }
     ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] Update target: " << fd_->track_pos_.transpose());
   } else {
     ROS_WARN_STREAM_THROTTLE(1.0, "[TRACK] Ignore target jump, candidate: " << candidate.transpose()
@@ -250,6 +266,8 @@ void FastExplorationFSM::trackCommandCallback(const quadrotor_msgs::TrackCommand
   {
     fd_->track_trigger_ = false;
     fd_->track_init_ = false;
+    resetTrackingFinishCandidate();
+    fd_->track_finish_sent_ = false;
     map_->setTarget(fd_->track_pos_, false);
     if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
         md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK)
@@ -260,7 +278,12 @@ void FastExplorationFSM::trackCommandCallback(const quadrotor_msgs::TrackCommand
     return;
   }
 
+  const bool was_track_trigger = fd_->track_trigger_;
   fd_->track_trigger_ = true;
+  if (!was_track_trigger) {
+    resetTrackingFinishCandidate();
+    fd_->track_finish_sent_ = false;
+  }
   if (msg->has_target_position)
   {
     fd_->track_pos_ = geoPt2Vec3d(msg->target_position);
@@ -627,21 +650,91 @@ void FastExplorationFSM::approachRegularExplore() {
   }
 }
 
+void FastExplorationFSM::resetTrackingFinishCandidate() {
+  fd_->track_finish_candidate_active_ = false;
+  fd_->track_finish_candidate_start_time_ = ros::Time(0);
+  fd_->track_finish_last_pos_ = fd_->odom_pos_;
+  fd_->track_finish_last_yaw_ = fd_->odom_yaw_;
+  fd_->track_finish_move_acc_ = 0.0;
+  fd_->track_finish_yaw_acc_ = 0.0;
+}
+
+bool FastExplorationFSM::updateTrackingFinishCandidate(double dis_2_aim, double angle_2_aim) {
+  const bool near_aim = dis_2_aim < fp_->arrive_dis_thr_;
+  const bool yaw_ok = angle_2_aim < expl_manager_->ep_->track_yaw_thr_;
+  if (!near_aim || !yaw_ok || fd_->track_finish_sent_) {
+    resetTrackingFinishCandidate();
+    return false;
+  }
+
+  const ros::Time now = ros::Time::now();
+  if (!fd_->track_finish_candidate_active_) {
+    fd_->track_finish_candidate_active_ = true;
+    fd_->track_finish_candidate_start_time_ = now;
+    fd_->track_finish_last_pos_ = fd_->odom_pos_;
+    fd_->track_finish_last_yaw_ = fd_->odom_yaw_;
+    fd_->track_finish_move_acc_ = 0.0;
+    fd_->track_finish_yaw_acc_ = 0.0;
+    ROS_INFO_STREAM("[TRACK] finish candidate start, pos=" << fd_->odom_pos_.transpose()
+                    << ", yaw=" << fd_->odom_yaw_);
+    return false;
+  }
+
+  fd_->track_finish_move_acc_ += (fd_->odom_pos_ - fd_->track_finish_last_pos_).norm();
+  fd_->track_finish_yaw_acc_ += std::fabs(normalizeAngle(fd_->odom_yaw_ - fd_->track_finish_last_yaw_));
+  fd_->track_finish_last_pos_ = fd_->odom_pos_;
+  fd_->track_finish_last_yaw_ = fd_->odom_yaw_;
+
+  if (fd_->track_finish_move_acc_ > fp_->track_finish_move_thresh_ ||
+      fd_->track_finish_yaw_acc_ > fp_->track_finish_yaw_thresh_) {
+    ROS_INFO_STREAM("[TRACK] finish candidate reset: move_acc=" << fd_->track_finish_move_acc_
+                    << ", yaw_acc=" << fd_->track_finish_yaw_acc_);
+    resetTrackingFinishCandidate();
+    return false;
+  }
+
+  const double hold_time = (now - fd_->track_finish_candidate_start_time_).toSec();
+  if (hold_time < fp_->track_finish_hold_time_) {
+    ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] finish candidate holding: time=" << hold_time
+                             << "/" << fp_->track_finish_hold_time_
+                             << ", move_acc=" << fd_->track_finish_move_acc_
+                             << ", yaw_acc=" << fd_->track_finish_yaw_acc_);
+    return false;
+  }
+
+  return true;
+}
+
+void FastExplorationFSM::publishTrackingFinish() {
+  if (fd_->track_finish_sent_) {
+    return;
+  }
+  std_msgs::Bool msg;
+  msg.data = true;
+  tracking_finish_pub_.publish(msg);
+  fd_->track_finish_sent_ = true;
+  resetTrackingFinishCandidate();
+  ROS_INFO("[TRACK] publish /tracking_finish=true");
+}
+
 void FastExplorationFSM::planTrack() {
   ROS_INFO("\033[1;31mPlan TRACK!\033[0m");
 
   if (!fd_->track_trigger_) {
+    resetTrackingFinishCandidate();
     transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "planTrack:no trigger");
     return;
   }
 
   if (!fd_->track_init_) {
+    resetTrackingFinishCandidate();
     ROS_WARN_THROTTLE(1.0, "[TRACK] Wait tracking target initialization.");
     return;
   }
 
   const Eigen::Vector3d target_vec = fd_->track_pos_ - fd_->odom_pos_;
   if (target_vec.norm() < 1e-3) {
+    resetTrackingFinishCandidate();
     ROS_WARN_THROTTLE(1.0, "[TRACK] Target too close to current position, skip planning.");
     return;
   }
@@ -660,12 +753,21 @@ void FastExplorationFSM::planTrack() {
   const double yaw_err = std::fabs(normalizeAngle(fd_->aim_yaw_ - fd_->odom_yaw_));
   if (pos_err < expl_manager_->ep_->track_replan_dist_ &&
       yaw_err < expl_manager_->ep_->track_yaw_thr_) {
+    if (updateTrackingFinishCandidate(pos_err, yaw_err)) {
+      publishTrackingFinish();
+      return;
+    }
     ROS_WARN_THROTTLE(1.0, "[TRACK] Already close to tracking aim, skip planning.");
+    fd_->local_aim_pos_ = fd_->aim_pos_;
+    fd_->has_rotated_ = true;
+    fd_->last_pub_time_ = ros::Time::now();
+    transitState(MISSION_FSM_STATE::APPROACH_TRACK, "planTrack:already_close_hold");
     return;
   }
 
   const int res = callTrackPlanner(fd_->aim_pos_, fd_->aim_vel_, fd_->aim_yaw_, fd_->path_res_);
   if (res != SUCCEED) {
+    resetTrackingFinishCandidate();
     ROS_WARN_THROTTLE(1.0, "[TRACK] Tracking target not directly reachable yet.");
     return;
   }
@@ -677,6 +779,7 @@ void FastExplorationFSM::planTrack() {
   const bool look_forward = dis_2_aim_2d >= expl_manager_->ep_->track_turn_yaw_dist_;
 
   pubLocalGoal(fd_->path_res_.back(), fd_->aim_yaw_, look_forward, !look_forward);
+  resetTrackingFinishCandidate();
   INFO_MSG_GREEN("[TRACK] [look_forward = " << look_forward << "] aim: "
                  << fd_->path_res_.back().transpose() << ", yaw: " << fd_->aim_yaw_);
 
@@ -689,11 +792,13 @@ void FastExplorationFSM::approachTrack() {
   ROS_INFO_STREAM_THROTTLE(0.5, "\033[1;33mApproach TRACK...\033[0m");
 
   if (!fd_->track_trigger_) {
+    resetTrackingFinishCandidate();
     transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "approachTrack:disable");
     return;
   }
 
   if (!fd_->track_init_) {
+    resetTrackingFinishCandidate();
     transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:wait target");
     return;
   }
@@ -709,18 +814,20 @@ void FastExplorationFSM::approachTrack() {
                            << " yaw err: " << angle_2_aim
                            << " t_cur: " << t_cur);
 
-  if (dis_2_aim < fp_->arrive_dis_thr_ && angle_2_aim < expl_manager_->ep_->track_yaw_thr_) {
-    transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:arrived");
+  if (updateTrackingFinishCandidate(dis_2_aim, angle_2_aim)) {
+    publishTrackingFinish();
     return;
   }
 
   if (t_cur > fp_->replan_thresh3_) {
+    resetTrackingFinishCandidate();
     transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:periodic");
     return;
   }
 
   const Eigen::Vector3d target_vec = fd_->track_pos_ - fd_->odom_pos_;
   if (target_vec.norm() < 1e-3) {
+    resetTrackingFinishCandidate();
     transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:target too close");
     return;
   }
@@ -730,6 +837,7 @@ void FastExplorationFSM::approachTrack() {
   if ((fd_->aim_pos_ - aim_pos_new).norm() > expl_manager_->ep_->track_replan_dist_) {
     INFO_MSG_GREEN("[TRACK] aim_pos_old: " << fd_->aim_pos_.transpose()
                    << " aim_pos_new: " << aim_pos_new.transpose());
+    resetTrackingFinishCandidate();
     transitState(MISSION_FSM_STATE::PLAN_TRACK, "approachTrack:moved");
     return;
   }
@@ -738,6 +846,7 @@ void FastExplorationFSM::approachTrack() {
   if (!fd_->has_rotated_ && dis_2_aim_2d < expl_manager_->ep_->track_turn_yaw_dist_) {
     fd_->has_rotated_ = true;
     fd_->aim_yaw_ = current_dir;
+    resetTrackingFinishCandidate();
     pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, true);
     INFO_MSG_GREEN("[TRACK] Switch to yaw-lock, aim: " << fd_->aim_pos_.transpose()
                    << ", yaw: " << fd_->aim_yaw_);
@@ -747,6 +856,7 @@ void FastExplorationFSM::approachTrack() {
   if (fd_->has_rotated_ &&
       std::fabs(normalizeAngle(current_dir - fd_->aim_yaw_)) > expl_manager_->ep_->track_yaw_thr_) {
     fd_->aim_yaw_ = current_dir;
+    resetTrackingFinishCandidate();
     pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, true);
     INFO_MSG_GREEN("[TRACK] Update yaw-lock, aim: " << fd_->aim_pos_.transpose()
                    << ", yaw: " << fd_->aim_yaw_);
@@ -1646,6 +1756,8 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
         std::unique_lock<std::mutex> lck(mtx_);
         fd_->track_trigger_ = false;
         fd_->track_init_ = false;
+        resetTrackingFinishCandidate();
+        fd_->track_finish_sent_ = false;
         map_->setTarget(fd_->track_pos_, false);
         if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
             md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK)
@@ -1658,7 +1770,12 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
 
       {
         std::unique_lock<std::mutex> lck(mtx_);
+        const bool was_track_trigger = fd_->track_trigger_;
         fd_->track_trigger_ = true;
+        if (!was_track_trigger) {
+          resetTrackingFinishCandidate();
+          fd_->track_finish_sent_ = false;
+        }
         if (msg->has_target_position)
         {
           fd_->track_pos_ = geoPt2Vec3d(msg->target_position);

@@ -55,6 +55,13 @@ struct FSMData
   Eigen::Vector3d         track_pos_;
   bool                    track_trigger_;
   bool                    track_init_;
+  bool                    track_finish_candidate_active_{false};
+  bool                    track_finish_sent_{false};
+  ros::Time               track_finish_candidate_start_time_;
+  Eigen::Vector3d         track_finish_last_pos_;
+  double                  track_finish_last_yaw_{0.0};
+  double                  track_finish_move_acc_{0.0};
+  double                  track_finish_yaw_acc_{0.0};
   bool                    directly_connect_to_goal;  // [gwq] fsm 中关于是否直接连接到目标点的flag （包括从机跟随和Instruct主动控制情况）
   bool                    instruct_directly_to_goal;  // [gwq] Instruct 强制使用ego规划目标点 (相较于前者优先级更高)
 
@@ -107,6 +114,9 @@ struct FSMParam
   bool                    auto_init_scene_graph_{true};
   double                  auto_init_delay_sec_{2.0};
   double                  scene_graph_init_forward_dist_{1.8};
+  double                  track_finish_hold_time_{3.0};
+  double                  track_finish_move_thresh_{0.2};
+  double                  track_finish_yaw_thresh_{0.2};
 };
 
 struct ExplorationData {

@@ -198,6 +198,9 @@
         <param name="tracking/turn_yaw_dist" value="100.0" type="double"/>
         <param name="tracking/yaw_threshold" value="0.15" type="double"/>
         <param name="tracking/detect_error" value="2.0" type="double"/>
+        <param name="tracking/finish_hold_time" value="3.0" type="double"/>
+        <param name="tracking/finish_move_thresh" value="0.2" type="double"/>
+        <param name="tracking/finish_yaw_thresh" value="0.2" type="double"/>
 
         <!-- skeleton -->
         <param name="skeleton/local_x_max" value="4"/>

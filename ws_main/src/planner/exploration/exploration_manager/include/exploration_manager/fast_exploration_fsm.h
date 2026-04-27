@@ -78,6 +78,7 @@ private:
   ros::Publisher ego_goal_pub_, goal_from_station_pub_, perception_data_pub_, instruction_resp_pub_;
   ros::Publisher vis_marker_pub_, vis_path_pub_;
   ros::Publisher fsm_state_pub_;
+  ros::Publisher tracking_finish_pub_;
 
   // LLM related
   MISSION_FSM_STATE stash_state_{MISSION_FSM_STATE::UNKONWN};
@@ -95,6 +96,9 @@ private:
                                 vector<Eigen::Vector3d>& path_res);
   int callTrackPlanner(Eigen::Vector3d& aim_pose, Eigen::Vector3d& aim_vel, double& aim_yaw,
                        vector<Eigen::Vector3d>& path_res);
+  void resetTrackingFinishCandidate();
+  bool updateTrackingFinishCandidate(double dis_2_aim, double angle_2_aim);
+  void publishTrackingFinish();
   
   void transitState(MISSION_FSM_STATE new_state, string pos_call);
   void stashCurStateAndTransit(MISSION_FSM_STATE new_state, string who_called);
