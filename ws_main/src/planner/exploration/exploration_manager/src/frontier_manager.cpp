@@ -54,6 +54,7 @@ FrontierManager::FrontierManager(ros::NodeHandle& nh, const MapInterface::Ptr& m
   nh.param("tracking/dist_far", ep_->track_dist_thr_, 5.0);
   nh.param("tracking/replan_dist", ep_->track_replan_dist_, 0.5);
   nh.param("tracking/turn_yaw_dist", ep_->track_turn_yaw_dist_, 0.5);
+  nh.param("tracking/fly_yaw_threshold", ep_->track_fly_yaw_thr_, 0.8);
   nh.param("tracking/yaw_threshold", ep_->track_yaw_thr_, 0.5);
   nh.param("tracking/detect_error", ep_->track_detect_error_, 1.5);
 

@@ -176,6 +176,7 @@ struct ExplorationParam
   double       track_dist_thr_;
   double       track_replan_dist_;
   double       track_turn_yaw_dist_;
+  double       track_fly_yaw_thr_;
   double       track_yaw_thr_;
   double       track_detect_error_;
 

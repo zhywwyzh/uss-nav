@@ -195,6 +195,7 @@
         <param name="tracking/dist_far" value="20.0" type="double"/>
         <param name="tracking/replan_dist" value="0.25" type="double"/>
         <param name="tracking/turn_yaw_dist" value="100.0" type="double"/>
+        <param name="tracking/fly_yaw_threshold" value="0.8" type="double"/>
         <param name="tracking/yaw_threshold" value="0.15" type="double"/>
         <param name="tracking/detect_error" value="2.0" type="double"/>
         <param name="tracking/finish_hold_time" value="3.0" type="double"/>

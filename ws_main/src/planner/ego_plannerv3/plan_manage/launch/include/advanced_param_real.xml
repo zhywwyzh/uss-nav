@@ -192,10 +192,11 @@
         <param name="exploration/relax_time" value="1.0" type="double"/>
 
         <!-- tracking -->
-        <param name="tracking/track_dist" value="2.5" type="double"/>
+        <param name="tracking/track_dist" value="1.5" type="double"/>
         <param name="tracking/dist_far" value="6.0" type="double"/>
         <param name="tracking/replan_dist" value="0.25" type="double"/>
-        <param name="tracking/turn_yaw_dist" value="100.0" type="double"/>
+        <param name="tracking/turn_yaw_dist" value="2.5" type="double"/>
+        <param name="tracking/fly_yaw_threshold" value="0.1" type="double"/>
         <param name="tracking/yaw_threshold" value="0.15" type="double"/>
         <param name="tracking/detect_error" value="2.0" type="double"/>
         <param name="tracking/finish_hold_time" value="3.0" type="double"/>

@@ -14,6 +14,7 @@ import gc
 import sys
 import threading
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ if str(YOLOE_ROOT) not in sys.path:
 
 from ultralytics import YOLOE  # noqa: E402
 from ultralytics.models.yolo.yoloe.predict_vp import YOLOEVPSegPredictor  # noqa: E402
+from ultralytics.trackers.track import on_predict_start  # noqa: E402
 
 
 def _now() -> float:
@@ -178,9 +180,16 @@ class YoloeTrackEngine:
     def _is_ultralytics_tracker_callback(self, callback) -> bool:
         """判断 callback 是否为 model.track() 自动注册的 tracker 回调。"""
         func = getattr(callback, "func", callback)
+        is_timed_tracker_callback = (
+            getattr(func, "__self__", None) is self
+            and getattr(func, "__name__", "") == "_on_predict_postprocess_end_with_timing"
+        )
         return (
-            getattr(func, "__module__", "") == "ultralytics.trackers.track"
-            and getattr(func, "__name__", "") in {"on_predict_start", "on_predict_postprocess_end"}
+            (
+                getattr(func, "__module__", "") == "ultralytics.trackers.track"
+                and getattr(func, "__name__", "") in {"on_predict_start", "on_predict_postprocess_end"}
+            )
+            or is_timed_tracker_callback
         )
 
     def _clear_ultralytics_tracker_callbacks(self) -> int:
@@ -289,6 +298,114 @@ class YoloeTrackEngine:
         with self.lock:
             return dict(self.latest_result)
 
+    def _register_timed_tracker_callbacks(self, *, persist: bool, timings: dict[str, float]) -> None:
+        """注册带计时的 tracker callback，用于拆分 YOLOE 推理和 tracker 更新耗时。"""
+        self._clear_ultralytics_tracker_callbacks()
+        self.model.add_callback("on_predict_start", partial(on_predict_start, persist=persist))
+        self.model.add_callback(
+            "on_predict_postprocess_end",
+            partial(self._on_predict_postprocess_end_with_timing, persist=persist, timings=timings),
+        )
+
+    def _on_predict_postprocess_end_with_timing(
+        self,
+        predictor: object,
+        persist: bool = False,
+        timings: dict[str, float] | None = None,
+    ) -> None:
+        """执行 Ultralytics tracker 后处理，并记录 tracker callback 的耗时。"""
+        callback_t0 = time.perf_counter()
+        timings = timings if timings is not None else {}
+        path, im0s = predictor.batch[:2]
+
+        is_obb = predictor.args.task == "obb"
+        is_stream = predictor.dataset.mode == "stream"
+        tracker_update_seconds = 0.0
+        for i in range(len(im0s)):
+            tracker = predictor.trackers[i if is_stream else 0]
+            vid_path = predictor.save_dir / Path(path[i]).name
+            if not persist and predictor.vid_path[i if is_stream else 0] != vid_path:
+                tracker.reset()
+                predictor.vid_path[i if is_stream else 0] = vid_path
+
+            det = (predictor.results[i].obb if is_obb else predictor.results[i].boxes).cpu().numpy()
+            if len(det) == 0:
+                continue
+
+            # 这里是 BoT-SORT / ByteTrack 的核心更新入口，单独计时便于和 YOLOE 推理区分。
+            update_t0 = time.perf_counter()
+            tracks = tracker.update(det, im0s[i])
+            tracker_update_seconds += time.perf_counter() - update_t0
+            if len(tracks) == 0:
+                continue
+            idx = tracks[:, -1].astype(int)
+            predictor.results[i] = predictor.results[i][idx]
+
+            update_args = {"obb" if is_obb else "boxes": torch.as_tensor(tracks[:, :-1])}
+            predictor.results[i].update(**update_args)
+
+        timings["tracker_update_ms"] = _ms(tracker_update_seconds)
+        timings["tracker_callback_ms"] = _ms(time.perf_counter() - callback_t0)
+
+    def _track_with_timing(
+        self,
+        *,
+        source: np.ndarray,
+        tracker: str,
+        conf: float,
+        iou: float,
+        imgsz: int,
+        timings: dict[str, float],
+    ):
+        """调用 Ultralytics predict(track mode)，并用自定义 callback 统计 tracker 耗时。"""
+        self._register_timed_tracker_callbacks(persist=True, timings=timings)
+        return self.model.predict(
+            source=source,
+            tracker=tracker,
+            conf=conf,
+            iou=iou,
+            imgsz=imgsz,
+            device=self.device,
+            verbose=False,
+            batch=1,
+            mode="track",
+        )
+
+    def _record_yoloe_speed(self, result, timings: dict[str, float]) -> None:
+        """从 Ultralytics Result.speed 中提取 YOLOE 预处理、推理和后处理耗时。"""
+        speed = getattr(result, "speed", None) or {}
+        if not speed:
+            return
+        timings["yoloe_preprocess_ms"] = round(float(speed.get("preprocess", 0.0)), 3)
+        timings["yoloe_inference_ms"] = round(float(speed.get("inference", 0.0)), 3)
+        timings["yoloe_postprocess_ms"] = round(float(speed.get("postprocess", 0.0)), 3)
+
+    def _log_timing(
+        self,
+        *,
+        frame_seq: int,
+        label: str,
+        mode: str,
+        timings: dict[str, float],
+    ) -> None:
+        """打印单帧关键耗时，便于观察 YOLOE 推理和 tracking 更新开销。"""
+        print(
+            "[YOLOE_TIMING]",
+            f"frame_seq={frame_seq}",
+            f"label={label!r}",
+            f"mode={mode}",
+            f"yoloe_preprocess_ms={timings.get('yoloe_preprocess_ms', 0.0)}",
+            f"yoloe_inference_ms={timings.get('yoloe_inference_ms', 0.0)}",
+            f"yoloe_postprocess_ms={timings.get('yoloe_postprocess_ms', 0.0)}",
+            f"tracker_update_ms={timings.get('tracker_update_ms', 0.0)}",
+            f"tracker_callback_ms={timings.get('tracker_callback_ms', 0.0)}",
+            f"model_predict_ms={timings.get('model_predict_ms', 0.0)}",
+            f"model_track_ms={timings.get('model_track_ms', 0.0)}",
+            f"total_ms={timings.get('total_ms', 0.0)}",
+            f"candidate_count={int(timings.get('candidate_count', 0.0))}",
+            flush=True,
+        )
+
     def track(self, req: TrackRequest) -> dict[str, Any]:
         total_t0 = time.perf_counter()
         timings: dict[str, float] = {}
@@ -376,10 +493,12 @@ class YoloeTrackEngine:
                         self.target_id = None
 
             t0 = time.perf_counter()
+            timing_mode = "track"
 
             if new_target_started:
                 # 关键：新 label 的第一帧只做检测，不做 tracking。
                 # label/reset 切换时已重载模型，避免 predict() 仍执行旧 BoT-SORT / ByteTrack 状态。
+                timing_mode = "predict"
                 results = self.model.predict(
                     source=image_rgb,
                     conf=conf,
@@ -390,25 +509,25 @@ class YoloeTrackEngine:
                 )
                 timings["model_predict_ms"] = _ms(time.perf_counter() - t0)
             else:
-                results = self.model.track(
+                results = self._track_with_timing(
                     source=image_rgb,
-                    persist=True,
                     tracker=tracker_cfg,
                     conf=conf,
                     iou=iou,
                     imgsz=imgsz,
-                    device=self.device,
-                    verbose=False,
+                    timings=timings,
                 )
                 timings["model_track_ms"] = _ms(time.perf_counter() - t0)
 
             result = results[0] if results else None
+            self._record_yoloe_speed(result, timings)
             t0 = time.perf_counter()
             candidates = self._extract_candidates(result, image_rgb)
             timings["extract_candidates_ms"] = _ms(time.perf_counter() - t0)
             timings["candidate_count"] = float(len(candidates))
             if not candidates:
                 timings["total_ms"] = _ms(time.perf_counter() - total_t0)
+                self._log_timing(frame_seq=frame_seq, label=label, mode=timing_mode, timings=timings)
                 return self._mark_lost(
                     stamp=stamp,
                     frame_seq=frame_seq,
@@ -421,6 +540,7 @@ class YoloeTrackEngine:
             timings["select_target_ms"] = _ms(time.perf_counter() - t0)
             if selected is None:
                 timings["total_ms"] = _ms(time.perf_counter() - total_t0)
+                self._log_timing(frame_seq=frame_seq, label=label, mode=timing_mode, timings=timings)
                 return self._mark_lost(
                     stamp=stamp,
                     frame_seq=frame_seq,
@@ -441,6 +561,7 @@ class YoloeTrackEngine:
             self.state = "active"
             self.reason = ""
             timings["total_ms"] = _ms(time.perf_counter() - total_t0)
+            self._log_timing(frame_seq=frame_seq, label=label, mode=timing_mode, timings=timings)
             self.latest_result = self._make_result(
                 ok=True,
                 stamp=stamp,

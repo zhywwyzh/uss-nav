@@ -776,14 +776,21 @@ void FastExplorationFSM::planTrack() {
   fd_->local_aim_pos_ = fd_->aim_pos_;
 
   const double dis_2_aim_2d = (fd_->aim_pos_ - fd_->odom_pos_).head(2).norm();
-  const bool look_forward = dis_2_aim_2d >= expl_manager_->ep_->track_turn_yaw_dist_;
+  const double yaw_err = std::fabs(normalizeAngle(fd_->aim_yaw_ - fd_->odom_yaw_));
+  // 远距离 yaw 偏差过大时提前按目标方向边飞边转；近距离 yaw-lock 保持快速转向以尽快找回目标视野。
+  const bool near_yaw_lock = dis_2_aim_2d < expl_manager_->ep_->track_turn_yaw_dist_;
+  const bool far_yaw_align = !near_yaw_lock && yaw_err > expl_manager_->ep_->track_fly_yaw_thr_;
+  const bool look_forward = !(near_yaw_lock || far_yaw_align);
+  const bool yaw_low_speed = far_yaw_align;
 
-  pubLocalGoal(fd_->path_res_.back(), fd_->aim_yaw_, look_forward, !look_forward);
+  pubLocalGoal(fd_->path_res_.back(), fd_->aim_yaw_, look_forward, yaw_low_speed);
   resetTrackingFinishCandidate();
-  INFO_MSG_GREEN("[TRACK] [look_forward = " << look_forward << "] aim: "
+  INFO_MSG_GREEN("[TRACK] [look_forward = " << look_forward
+                 << ", yaw_low_speed = " << yaw_low_speed
+                 << ", yaw_err = " << yaw_err << "] aim: "
                  << fd_->path_res_.back().transpose() << ", yaw: " << fd_->aim_yaw_);
 
-  fd_->has_rotated_ = !look_forward;
+  fd_->has_rotated_ = near_yaw_lock;
   fd_->last_pub_time_ = ros::Time::now();
   transitState(MISSION_FSM_STATE::APPROACH_TRACK, "planTrack");
 }
@@ -847,7 +854,7 @@ void FastExplorationFSM::approachTrack() {
     fd_->has_rotated_ = true;
     fd_->aim_yaw_ = current_dir;
     resetTrackingFinishCandidate();
-    pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, true);
+    pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, false);
     INFO_MSG_GREEN("[TRACK] Switch to yaw-lock, aim: " << fd_->aim_pos_.transpose()
                    << ", yaw: " << fd_->aim_yaw_);
     return;
@@ -857,7 +864,7 @@ void FastExplorationFSM::approachTrack() {
       std::fabs(normalizeAngle(current_dir - fd_->aim_yaw_)) > expl_manager_->ep_->track_yaw_thr_) {
     fd_->aim_yaw_ = current_dir;
     resetTrackingFinishCandidate();
-    pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, true);
+    pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false, false);
     INFO_MSG_GREEN("[TRACK] Update yaw-lock, aim: " << fd_->aim_pos_.transpose()
                    << ", yaw: " << fd_->aim_yaw_);
   }
