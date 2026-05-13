@@ -776,7 +776,6 @@ void FastExplorationFSM::planTrack() {
   fd_->local_aim_pos_ = fd_->aim_pos_;
 
   const double dis_2_aim_2d = (fd_->aim_pos_ - fd_->odom_pos_).head(2).norm();
-  const double yaw_err = std::fabs(normalizeAngle(fd_->aim_yaw_ - fd_->odom_yaw_));
   // 远距离 yaw 偏差过大时提前按目标方向边飞边转；近距离 yaw-lock 保持快速转向以尽快找回目标视野。
   const bool near_yaw_lock = dis_2_aim_2d < expl_manager_->ep_->track_turn_yaw_dist_;
   const bool far_yaw_align = !near_yaw_lock && yaw_err > expl_manager_->ep_->track_fly_yaw_thr_;
