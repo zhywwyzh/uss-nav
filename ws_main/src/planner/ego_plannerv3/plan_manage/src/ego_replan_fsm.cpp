@@ -52,6 +52,7 @@ namespace ego_planner
     odom_acc_.setZero();
     last_odom_vel_.setZero();
     odom_acc_ready_ = false;
+    traj_server_yaw_synced_ = false;
     last_odom_stamp_ = ros::Time(0);
 
     initEgoPlanResult();
@@ -428,7 +429,7 @@ namespace ego_planner
       state_pub_.publish(s_m);
     }
 
-    static string state_str[9] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START", "CRASH_RECOVER"};
+    static string state_str[10] = {"INIT", "WAIT_TARGET", "HANDLE_YAW", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START", "CRASH_RECOVER", "WAIT_YAW"};
     int pre_s = int(exec_state_);
     exec_state_ = new_state;
     cout << "[" + pos_call + "]"
@@ -437,7 +438,7 @@ namespace ego_planner
 
   void EGOReplanFSM::printFSMExecState() const
   {
-    static string state_str[9] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START", "CRASH_RECOVER"};
+    static string state_str[10] = {"INIT", "WAIT_TARGET", "HANDLE_YAW", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START", "CRASH_RECOVER", "WAIT_YAW"};
 
     cout << "\r[FSM]: state: " + state_str[int(exec_state_)] << ", Drone:" << planner_manager_->pp_.drone_id;
 
@@ -890,6 +891,8 @@ namespace ego_planner
     pending_goal_finish_trigger_ = false;
     goal_finish_stable_start_time_ = ros::Time(0);
     cur_traj_to_cur_target_ = false;
+    // 新目标/新局部目标开始时，用真实 odom yaw 对齐 TrajServer 内部 yaw 状态。
+    traj_server_.syncYawFromOdom(odom_yaw_, "planNextWaypoint");
 
     if (exec_state_ == WAIT_TARGET)
     {
@@ -901,8 +904,7 @@ namespace ego_planner
         yaw_cmd_.yaw_reach = false; // this will work only if the drone state is WAIT_TARGET
         yaw_cmd_.cmd_time = ros::Time::now();
         yaw_cmd_.des_yaw = des_yaw;
-        Eigen::Matrix3d M = odom_q_.matrix();
-        traj_server_.setYaw(des_yaw, atan2(M(1, 0), M(0, 0)), odom_pos_, true, yaw_low_speed);
+        traj_server_.setYaw(des_yaw, odom_yaw_, odom_pos_, true, yaw_low_speed);
       }
 
       if (!look_forward)
@@ -910,8 +912,7 @@ namespace ego_planner
         yaw_cmd_.yaw_reach = false; // this will work only if the drone state is WAIT_TARGET
         yaw_cmd_.cmd_time = ros::Time::now();
         yaw_cmd_.des_yaw = next_yaw;
-        Eigen::Matrix3d M = odom_q_.matrix();
-        traj_server_.setYaw(next_yaw, atan2(M(1, 0), M(0, 0)), odom_pos_, false, yaw_low_speed);
+        traj_server_.setYaw(next_yaw, odom_yaw_, odom_pos_, false, yaw_low_speed);
       }
     }
 
@@ -920,8 +921,7 @@ namespace ego_planner
       yaw_cmd_.yaw_reach = false; // this will work only if the drone state is WAIT_TARGET
       yaw_cmd_.cmd_time = ros::Time::now();
       yaw_cmd_.des_yaw = next_yaw;
-      Eigen::Matrix3d M = odom_q_.matrix();
-      traj_server_.setYaw(next_yaw, atan2(M(1, 0), M(0, 0)), odom_pos_, false, yaw_low_speed);
+      traj_server_.setYaw(next_yaw, odom_yaw_, odom_pos_, false, yaw_low_speed);
     }
     else
     {
@@ -1122,7 +1122,6 @@ namespace ego_planner
     initEgoPlanResult();
     Eigen::Vector3d end_wp(msg->goal[0], msg->goal[1], msg->goal[2]);
 
-    traj_server_.setYawtoGiven(msg->yaw);
     if (planNextWaypoint(end_wp, msg->yaw, msg->look_forward))
       // if (planNextWaypoint(end_wp))
     {
@@ -1280,6 +1279,11 @@ namespace ego_planner
       yaw_err += 2 * M_PI;
 
     odom_yaw_ = yaw;
+    if (!traj_server_yaw_synced_)
+    {
+      traj_server_.syncYawFromOdom(odom_yaw_, "first_odom");
+      traj_server_yaw_synced_ = true;
+    }
 
     if (!yaw_cmd_.yaw_reach)
     {

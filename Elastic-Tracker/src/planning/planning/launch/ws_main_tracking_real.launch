@@ -18,7 +18,7 @@
   <arg name="rhos_visibility" default="10000.0"/>
   <arg name="rho_tracking" default="1000.0"/>
   <arg name="plan_hz" default="20"/>
-  <arg name="hover_finish_hold_time" default="2.0"/>
+  <arg name="hover_finish_hold_time" default="3.0"/>
 
   <group ns="$(arg drone_ns)">
     <node pkg="nodelet" type="nodelet" name="manager" args="manager" output="screen">
@@ -63,8 +63,8 @@
       <param name="hover_finish_enable" value="true"/>
 
       <param name="K" value="8"/>
-      <param name="vmax" value="3.0"/>
-      <param name="amax" value="6.0"/>
+      <param name="vmax" value="1.0"/>
+      <param name="amax" value="1.0"/>
       <param name="rhoT" value="100.0"/>
       <param name="rhoP" value="10000.0"/>
       <param name="rhoV" value="1000.0"/>

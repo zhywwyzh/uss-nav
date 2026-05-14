@@ -50,13 +50,31 @@ namespace ego_planner
 
   void TrajServer::setYaw(double des_yaw, double cur_yaw, Eigen::Vector3d pos, bool look_forward, bool low_speed)
   {
+    (void)cur_yaw;
     // std::cout << "[TrajServer] setYaw : " << des_yaw << ", cur_yaw: " << cur_yaw << ", pos: " << pos.transpose() << ", look_forward: " << look_forward << ", low_speed: " << low_speed << std::endl;
     yaw_given_.yaw = des_yaw;
     yaw_given_.pos = pos;
     yaw_given_.reach_given_yaw_ = false;
     yaw_given_.look_forward = look_forward;
     yaw_given_.low_speed = low_speed;
-    // last_yaw_ = cur_yaw;
+    // 当前真实 yaw 由 EGOReplanFSM 在新目标边界调用 syncYawFromOdom() 同步，避免高频 setYaw 破坏 yaw 限速递推。
+  }
+
+  void TrajServer::syncYawFromOdom(const double yaw, const std::string& source)
+  {
+    double normalized_yaw = yaw;
+    while (normalized_yaw > M_PI) normalized_yaw -= 2 * M_PI;
+    while (normalized_yaw < -M_PI) normalized_yaw += 2 * M_PI;
+
+    last_yaw_ = normalized_yaw;
+    last_yawdot_ = 0.0;
+    time_rec_.has_init = false;
+    if (source.empty()) {
+      ROS_INFO_STREAM_THROTTLE(0.5, "[TrajServer] sync yaw from odom: " << normalized_yaw);
+    } else {
+      ROS_INFO_STREAM_THROTTLE(0.5, "[TrajServer] sync yaw from odom: " << normalized_yaw
+                               << " source=" << source);
+    }
   }
 
   void TrajServer::setTrajectory(poly_traj::Trajectory &traj, double start_time)
@@ -196,11 +214,6 @@ namespace ego_planner
 
   void TrajServer::resetLastPos(const Eigen::Vector3d pos) {
     last_pos_ = pos;
-  }
-
-  void TrajServer::setYawtoGiven(const double yaw){
-    last_yaw_    = yaw;
-    last_yawdot_ = 0.0;
   }
 
   void TrajServer::cmdThread(void *obj)

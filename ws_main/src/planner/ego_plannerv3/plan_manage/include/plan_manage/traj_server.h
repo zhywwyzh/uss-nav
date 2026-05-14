@@ -7,6 +7,7 @@
 #include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
 #include <perception_utils/perception_utils.h>
+#include <string>
 
 namespace ego_planner
 {
@@ -75,9 +76,9 @@ namespace ego_planner
         void setTrajectory(poly_traj::Trajectory &traj, double start_time);
         void setYaw(double des_yaw, double cur_yaw, Eigen::Vector3d pos, bool look_forward = true, bool low_speed = false);
         void resetYawLookforward(Eigen::Vector3d pos);
+        void syncYawFromOdom(const double yaw, const std::string& source = "");
         void feedDog();
         void resetLastPos(const Eigen::Vector3d pos);
-        void setYawtoGiven(const double yaw);
 
         YAW_GIVEN yaw_given_;
 

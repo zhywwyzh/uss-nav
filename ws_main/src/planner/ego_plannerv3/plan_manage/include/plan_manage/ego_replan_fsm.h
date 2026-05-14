@@ -125,6 +125,7 @@ namespace ego_planner
     Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_, odom_omega_;
     Eigen::Vector3d last_odom_vel_;
     bool odom_acc_ready_{false};
+    bool traj_server_yaw_synced_{false};
     ros::Time last_odom_stamp_{ros::Time(0)};
     double odom_yaw_; // odometry state
     Eigen::Quaterniond odom_q_;
