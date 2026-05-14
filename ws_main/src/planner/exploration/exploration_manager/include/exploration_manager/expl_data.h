@@ -5,6 +5,7 @@
 #include <Eigen/Geometry>
 #include <active_perception/ftr_data_structure.h>
 #include <sys/types.h>
+#include <string>
 #include <vector>
 #include <quadrotor_msgs/PerceptionMsg.h>
 #include <scene_graph/scene_graph.h>
@@ -117,6 +118,14 @@ struct FSMParam
   double                  track_finish_hold_time_{3.0};
   double                  track_finish_move_thresh_{0.2};
   double                  track_finish_yaw_thresh_{0.2};
+  std::string             tracking_backend_{"ego"};
+  std::string             tracking_target_odom_topic_{"/target_ekf_odom"};
+  std::string             planner_cmd_mux_mode_topic_{"/planner_mux/mode"};
+  std::string             planner_cmd_mux_ego_mode_{"ego"};
+  std::string             planner_cmd_mux_elastic_mode_{"elastic"};
+  std::string             elastic_tracker_trigger_topic_{"/triger"};
+  std::string             elastic_tracker_finish_topic_{"/elastic_tracker/tracking_finish"};
+  std::string             elastic_tracker_stop_topic_{"/elastic_tracker/stop"};
 };
 
 struct ExplorationData {

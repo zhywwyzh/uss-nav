@@ -1,0 +1,96 @@
+<launch>
+  <arg name="drone_ns" default="drone0"/>
+  <arg name="ws_main_map_topic" default="/drone_0_ego_planner_node/grid_map/occupancy"/>
+  <arg name="odom_topic" default="/unity_odom_sync"/>
+  <arg name="target_topic" default="/target_ekf_odom"/>
+  <arg name="gridmap_inflate_topic" default="gridmap_inflate"/>
+  <arg name="position_cmd_topic" default="/planner_mux/elastic_position_cmd"/>
+  <arg name="tracking_finish_topic" default="/elastic_tracker/tracking_finish"/>
+  <arg name="stop_tracking_topic" default="/elastic_tracker/stop"/>
+
+  <arg name="map_resolution" default="0.15"/>
+  <arg name="map_local_x" default="20.0"/>
+  <arg name="map_local_y" default="20.0"/>
+  <arg name="map_local_z" default="5.0"/>
+  <arg name="inflate_size" default="0.15"/>
+  <arg name="inflate_num" default="3"/>
+
+  <arg name="rhos_visibility" default="10000.0"/>
+  <arg name="rho_tracking" default="1000.0"/>
+  <arg name="plan_hz" default="20"/>
+  <arg name="hover_finish_hold_time" default="2.0"/>
+
+  <group ns="$(arg drone_ns)">
+    <node pkg="nodelet" type="nodelet" name="manager" args="manager" output="screen">
+      <param name="num_worker_threads" value="16"/>
+    </node>
+
+    <node pkg="mapping" type="ws_main_map_adapter" name="ws_main_map_adapter" output="screen">
+      <remap from="~occupancy" to="$(arg ws_main_map_topic)"/>
+      <remap from="~odom" to="$(arg odom_topic)"/>
+      <remap from="~target" to="$(arg target_topic)"/>
+      <remap from="~gridmap_inflate" to="$(arg gridmap_inflate_topic)"/>
+
+      <param name="resolution" value="$(arg map_resolution)"/>
+      <param name="local_x" value="$(arg map_local_x)"/>
+      <param name="local_y" value="$(arg map_local_y)"/>
+      <param name="local_z" value="$(arg map_local_z)"/>
+      <param name="inflate_size" value="$(arg inflate_size)"/>
+      <param name="inflate_num" value="$(arg inflate_num)"/>
+      <param name="unknown_as_free" value="true"/>
+      <param name="publish_esdf_placeholder" value="false"/>
+      <param name="use_mask" value="true"/>
+      <param name="target_mask_x" value="0.5"/>
+      <param name="target_mask_y" value="0.5"/>
+      <param name="target_mask_z" value="1.0"/>
+      <param name="target_timeout" value="0.5"/>
+    </node>
+
+    <node pkg="nodelet" type="nodelet" name="planning" args="load planning/Nodelet manager" output="screen">
+      <remap from="~odom" to="$(arg odom_topic)"/>
+      <remap from="~gridmap_inflate" to="$(arg gridmap_inflate_topic)"/>
+      <remap from="~heartbeat" to="heartbeat"/>
+      <remap from="~trajectory" to="trajectory"/>
+      <remap from="~replanState" to="replanState"/>
+      <remap from="~target" to="$(arg target_topic)"/>
+      <remap from="~triger" to="/triger"/>
+      <remap from="~land_triger" to="/land_triger"/>
+      <remap from="~tracking_finish" to="$(arg tracking_finish_topic)"/>
+      <remap from="~stop_tracking" to="$(arg stop_tracking_topic)"/>
+
+      <param name="plan_hz" value="$(arg plan_hz)"/>
+      <param name="hover_finish_hold_time" value="$(arg hover_finish_hold_time)"/>
+      <param name="hover_finish_enable" value="true"/>
+
+      <param name="K" value="8"/>
+      <param name="vmax" value="1.0"/>
+      <param name="amax" value="1.0"/>
+      <param name="rhoT" value="100.0"/>
+      <param name="rhoP" value="10000.0"/>
+      <param name="rhoV" value="1000.0"/>
+      <param name="rhoA" value="1000.0"/>
+      <param name="rhoTracking" value="$(arg rho_tracking)"/>
+      <param name="rhosVisibility" value="$(arg rhos_visibility)"/>
+      <param name="theta_clearance" value="0.8"/>
+      <param name="clearance_d" value="0.2"/>
+      <param name="tolerance_d" value="0.3"/>
+      <param name="tracking_dist" value="2.5"/>
+      <param name="tracking_dur" value="3.0"/>
+      <param name="tracking_dt" value="0.2"/>
+      <param name="debug" value="false"/>
+
+      <param name="prediction/rho_a" value="1.0"/>
+      <param name="prediction/vmax" value="4.0"/>
+    </node>
+
+    <node pkg="planning" name="traj_server" type="traj_server" output="screen">
+      <remap from="~position_cmd" to="$(arg position_cmd_topic)"/>
+      <remap from="~trajectory" to="trajectory"/>
+      <remap from="~heartbeat" to="heartbeat"/>
+      <remap from="~odom" to="$(arg odom_topic)"/>
+      <remap from="~triger" to="/triger"/>
+      <remap from="~stop_tracking" to="$(arg stop_tracking_topic)"/>
+      <param name="time_forward" value="1.0" type="double"/>
+    </node>
+  </group>
+</launch>

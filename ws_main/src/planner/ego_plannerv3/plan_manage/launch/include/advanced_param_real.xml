@@ -15,6 +15,13 @@
     <arg name="flight_type"/>
     <arg name="use_multitopology_trajs"/>
     <arg name="drone_id"/>
+    <arg name="tracking_backend" default="ego"/>
+    <arg name="tracking_target_odom_topic" default="/target_ekf_odom"/>
+    <arg name="planner_cmd_mux_ego_topic" default="/planner_mux/ego_position_cmd"/>
+    <arg name="planner_cmd_mux_mode_topic" default="/planner_mux/mode"/>
+    <arg name="elastic_tracker_trigger_topic" default="/triger"/>
+    <arg name="elastic_tracker_finish_topic" default="/elastic_tracker/tracking_finish"/>
+    <arg name="elastic_tracker_stop_topic" default="/elastic_tracker/stop"/>
     <!-- main node -->
     <!-- <node pkg="ego_planner" name="drone_$(arg drone_id)_ego_planner_node" type="ego_planner_node" output="screen" launch-prefix="valgrind"> -->
     <node pkg="exploration_manager" name="drone_$(arg drone_id)_ego_planner_node" type="exploration_node" output="screen">
@@ -34,7 +41,7 @@
         <remap from="~grid_map/cloud" to="$(arg cloud_topic)"/>
         <remap from="~grid_map/pose"   to = "/drone_$(arg drone_id)_$(arg camera_pose_topic)"/>
         <remap from="~grid_map/depth" to = "/drone_$(arg drone_id)_$(arg depth_topic)"/>
-        <remap from="/position_cmd" to="/setpoint_cmd"/>
+        <remap from="/position_cmd" to="$(arg planner_cmd_mux_ego_topic)"/>
         <remap from="/tracking_target" to="/target_dist_calculator/detect_out"/>
 
         <!-- traj_server -->
@@ -192,6 +199,14 @@
         <param name="exploration/relax_time" value="1.0" type="double"/>
 
         <!-- tracking -->
+        <param name="tracking/backend" value="$(arg tracking_backend)" type="string"/>
+        <param name="tracking/target_odom_topic" value="$(arg tracking_target_odom_topic)" type="string"/>
+        <param name="planner_cmd_mux/mode_topic" value="$(arg planner_cmd_mux_mode_topic)" type="string"/>
+        <param name="planner_cmd_mux/ego_mode" value="ego" type="string"/>
+        <param name="planner_cmd_mux/elastic_mode" value="elastic" type="string"/>
+        <param name="elastic_tracker/trigger_topic" value="$(arg elastic_tracker_trigger_topic)" type="string"/>
+        <param name="elastic_tracker/finish_topic" value="$(arg elastic_tracker_finish_topic)" type="string"/>
+        <param name="elastic_tracker/stop_topic" value="$(arg elastic_tracker_stop_topic)" type="string"/>
         <param name="tracking/track_dist" value="1.5" type="double"/>
         <param name="tracking/dist_far" value="6.0" type="double"/>
         <param name="tracking/replan_dist" value="0.25" type="double"/>

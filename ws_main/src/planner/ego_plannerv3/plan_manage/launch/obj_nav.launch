@@ -7,6 +7,10 @@
     <arg name="init_z" value="1.0"/>
     <arg name="odom_topic" value="visual_slam/odom" />
     <arg name="enable_keyboard_ctrl" value="true" />
+    <arg name="tracking_backend" default="elastic_tracker" /> <!-- ego / elastic_tracker -->
+    <arg name="tracking_target_odom_topic" default="/target_ekf_odom" />
+    <arg name="elastic_tracker_finish_topic" default="/elastic_tracker/tracking_finish" />
+    <arg name="elastic_tracker_stop_topic" default="/elastic_tracker/stop" />
 
 
     <!-- map -->
@@ -73,6 +77,10 @@
         <arg name="map_size_y" value="$(arg map_size_y)"/>
         <arg name="map_size_z" value="$(arg map_size_z)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="tracking_backend" value="$(arg tracking_backend)"/>
+        <arg name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)"/>
+        <arg name="elastic_tracker_finish_topic" value="$(arg elastic_tracker_finish_topic)"/>
+        <arg name="elastic_tracker_stop_topic" value="$(arg elastic_tracker_stop_topic)"/>
 
         <!-- MANUAL_TARGET  = 1, // Set aim in rviz
              EXPLORE_TARGET = 2, // Get aim from Exploration 

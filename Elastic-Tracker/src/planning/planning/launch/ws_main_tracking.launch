@@ -1,0 +1,3 @@
+<launch>
+  <include file="$(find planning)/launch/ws_main_tracking_sim.launch"/>
+</launch>

@@ -21,8 +21,8 @@ class WsMainMapAdapter {
     nh_.param("local_x", local_x, 20.0);
     nh_.param("local_y", local_y, 20.0);
     nh_.param("local_z", local_z, 5.0);
-    nh_.param("inflate_size", inflate_size_, 0);
-    nh_.param("self_inflate_size", self_inflate_size_, 3);
+    nh_.param("inflate_size", inflate_size_, 0.15);
+    nh_.param("inflate_num", inflate_num_, 3);
     nh_.param("unknown_as_free", unknown_as_free_, true);
     nh_.param("publish_esdf_placeholder", publish_esdf_placeholder_, false);
     nh_.param("use_mask", use_mask_, true);
@@ -115,41 +115,40 @@ class WsMainMapAdapter {
     }
   }
 
-  std::vector<int8_t> inflateMap(const std::vector<int8_t>& raw_data) const {
-    if (self_inflate_size_ <= 0) {
-      return raw_data;
+  void markOccupied(std::vector<int8_t>& data,
+                    const Eigen::Vector3d& pos,
+                    int offset_x,
+                    int offset_y,
+                    int offset_z) const {
+    int local_x, local_y, local_z;
+    const Eigen::Vector3i id = pos2idx(pos);
+    if (!isInLocalGrid(id, offset_x, offset_y, offset_z, local_x, local_y, local_z)) {
+      return;
+    }
+    data[linearIndex(local_x, local_y, local_z)] = 1;
+  }
+
+  void markInflatedPoint(std::vector<int8_t>& data,
+                         const Eigen::Vector3d& pos,
+                         int offset_x,
+                         int offset_y,
+                         int offset_z) const {
+    markOccupied(data, pos, offset_x, offset_y, offset_z);
+    if (inflate_size_ <= 0.0 || inflate_num_ <= 0) {
+      return;
     }
 
-    std::vector<int8_t> inflated_data = raw_data;
-    for (int x = 0; x < size_x_; ++x) {
-      for (int y = 0; y < size_y_; ++y) {
-        for (int z = 0; z < size_z_; ++z) {
-          if (raw_data[linearIndex(x, y, z)] != 1) {
-            continue;
-          }
-          for (int dx = -self_inflate_size_; dx <= self_inflate_size_; ++dx) {
-            const int nx = x + dx;
-            if (nx < 0 || nx >= size_x_) {
-              continue;
-            }
-            for (int dy = -self_inflate_size_; dy <= self_inflate_size_; ++dy) {
-              const int ny = y + dy;
-              if (ny < 0 || ny >= size_y_) {
-                continue;
-              }
-              for (int dz = -self_inflate_size_; dz <= self_inflate_size_; ++dz) {
-                const int nz = z + dz;
-                if (nz < 0 || nz >= size_z_) {
-                  continue;
-                }
-                inflated_data[linearIndex(nx, ny, nz)] = 1;
-              }
-            }
-          }
+    // 按真实距离生成膨胀采样点，再重新映射到局部栅格，避免直接按栅格索引固定偏移。
+    for (int ix = -inflate_num_; ix <= inflate_num_; ++ix) {
+      for (int iy = -inflate_num_; iy <= inflate_num_; ++iy) {
+        for (int iz = -inflate_num_; iz <= inflate_num_; ++iz) {
+          const Eigen::Vector3d offset(ix * inflate_size_,
+                                       iy * inflate_size_,
+                                       iz * inflate_size_);
+          markOccupied(data, pos + offset, offset_x, offset_y, offset_z);
         }
       }
     }
-    return inflated_data;
   }
 
   void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg) {
@@ -167,7 +166,7 @@ class WsMainMapAdapter {
     grid_msg.header.stamp = msg->header.stamp;
     grid_msg.header.frame_id = msg->header.frame_id.empty() ? "world" : msg->header.frame_id;
     grid_msg.resolution = resolution_;
-    grid_msg.inflate_size = self_inflate_size_;
+    grid_msg.inflate_size = inflate_num_;
     grid_msg.size_x = size_x_;
     grid_msg.size_y = size_y_;
     grid_msg.size_z = size_z_;
@@ -181,21 +180,16 @@ class WsMainMapAdapter {
     pcl::PointCloud<pcl::PointXYZ> cloud;
     pcl::fromROSMsg(*msg, cloud);
 
-    int local_x, local_y, local_z;
     for (const auto& point : cloud.points) {
       Eigen::Vector3d pos(point.x, point.y, point.z);
       if (pos.array().isNaN().any()) {
         continue;
       }
-      const Eigen::Vector3i id = pos2idx(pos);
-      if (!isInLocalGrid(id, offset_x, offset_y, offset_z, local_x, local_y, local_z)) {
-        continue;
-      }
-      raw_data[linearIndex(local_x, local_y, local_z)] = 1;
+      markInflatedPoint(raw_data, pos, offset_x, offset_y, offset_z);
     }
 
     clearTargetMask(raw_data, offset_x, offset_y, offset_z);
-    grid_msg.data = inflateMap(raw_data);
+    grid_msg.data = raw_data;
     if (publish_esdf_placeholder_) {
       grid_msg.esdf.assign(size_x_ * size_y_ * size_z_, 0.0);
     }
@@ -211,8 +205,8 @@ class WsMainMapAdapter {
 
   double resolution_;
   Eigen::Vector3d local_size_;
-  int inflate_size_;
-  int self_inflate_size_;
+  double inflate_size_;
+  int inflate_num_;
   bool unknown_as_free_;
   bool publish_esdf_placeholder_;
   bool use_mask_;

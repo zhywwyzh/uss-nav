@@ -7,6 +7,7 @@
 #include <quadrotor_msgs/ReplanState.h>
 #include <ros/package.h>
 #include <ros/ros.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
 #include <traj_opt/traj_opt.h>
 
@@ -25,10 +26,10 @@ Eigen::IOFormat CommaInitFmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ",
 class Nodelet : public nodelet::Nodelet {
  private:
   std::thread initThread_;
-  ros::Subscriber gridmap_sub_, odom_sub_, target_sub_, triger_sub_, land_triger_sub_;
+  ros::Subscriber gridmap_sub_, odom_sub_, target_sub_, triger_sub_, land_triger_sub_, stop_tracking_sub_;
   ros::Timer plan_timer_;
 
-  ros::Publisher traj_pub_, heartbeat_pub_, replanState_pub_;
+  ros::Publisher traj_pub_, heartbeat_pub_, replanState_pub_, tracking_finish_pub_;
 
   std::shared_ptr<mapping::OccGridMap> gridmapPtr_;
   std::shared_ptr<env::Env> envPtr_;
@@ -49,12 +50,16 @@ class Nodelet : public nodelet::Nodelet {
   quadrotor_msgs::OccMap3d occmap_msg_;
 
   double tracking_dur_, tracking_dist_, tolerance_d_;
+  double hover_finish_hold_time_ = 2.0;
+  bool hover_finish_enable_ = true;
 
   Trajectory traj_poly_;
   ros::Time replan_stamp_;
+  ros::Time hover_finish_start_time_;
   int traj_id_ = 0;
   bool wait_hover_ = true;
   bool force_hover_ = true;
+  bool tracking_finish_sent_ = false;
 
   nav_msgs::Odometry odom_msg_, target_msg_;
   quadrotor_msgs::OccMap3d map_msg_;
@@ -108,6 +113,8 @@ class Nodelet : public nodelet::Nodelet {
   void triger_callback(const geometry_msgs::PoseStampedConstPtr& msgPtr) {
     goal_ << msgPtr->pose.position.x, msgPtr->pose.position.y, 0.9;
     triger_received_ = true;
+    hover_finish_start_time_ = ros::Time(0);
+    tracking_finish_sent_ = false;
   }
 
   void land_triger_callback(const geometry_msgs::PoseStampedConstPtr& msgPtr) {
@@ -119,6 +126,59 @@ class Nodelet : public nodelet::Nodelet {
     land_q_.y() = msgPtr->pose.orientation.y;
     land_q_.z() = msgPtr->pose.orientation.z;
     land_triger_received_ = true;
+  }
+
+  void clear_tracking_session() {
+    triger_received_ = false;
+    land_triger_received_ = false;
+    force_hover_ = true;
+    wait_hover_ = true;
+    hover_finish_start_time_ = ros::Time(0);
+  }
+
+  void stop_tracking_callback(const std_msgs::EmptyConstPtr& /*msgPtr*/) {
+    if (odom_received_) {
+      while (odom_lock_.test_and_set())
+        ;
+      const nav_msgs::Odometry odom_msg = odom_msg_;
+      odom_lock_.clear();
+      Eigen::Vector3d odom_p(odom_msg.pose.pose.position.x,
+                             odom_msg.pose.pose.position.y,
+                             odom_msg.pose.pose.position.z);
+      pub_hover_p(odom_p, ros::Time::now());
+    }
+    clear_tracking_session();
+    tracking_finish_sent_ = false;
+    ROS_WARN("[planner] Elastic tracking session stopped by ws_main.");
+  }
+
+  void reset_hover_finish_timer() {
+    hover_finish_start_time_ = ros::Time(0);
+  }
+
+  void update_hover_finish_state() {
+    if (!hover_finish_enable_ || tracking_finish_sent_) {
+      return;
+    }
+    const ros::Time now = ros::Time::now();
+    if (hover_finish_start_time_.isZero()) {
+      hover_finish_start_time_ = now;
+      ROS_INFO("[planner] Elastic tracking hover finish candidate start.");
+      return;
+    }
+    const double hover_time = (now - hover_finish_start_time_).toSec();
+    if (hover_time < hover_finish_hold_time_) {
+      ROS_INFO_THROTTLE(0.5, "[planner] Elastic tracking hover finish holding: %.2f / %.2f",
+                        hover_time, hover_finish_hold_time_);
+      return;
+    }
+
+    std_msgs::Bool finish_msg;
+    finish_msg.data = true;
+    tracking_finish_pub_.publish(finish_msg);
+    tracking_finish_sent_ = true;
+    clear_tracking_session();
+    ROS_WARN("[planner] Elastic tracking hover held enough, publish tracking finish.");
   }
 
   void odom_callback(const nav_msgs::Odometry::ConstPtr& msgPtr) {
@@ -208,7 +268,7 @@ class Nodelet : public nodelet::Nodelet {
       target_p = target_p + target_q * land_p_;
       wait_hover_ = false;
     } else {
-      target_p.z() += 1.0;
+      // target_p.z() += 1.0;
       // NOTE determin whether to replan
       Eigen::Vector3d dp = target_p - odom_p;
       // std::cout << "dist : " << dp.norm() << std::endl;
@@ -225,9 +285,11 @@ class Nodelet : public nodelet::Nodelet {
         ROS_WARN("[planner] HOVERING...");
         replanStateMsg_.state = -1;
         replanState_pub_.publish(replanStateMsg_);
+        update_hover_finish_state();
         return;
       } else {
         wait_hover_ = false;
+        reset_hover_finish_timer();
       }
     }
 
@@ -498,9 +560,11 @@ class Nodelet : public nodelet::Nodelet {
       ROS_WARN("[planner] HOVERING...");
       replanStateMsg_.state = -1;
       replanState_pub_.publish(replanStateMsg_);
+      update_hover_finish_state();
       return;
     } else {
       wait_hover_ = false;
+      reset_hover_finish_timer();
     }
     if (no_need_replan) {
       return;
@@ -750,6 +814,8 @@ class Nodelet : public nodelet::Nodelet {
     nh.getParam("tolerance_d", tolerance_d_);
     nh.getParam("debug", debug_);
     nh.getParam("fake", fake_);
+    nh.param("hover_finish_hold_time", hover_finish_hold_time_, 2.0);
+    nh.param("hover_finish_enable", hover_finish_enable_, true);
 
     gridmapPtr_ = std::make_shared<mapping::OccGridMap>();
     envPtr_ = std::make_shared<env::Env>(nh, gridmapPtr_);
@@ -760,6 +826,7 @@ class Nodelet : public nodelet::Nodelet {
     heartbeat_pub_ = nh.advertise<std_msgs::Empty>("heartbeat", 10);
     traj_pub_ = nh.advertise<quadrotor_msgs::PolyTraj>("trajectory", 1);
     replanState_pub_ = nh.advertise<quadrotor_msgs::ReplanState>("replanState", 1);
+    tracking_finish_pub_ = nh.advertise<std_msgs::Bool>("tracking_finish", 10);
 
     if (debug_) {
       plan_timer_ = nh.createTimer(ros::Duration(1.0 / plan_hz), &Nodelet::debug_timer_callback, this);
@@ -779,6 +846,7 @@ class Nodelet : public nodelet::Nodelet {
     target_sub_ = nh.subscribe<nav_msgs::Odometry>("target", 10, &Nodelet::target_callback, this, ros::TransportHints().tcpNoDelay());
     triger_sub_ = nh.subscribe<geometry_msgs::PoseStamped>("triger", 10, &Nodelet::triger_callback, this, ros::TransportHints().tcpNoDelay());
     land_triger_sub_ = nh.subscribe<geometry_msgs::PoseStamped>("land_triger", 10, &Nodelet::land_triger_callback, this, ros::TransportHints().tcpNoDelay());
+    stop_tracking_sub_ = nh.subscribe<std_msgs::Empty>("stop_tracking", 10, &Nodelet::stop_tracking_callback, this, ros::TransportHints().tcpNoDelay());
     ROS_WARN("Planning node initialized!");
   }
 

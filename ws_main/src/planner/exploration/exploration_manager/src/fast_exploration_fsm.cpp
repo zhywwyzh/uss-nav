@@ -71,6 +71,14 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   nh.param("tracking/finish_hold_time",       fp_->track_finish_hold_time_, 3.0);
   nh.param("tracking/finish_move_thresh",     fp_->track_finish_move_thresh_, 0.2);
   nh.param("tracking/finish_yaw_thresh",      fp_->track_finish_yaw_thresh_, 0.2);
+  nh.param("tracking/backend",                 fp_->tracking_backend_, std::string("ego"));
+  nh.param("tracking/target_odom_topic",       fp_->tracking_target_odom_topic_, std::string("/target_ekf_odom"));
+  nh.param("planner_cmd_mux/mode_topic",       fp_->planner_cmd_mux_mode_topic_, std::string("/planner_mux/mode"));
+  nh.param("planner_cmd_mux/ego_mode",         fp_->planner_cmd_mux_ego_mode_, std::string("ego"));
+  nh.param("planner_cmd_mux/elastic_mode",     fp_->planner_cmd_mux_elastic_mode_, std::string("elastic"));
+  nh.param("elastic_tracker/trigger_topic",    fp_->elastic_tracker_trigger_topic_, std::string("/triger"));
+  nh.param("elastic_tracker/finish_topic",     fp_->elastic_tracker_finish_topic_, std::string("/elastic_tracker/tracking_finish"));
+  nh.param("elastic_tracker/stop_topic",       fp_->elastic_tracker_stop_topic_, std::string("/elastic_tracker/stop"));
 
   std::cout << "\n***** Target Cmd : " << fd_->target_cmd_ << "\n" << std::endl;
   std::cout << "ALL Main FSM Params loaded successfully ..." << std::endl;
@@ -144,6 +152,9 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
                                     ros::TransportHints().tcpNoDelay());
   target_sub_ = nh.subscribe("/tracking_target", 2, &FastExplorationFSM::targetCallbackReal, this,
                              ros::TransportHints().tcpNoDelay());
+  elastic_tracking_finish_sub_ = nh.subscribe(fp_->elastic_tracker_finish_topic_, 10,
+                                              &FastExplorationFSM::elasticTrackingFinishCallback, this,
+                                              ros::TransportHints().tcpNoDelay());
 
   ego_goal_pub_         = nh.advertise<quadrotor_msgs::EgoGoalSet>("local_goal", 10);
   goal_from_station_pub_ = nh.advertise<quadrotor_msgs::GoalSet>("/goal_with_id_from_station", 10);
@@ -154,6 +165,12 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
 
   fsm_state_pub_        = nh.advertise<std_msgs::String>("/planner/fsm_state", 10);
   tracking_finish_pub_  = nh.advertise<std_msgs::Bool>("/tracking_finish", 10);
+  tracking_target_odom_pub_ = nh.advertise<nav_msgs::Odometry>(fp_->tracking_target_odom_topic_, 10);
+  planner_cmd_mux_mode_pub_ = nh.advertise<std_msgs::String>(fp_->planner_cmd_mux_mode_topic_, 10, true);
+  elastic_tracker_trigger_pub_ = nh.advertise<geometry_msgs::PoseStamped>(fp_->elastic_tracker_trigger_topic_, 10);
+  elastic_tracker_stop_pub_ = nh.advertise<std_msgs::Empty>(fp_->elastic_tracker_stop_topic_, 10);
+
+  switchPlannerCmdMuxToEgo("fsm_init");
 }
 
 void FastExplorationFSM::triggerCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
@@ -164,6 +181,9 @@ void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::
                                                const std::vector<float>& yaws,
                                                bool look_forward,
                                                const std::string& source) {
+  switchPlannerCmdMuxToEgo(source + ":goal");
+  stopElasticTracker(source + ":goal");
+
   if (goals.empty()) {
     ROS_WARN_STREAM("[GOAL] Ignore empty goal instruction from " << source);
     return;
@@ -179,7 +199,9 @@ void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::
     fd_->track_init_ = false;
     resetTrackingFinishCandidate();
     fd_->track_finish_sent_ = false;
-    map_->setTarget(fd_->track_pos_, false);
+    if (!useElasticTrackerBackend()) {
+      map_->setTarget(fd_->track_pos_, false);
+    }
     if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
         md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK) {
       stopMotion();
@@ -195,7 +217,9 @@ void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::
 }
 
 void FastExplorationFSM::handleTrackingTarget(const std::vector<geometry_msgs::Point>& global_poses,
-                                              const std::string& source) {
+                                              const std::string& source,
+                                              const ros::Time& stamp,
+                                              const std::string& frame_id) {
   expl_manager_->vis_ptr_->visualize_a_ball(fd_->track_pos_, 0.35, "track_pos", visualization::Color::blue);
   if (global_poses.empty()) return;
 
@@ -239,6 +263,12 @@ void FastExplorationFSM::handleTrackingTarget(const std::vector<geometry_msgs::P
     return;
   }
 
+  if (useElasticTrackerBackend()) {
+    publishTrackingTargetOdom(fd_->track_pos_, stamp, frame_id);
+    switchPlannerCmdMuxToElastic("tracking_target_update");
+    return;
+  }
+
   if (map_->isInited()) {
     map_->setTarget(fd_->track_pos_, fd_->track_init_);
   }
@@ -268,7 +298,11 @@ void FastExplorationFSM::trackCommandCallback(const quadrotor_msgs::TrackCommand
     fd_->track_init_ = false;
     resetTrackingFinishCandidate();
     fd_->track_finish_sent_ = false;
-    map_->setTarget(fd_->track_pos_, false);
+    switchPlannerCmdMuxToEgo("trackCommand:disable");
+    stopElasticTracker("trackCommand:disable");
+    if (!useElasticTrackerBackend()) {
+      map_->setTarget(fd_->track_pos_, false);
+    }
     if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
         md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK)
     {
@@ -279,6 +313,10 @@ void FastExplorationFSM::trackCommandCallback(const quadrotor_msgs::TrackCommand
   }
 
   const bool was_track_trigger = fd_->track_trigger_;
+  if (useElasticTrackerBackend() && fd_->track_finish_sent_ && !was_track_trigger) {
+    ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] ignore residual Elastic-Tracker enable after finish; waiting for disable/reset.");
+    return;
+  }
   fd_->track_trigger_ = true;
   if (!was_track_trigger) {
     resetTrackingFinishCandidate();
@@ -288,13 +326,54 @@ void FastExplorationFSM::trackCommandCallback(const quadrotor_msgs::TrackCommand
   {
     fd_->track_pos_ = geoPt2Vec3d(msg->target_position);
   }
+  if (useElasticTrackerBackend()) {
+    if (msg->has_target_position) {
+      fd_->track_init_ = true;
+      publishTrackingTargetOdom(fd_->track_pos_, msg->header.stamp, msg->header.frame_id);
+    }
+    // Elastic-Tracker 的 /triger 表示新会话开始；持续重发会清空 traj_server 缓存并重置 hover 完成计时。
+    if (!was_track_trigger) {
+      publishElasticTrackerTrigger(msg->header.stamp, msg->header.frame_id);
+    }
+    switchPlannerCmdMuxToElastic("trackCommand:elastic_tracker_enable");
+    if (md_->mission_state_ != MISSION_FSM_STATE::WAIT_TRIGGER) {
+      stopMotion();
+      transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "trackCommand:elastic_tracker_enable");
+    }
+    return;
+  }
+
+  switchPlannerCmdMuxToEgo("trackCommand:ego_tracking_enable");
   map_->setTarget(fd_->track_pos_, false);
   transitState(MISSION_FSM_STATE::PLAN_TRACK, "trackCommand:enable");
 }
 
+void FastExplorationFSM::elasticTrackingFinishCallback(const std_msgs::Bool::ConstPtr& msg) {
+  if (!msg->data || !useElasticTrackerBackend()) {
+    return;
+  }
+
+  std::unique_lock<std::mutex> lck(mtx_);
+  if (!fd_->track_trigger_) {
+    ROS_WARN_STREAM_THROTTLE(1.0, "[TRACK] Ignore Elastic-Tracker finish without active tracking session.");
+    return;
+  }
+
+  fd_->track_trigger_ = false;
+  fd_->track_init_ = false;
+  resetTrackingFinishCandidate();
+  stopMotion();
+  switchPlannerCmdMuxToEgo("elasticTrackingFinish");
+  publishTrackingFinish();
+  if (md_->mission_state_ != MISSION_FSM_STATE::INIT &&
+      md_->mission_state_ != MISSION_FSM_STATE::WARM_UP) {
+    transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "elasticTrackingFinish");
+  }
+}
+
 void FastExplorationFSM::targetCallbackReal(const quadrotor_msgs::DetectOut::ConstPtr& msg)
 {
-  handleTrackingTarget(msg->global_poses, "trackTargetUpdate");
+  handleTrackingTarget(msg->global_poses, "trackTargetUpdate", msg->header.stamp, msg->header.frame_id);
 }
 
 bool FastExplorationFSM::getSceneGraphInitSeed(Eigen::Vector3d& init_seed, std::string* reason) const {
@@ -715,6 +794,72 @@ void FastExplorationFSM::publishTrackingFinish() {
   fd_->track_finish_sent_ = true;
   resetTrackingFinishCandidate();
   ROS_INFO("[TRACK] publish /tracking_finish=true");
+}
+
+bool FastExplorationFSM::useElasticTrackerBackend() const {
+  return fp_->tracking_backend_ == "elastic_tracker" ||
+         fp_->tracking_backend_ == "tracker";
+}
+
+void FastExplorationFSM::publishPlannerCmdMuxMode(const std::string& mode,
+                                                  const std::string& source) {
+  std_msgs::String msg;
+  msg.data = mode;
+  planner_cmd_mux_mode_pub_.publish(msg);
+  ROS_INFO_STREAM_THROTTLE(0.5, "[planner_cmd_mux] request mode=" << mode
+                           << " from " << source);
+}
+
+void FastExplorationFSM::switchPlannerCmdMuxToEgo(const std::string& source) {
+  publishPlannerCmdMuxMode(fp_->planner_cmd_mux_ego_mode_, source);
+}
+
+void FastExplorationFSM::switchPlannerCmdMuxToElastic(const std::string& source) {
+  publishPlannerCmdMuxMode(fp_->planner_cmd_mux_elastic_mode_, source);
+}
+
+void FastExplorationFSM::publishElasticTrackerTrigger(const ros::Time& stamp,
+                                                      const std::string& frame_id) {
+  geometry_msgs::PoseStamped trigger;
+  trigger.header.stamp = stamp.isZero() ? ros::Time::now() : stamp;
+  trigger.header.frame_id = frame_id.empty() ? "world" : frame_id;
+  trigger.pose.position.x = 0.0;
+  trigger.pose.position.y = 0.0;
+  trigger.pose.position.z = 0.0;
+  trigger.pose.orientation.w = 1.0;
+  elastic_tracker_trigger_pub_.publish(trigger);
+  ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] publish Elastic-Tracker trigger -> "
+                           << fp_->elastic_tracker_trigger_topic_);
+}
+
+void FastExplorationFSM::stopElasticTracker(const std::string& source) {
+  if (!useElasticTrackerBackend()) {
+    return;
+  }
+  std_msgs::Empty msg;
+  elastic_tracker_stop_pub_.publish(msg);
+  ROS_INFO_STREAM("[TRACK] publish Elastic-Tracker stop -> "
+                  << fp_->elastic_tracker_stop_topic_ << " from " << source);
+}
+
+void FastExplorationFSM::publishTrackingTargetOdom(const Eigen::Vector3d& target_pos,
+                                                   const ros::Time& stamp,
+                                                   const std::string& frame_id) {
+  nav_msgs::Odometry target_odom;
+  target_odom.header.stamp = stamp.isZero() ? ros::Time::now() : stamp;
+  target_odom.header.frame_id = frame_id.empty() ? "world" : frame_id;
+  target_odom.child_frame_id = "target";
+  target_odom.pose.pose.position.x = target_pos.x();
+  target_odom.pose.pose.position.y = target_pos.y();
+  target_odom.pose.pose.position.z = target_pos.z();
+  target_odom.pose.pose.orientation.w = 1.0;
+  target_odom.twist.twist.linear.x = 0.0;
+  target_odom.twist.twist.linear.y = 0.0;
+  target_odom.twist.twist.linear.z = 0.0;
+  tracking_target_odom_pub_.publish(target_odom);
+  ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] publish target odom for Elastic-Tracker: "
+                           << target_pos.transpose() << " -> "
+                           << fp_->tracking_target_odom_topic_);
 }
 
 void FastExplorationFSM::planTrack() {
@@ -1659,6 +1804,18 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
 
   md_->instruction_ = msg->instruction_type;
   fd_->instruct_directly_to_goal = false; // [gwq] 防止从turn_ego_plan状态切出的时候其他状态依旧使用强制ego规划
+  if (msg->instruction_type != quadrotor_msgs::Instruction::TURN_TRACKING) {
+    switchPlannerCmdMuxToEgo("instructionCallback:non_tracking");
+    stopElasticTracker("instructionCallback:non_tracking");
+    std::unique_lock<std::mutex> lck(mtx_);
+    fd_->track_trigger_ = false;
+    fd_->track_init_ = false;
+    resetTrackingFinishCandidate();
+    fd_->track_finish_sent_ = false;
+    if (!useElasticTrackerBackend()) {
+      map_->setTarget(fd_->track_pos_, false);
+    }
+  }
 
   // load map !
   if (msg->instruction_type == quadrotor_msgs::Instruction::TURN_LOAD_SCENE_GRAPH){
@@ -1764,7 +1921,11 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
         fd_->track_init_ = false;
         resetTrackingFinishCandidate();
         fd_->track_finish_sent_ = false;
-        map_->setTarget(fd_->track_pos_, false);
+        switchPlannerCmdMuxToEgo("instructionCallback:tracking_disable");
+        stopElasticTracker("instructionCallback:tracking_disable");
+        if (!useElasticTrackerBackend()) {
+          map_->setTarget(fd_->track_pos_, false);
+        }
         if (md_->mission_state_ == MISSION_FSM_STATE::PLAN_TRACK ||
             md_->mission_state_ == MISSION_FSM_STATE::APPROACH_TRACK)
         {
@@ -1777,6 +1938,10 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       {
         std::unique_lock<std::mutex> lck(mtx_);
         const bool was_track_trigger = fd_->track_trigger_;
+        if (useElasticTrackerBackend() && fd_->track_finish_sent_ && !was_track_trigger) {
+          ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] ignore residual Elastic-Tracker instruction enable after finish; waiting for disable/reset.");
+          break;
+        }
         fd_->track_trigger_ = true;
         if (!was_track_trigger) {
           resetTrackingFinishCandidate();
@@ -1786,17 +1951,35 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
         {
           fd_->track_pos_ = geoPt2Vec3d(msg->target_position);
         }
-        map_->setTarget(fd_->track_pos_, false);
-        if (md_->mission_state_ != MISSION_FSM_STATE::PLAN_TRACK &&
-            md_->mission_state_ != MISSION_FSM_STATE::APPROACH_TRACK)
-        {
-          transitState(MISSION_FSM_STATE::PLAN_TRACK, "instructionCallback:tracking_enable");
+        if (useElasticTrackerBackend()) {
+          if (msg->has_target_position) {
+            fd_->track_init_ = true;
+            publishTrackingTargetOdom(fd_->track_pos_, msg->header.stamp, msg->header.frame_id);
+          }
+          // Elastic-Tracker 的 /triger 只用于打开新 session，后续目标更新只走 target odom。
+          if (!was_track_trigger) {
+            publishElasticTrackerTrigger(msg->header.stamp, msg->header.frame_id);
+          }
+          switchPlannerCmdMuxToElastic("instructionCallback:elastic_tracker_enable");
+          if (md_->mission_state_ != MISSION_FSM_STATE::WAIT_TRIGGER) {
+            stopMotion();
+            transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "instructionCallback:elastic_tracker_enable");
+          }
+        } else {
+          switchPlannerCmdMuxToEgo("instructionCallback:ego_tracking_enable");
+          map_->setTarget(fd_->track_pos_, false);
+          if (md_->mission_state_ != MISSION_FSM_STATE::PLAN_TRACK &&
+              md_->mission_state_ != MISSION_FSM_STATE::APPROACH_TRACK)
+          {
+            transitState(MISSION_FSM_STATE::PLAN_TRACK, "instructionCallback:tracking_enable");
+          }
         }
       }
 
       if (!msg->global_poses.empty())
       {
-        handleTrackingTarget(msg->global_poses, "instructionCallback:tracking_target");
+        handleTrackingTarget(msg->global_poses, "instructionCallback:tracking_target",
+                             msg->header.stamp, msg->header.frame_id);
       }
       break;
     

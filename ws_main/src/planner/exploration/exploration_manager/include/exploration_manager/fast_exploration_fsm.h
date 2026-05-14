@@ -5,6 +5,7 @@
 
 #include <Eigen/src/Core/Matrix.h>
 #include <ros/ros.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/BatteryState.h>
 
@@ -34,6 +35,7 @@
 #include <scene_graph/scene_graph.h>
 #include <scene_graph/traj_visualizer.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
 
 using Eigen::Vector3d;
@@ -73,12 +75,16 @@ private:
   ros::NodeHandle node_;
   ros::Timer exec_timer_, frontier_timer_;
   ros::Subscriber trigger_sub_, odom_sub_, goal_from_station_sub_, egoplanner_goal_sub_, ego_exec_finish_sub_;
-  ros::Subscriber track_command_sub_, target_sub_;
+  ros::Subscriber track_command_sub_, target_sub_, elastic_tracking_finish_sub_;
   ros::Subscriber instruction_sub_, ego_plan_res_sub_, battery_sub_, perception_data_sub_;
   ros::Publisher ego_goal_pub_, goal_from_station_pub_, perception_data_pub_, instruction_resp_pub_;
   ros::Publisher vis_marker_pub_, vis_path_pub_;
   ros::Publisher fsm_state_pub_;
   ros::Publisher tracking_finish_pub_;
+  ros::Publisher tracking_target_odom_pub_;
+  ros::Publisher planner_cmd_mux_mode_pub_;
+  ros::Publisher elastic_tracker_trigger_pub_;
+  ros::Publisher elastic_tracker_stop_pub_;
 
   // LLM related
   MISSION_FSM_STATE stash_state_{MISSION_FSM_STATE::UNKONWN};
@@ -99,6 +105,16 @@ private:
   void resetTrackingFinishCandidate();
   bool updateTrackingFinishCandidate(double dis_2_aim, double angle_2_aim);
   void publishTrackingFinish();
+  bool useElasticTrackerBackend() const;
+  void publishPlannerCmdMuxMode(const std::string& mode, const std::string& source);
+  void switchPlannerCmdMuxToEgo(const std::string& source);
+  void switchPlannerCmdMuxToElastic(const std::string& source);
+  void publishElasticTrackerTrigger(const ros::Time& stamp = ros::Time(),
+                                    const std::string& frame_id = "world");
+  void stopElasticTracker(const std::string& source);
+  void publishTrackingTargetOdom(const Eigen::Vector3d& target_pos,
+                                 const ros::Time& stamp = ros::Time(),
+                                 const std::string& frame_id = "world");
   
   void transitState(MISSION_FSM_STATE new_state, string pos_call);
   void stashCurStateAndTransit(MISSION_FSM_STATE new_state, string who_called);
@@ -111,10 +127,14 @@ private:
   void egoPlannerGoalCallback(const quadrotor_msgs::GoalSet::ConstPtr& msg);
   void egoExecFinishCallback(const std_msgs::Bool::ConstPtr& msg);
   void trackCommandCallback(const quadrotor_msgs::TrackCommand::ConstPtr& msg);
+  void elasticTrackingFinishCallback(const std_msgs::Bool::ConstPtr& msg);
   void targetCallbackReal(const quadrotor_msgs::DetectOut::ConstPtr& msg);
   void handleGoalInstruction(const std::vector<geometry_msgs::Point>& goals, const std::vector<float>& yaws,
                              bool look_forward, const std::string& source);
-  void handleTrackingTarget(const std::vector<geometry_msgs::Point>& global_poses, const std::string& source);
+  void handleTrackingTarget(const std::vector<geometry_msgs::Point>& global_poses,
+                            const std::string& source,
+                            const ros::Time& stamp = ros::Time(),
+                            const std::string& frame_id = "world");
 
   void instructionCallback(const quadrotor_msgs::InstructionConstPtr& msg);
   void batteryCallBack(const sensor_msgs::BatteryState msg);

@@ -26,6 +26,15 @@
     <arg name="target4_z" default="0.0"/>
     <!-- topic of your odometry such as VIO or LIO -->
     <arg name="odom_topic" default="/ekf_quat/ekf_odom"/>
+    <arg name="tracking_backend" default="ego"/>
+    <arg name="tracking_target_odom_topic" default="/target_ekf_odom"/>
+    <arg name="planner_cmd_mux_ego_topic" default="/planner_mux/ego_position_cmd"/>
+    <arg name="planner_cmd_mux_elastic_topic" default="/planner_mux/elastic_position_cmd"/>
+    <arg name="planner_cmd_mux_mode_topic" default="/planner_mux/mode"/>
+    <arg name="planner_cmd_mux_output_topic" default="/setpoint_cmd"/>
+    <arg name="elastic_tracker_trigger_topic" default="/triger"/>
+    <arg name="elastic_tracker_finish_topic" default="/elastic_tracker/tracking_finish"/>
+    <arg name="elastic_tracker_stop_topic" default="/elastic_tracker/stop"/>
 
 	<!-- swarm topic transmitter bridge-->
 <!--	<include file="$(find swarm_bridge)/launch/bridge_tcp_drone_fy_sim.launch">-->
@@ -62,10 +71,28 @@
         <!--always set to 1.5 times grater than sensing horizen !!!-->
         <!-- <arg name="planning_horizon" value="12.0" /> -->
         <arg name="use_multitopology_trajs" value="false" />
+        <arg name="tracking_backend" value="$(arg tracking_backend)" />
+        <arg name="tracking_target_odom_topic" value="$(arg tracking_target_odom_topic)" />
+        <arg name="planner_cmd_mux_ego_topic" value="$(arg planner_cmd_mux_ego_topic)" />
+        <arg name="planner_cmd_mux_mode_topic" value="$(arg planner_cmd_mux_mode_topic)" />
+        <arg name="elastic_tracker_trigger_topic" value="$(arg elastic_tracker_trigger_topic)" />
+        <arg name="elastic_tracker_finish_topic" value="$(arg elastic_tracker_finish_topic)" />
+        <arg name="elastic_tracker_stop_topic" value="$(arg elastic_tracker_stop_topic)" />
         <!-- 1: use 2D Nav Goal to select goal  -->
         <!-- 2: use global waypoints below  -->
         <arg name="flight_type" value="$(arg flight_type)" />
     </include>
+
+    <node pkg="exploration_manager" type="planner_cmd_mux" name="drone_$(arg drone_id)_planner_cmd_mux" output="screen">
+        <remap from="~ego_position_cmd" to="$(arg planner_cmd_mux_ego_topic)"/>
+        <remap from="~elastic_position_cmd" to="$(arg planner_cmd_mux_elastic_topic)"/>
+        <remap from="~mode" to="$(arg planner_cmd_mux_mode_topic)"/>
+        <remap from="~position_cmd" to="$(arg planner_cmd_mux_output_topic)"/>
+        <param name="default_mode" value="ego" type="string"/>
+        <param name="ego_mode" value="ego" type="string"/>
+        <param name="elastic_mode" value="elastic" type="string"/>
+        <param name="input_timeout" value="0.5" type="double"/>
+    </node>
     
 </launch>
     

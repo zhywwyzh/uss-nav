@@ -1,6 +1,6 @@
 <launch>
   <arg name="ws_main_map_topic" default="/drone_0_ego_planner_node/grid_map/occupancy"/>
-  <arg name="odom_topic" default="/ekf_quat/ekf_odom"/>
+  <arg name="odom_topic" default="/unity_odom_sync"/>
   <arg name="target_topic" default="/target_ekf_odom"/>
   <arg name="gridmap_inflate_topic" default="gridmap_inflate"/>
 
