@@ -1,11 +1,13 @@
 <launch>
-  <arg name="ws_main_map_topic" default="/grid_map/occupancy_inflate"/>
+  <arg name="ws_main_map_topic" default="/grid_map/occupancy"/>
   <arg name="odom_topic" default="/ekf/ekf_odom"/>
+  <arg name="target_topic" default="/target_ekf_odom"/>
   <arg name="gridmap_inflate_topic" default="gridmap_inflate"/>
 
   <node pkg="mapping" type="ws_main_map_adapter" name="ws_main_map_adapter" output="screen">
-    <remap from="~occupancy_inflate" to="$(arg ws_main_map_topic)"/>
+    <remap from="~occupancy" to="$(arg ws_main_map_topic)"/>
     <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="~target" to="$(arg target_topic)"/>
     <remap from="~gridmap_inflate" to="$(arg gridmap_inflate_topic)"/>
 
     <param name="resolution" value="0.15"/>
@@ -13,7 +15,13 @@
     <param name="local_y" value="20.0"/>
     <param name="local_z" value="5.0"/>
     <param name="inflate_size" value="0"/>
+    <param name="self_inflate_size" value="3"/>
     <param name="unknown_as_free" value="true"/>
     <param name="publish_esdf_placeholder" value="false"/>
+    <param name="use_mask" value="true"/>
+    <param name="target_mask_x" value="0.5"/>
+    <param name="target_mask_y" value="0.5"/>
+    <param name="target_mask_z" value="1.0"/>
+    <param name="target_timeout" value="0.5"/>
   </node>
 </launch>
