@@ -23,6 +23,11 @@ typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, nav_
 typedef message_filters::Synchronizer<ImageOdomSyncPolicy>
     ImageOdomSynchronizer;
 
+typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry>
+    PointCloudOdomSyncPolicy;
+typedef message_filters::Synchronizer<PointCloudOdomSyncPolicy>
+    PointCloudOdomSynchronizer;
+
 struct CamConfig {
   // camera paramters
   double rate;
@@ -61,6 +66,10 @@ class Nodelet : public nodelet::Nodelet {
   std::shared_ptr<ImageOdomSynchronizer> depth_odom_sync_Ptr_;
   ros::Publisher gridmap_inflate_pub_, local_pc_pub_, pcl_pub_;
 
+  message_filters::Subscriber<sensor_msgs::PointCloud2> map_sub_;
+  std::shared_ptr<PointCloudOdomSynchronizer> map_odom_sync_Ptr_;
+  ros::Publisher gridmap_inflate_pub_1;
+
   // NOTE just for global map in simulation
   ros::Timer global_map_timer_;
   ros::Subscriber map_pc_sub_;
@@ -68,7 +77,7 @@ class Nodelet : public nodelet::Nodelet {
   bool use_global_map_ = false;
 
   // NOTE for mask target
-  bool use_mask_ = false;
+  bool use_mask_ = true;
   ros::Subscriber target_odom_sub_;
   std::atomic_flag target_lock_ = ATOMIC_FLAG_INIT;
   Eigen::Vector3d target_odom_;
@@ -190,6 +199,74 @@ class Nodelet : public nodelet::Nodelet {
     callback_lock_.clear();
   }
 
+  void pointcloud_odom_callback(const sensor_msgs::PointCloud2ConstPtr& msgPtr,
+                                const nav_msgs::OdometryConstPtr& odom_msg) {
+    if (callback_lock_.test_and_set()) {
+      return;
+    }
+
+    Eigen::Vector3d body_p(odom_msg->pose.pose.position.x,
+                           odom_msg->pose.pose.position.y,
+                           odom_msg->pose.pose.position.z);
+    Eigen::Quaterniond body_q(
+        odom_msg->pose.pose.orientation.w, odom_msg->pose.pose.orientation.x,
+        odom_msg->pose.pose.orientation.y, odom_msg->pose.pose.orientation.z);
+
+    Eigen::Vector3d cam_p = body_q.toRotationMatrix() * cam2body_p_ + body_p;
+    Eigen::Quaterniond cam_q = body_q * Eigen::Quaterniond(cam2body_R_);
+
+    std::vector<Eigen::Vector3d> obs_pts;
+
+    // 记录当前传感器位姿，保持与新版点云建图逻辑一致。
+    last_cam_p_ = cam_p;
+    last_cam_q_ = cam_q;
+    get_first_frame_ = true;
+
+    pcl::PointCloud<pcl::PointXYZ> latest_cloud;
+    pcl::fromROSMsg(*msgPtr, latest_cloud);
+
+    if (latest_cloud.points.size() == 0)
+      return;
+
+    pcl::PointXYZ pt;
+    Eigen::Vector3d p3d, p3d_inf;
+    for (size_t i = 0; i < latest_cloud.points.size(); ++i) {
+      pt = latest_cloud.points[i];
+      p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z;
+
+      // 过滤无效点和过高点，迁移自新版 mapping 点云路径。
+      if (p3d.array().isNaN().sum() || p3d(2) > 3.0)
+        continue;
+
+      obs_pts.push_back(p3d);
+    }
+
+    gridmap_.updateMap(cam_p, obs_pts);
+
+    if (use_mask_) {
+      while (target_lock_.test_and_set())
+        ;
+      Eigen::Vector3d ld = target_odom_;
+      Eigen::Vector3d ru = target_odom_;
+      ld.x() -= 0.5;
+      ld.y() -= 0.5;
+      ld.z() -= 1.0;
+      ru.x() += 0.5;
+      ru.y() += 0.5;
+      ru.z() += 1.0;
+      gridmap_.setFree(ld, ru);
+      target_lock_.clear();
+    }
+
+    quadrotor_msgs::OccMap3d gridmap_msg;
+    gridmap_msg.header.frame_id = "world";
+    gridmap_msg.header.stamp = ros::Time::now();
+    gridmap_.to_msg(gridmap_msg);
+    gridmap_inflate_pub_.publish(gridmap_msg);
+
+    callback_lock_.clear();
+  }
+
   // NOTE
   void target_odom_callback(const nav_msgs::OdometryConstPtr& msgPtr) {
     while (target_lock_.test_and_set())
@@ -300,6 +377,10 @@ class Nodelet : public nodelet::Nodelet {
       odom_sub_.subscribe(nh, "odom", 50);
       depth_odom_sync_Ptr_ = std::make_shared<ImageOdomSynchronizer>(ImageOdomSyncPolicy(100), depth_sub_, odom_sub_);
       depth_odom_sync_Ptr_->registerCallback(boost::bind(&Nodelet::depth_odom_callback, this, _1, _2));
+
+      map_sub_.subscribe(nh, "cloud", 50);
+      map_odom_sync_Ptr_ = std::make_shared<PointCloudOdomSynchronizer>(PointCloudOdomSyncPolicy(100), map_sub_, odom_sub_);
+      map_odom_sync_Ptr_->registerCallback(boost::bind(&Nodelet::pointcloud_odom_callback, this, _1, _2));
     }
 
     if (use_mask_) {

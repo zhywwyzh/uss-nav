@@ -140,6 +140,7 @@ struct OccGridMap {
   template <typename _Msgtype>
   inline void to_msg(_Msgtype& msg) {
     msg.resolution = resolution;
+    msg.inflate_size = inflate_size;
     msg.size_x = size_x;
     msg.size_y = size_y;
     msg.size_z = size_z;
@@ -147,10 +148,12 @@ struct OccGridMap {
     msg.offset_y = offset_y;
     msg.offset_z = offset_z;
     msg.data = infocc.data;
+    msg.esdf.clear();
   }
   template <typename _Msgtype>
   inline void from_msg(const _Msgtype& msg) {
     resolution = msg.resolution;
+    inflate_size = msg.inflate_size;
     size_x = msg.size_x;
     size_y = msg.size_y;
     size_z = msg.size_z;

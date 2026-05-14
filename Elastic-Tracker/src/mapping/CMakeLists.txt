@@ -62,9 +62,16 @@ add_executable(${PROJECT_NAME}_vis_node
 add_executable(visualize_history_path
   src/visualize_history_path.cpp)
 
+add_executable(ws_main_map_adapter
+  src/ws_main_map_adapter.cpp)
+
 target_link_libraries(visualize_history_path
   ${catkin_LIBRARIES}
   ${PROJECT_NAME}
+)
+
+target_link_libraries(ws_main_map_adapter
+  ${catkin_LIBRARIES}
 )
 
 target_link_libraries(${PROJECT_NAME}_vis_node
@@ -72,5 +79,9 @@ target_link_libraries(${PROJECT_NAME}_vis_node
   ${PROJECT_NAME}
 )
 add_dependencies(${PROJECT_NAME}_vis_node
+  ${catkin_EXPORTED_TARGETS}
+)
+
+add_dependencies(ws_main_map_adapter
   ${catkin_EXPORTED_TARGETS}
 )
