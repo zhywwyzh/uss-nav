@@ -2,7 +2,7 @@
   <node name="target_ekf_node" pkg="target_ekf" type="target_ekf_node" output="screen" >
     <rosparam command="load" file="$(find target_ekf)/config/camera.yaml" />
     <param name="pitch_thr" value="37"/>
-    <remap from="~yolo" to="/yolo_detection/result"/>
-    <remap from="~odom" to="/mavros/local_position/odom"/>
+    <remap from="~yolo" to="/yolov5trt/bboxes_pub"/>
+    <remap from="~odom" to="/ekf/ekf_odom"/>
   </node>
 </launch>

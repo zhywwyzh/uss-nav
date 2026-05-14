@@ -7,7 +7,6 @@ set(ENABLE_CUDA true)
 
 if(ENABLE_CUDA)
   find_package(CUDA REQUIRED)
-  # set(CUDA_NVCC_FLAGS -gencode arch=compute_61,code=sm_61;) 
   SET(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS};-O3 -use_fast_math)
   set(CUDA_NVCC_FLAGS 
 #       -gencode arch=compute_20,code=sm_20;

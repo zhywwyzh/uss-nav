@@ -315,8 +315,8 @@ int TrajOpt::optimize(const double& delta) {
   auto ret = lbfgs::lbfgs_optimize(dim_t_ + dim_p_ + 1, x_, &minObjective,
                                    &objectiveFunc, nullptr,
                                    &earlyExit, this, &lbfgs_params);
-  // std::cout << "\033[32m"
-  //           << "ret: " << ret << "\033[0m" << std::endl;
+  std::cout << "\033[32m"
+            << "ret: " << ret << "\033[0m" << std::endl;
   t_ = t;
   p_ = p;
   return ret;

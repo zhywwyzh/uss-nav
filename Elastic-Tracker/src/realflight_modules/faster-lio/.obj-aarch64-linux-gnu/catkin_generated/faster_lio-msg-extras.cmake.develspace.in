@@ -1,2 +1,0 @@
-set(faster_lio_MESSAGE_FILES "/home/nv/L_ws_lsy/n1_L_ego/src/faster-lio/msg/Pose6D.msg")
-set(faster_lio_SERVICE_FILES "")

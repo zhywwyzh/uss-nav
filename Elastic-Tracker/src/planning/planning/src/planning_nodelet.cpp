@@ -18,8 +18,6 @@
 #include <visualization/visualization.hpp>
 #include <wr_msg/wr_msg.hpp>
 
-#include <mavros_msgs/RCIn.h>
-
 namespace planning {
 
 Eigen::IOFormat CommaInitFmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", ", ", "", "", " << ", ";");
@@ -27,7 +25,7 @@ Eigen::IOFormat CommaInitFmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ",
 class Nodelet : public nodelet::Nodelet {
  private:
   std::thread initThread_;
-  ros::Subscriber gridmap_sub_, odom_sub_, target_sub_, triger_sub_, land_triger_sub_,RM_sub_;
+  ros::Subscriber gridmap_sub_, odom_sub_, target_sub_, triger_sub_, land_triger_sub_;
   ros::Timer plan_timer_;
 
   ros::Publisher traj_pub_, heartbeat_pub_, replanState_pub_;
@@ -39,7 +37,6 @@ class Nodelet : public nodelet::Nodelet {
   std::shared_ptr<prediction::Predict> prePtr_;
 
   // NOTE planning or fake target
-  bool RM_six_ = false;
   bool fake_ = false;
   Eigen::Vector3d goal_;
   Eigen::Vector3d land_p_;
@@ -51,7 +48,7 @@ class Nodelet : public nodelet::Nodelet {
   ros::Publisher gridmap_pub_, inflate_gridmap_pub_;
   quadrotor_msgs::OccMap3d occmap_msg_;
 
-  double tracking_dur_, tracking_dist_, tolerance_d_, target_z;;
+  double tracking_dur_, tracking_dist_, tolerance_d_;
 
   Trajectory traj_poly_;
   ros::Time replan_stamp_;
@@ -211,7 +208,7 @@ class Nodelet : public nodelet::Nodelet {
       target_p = target_p + target_q * land_p_;
       wait_hover_ = false;
     } else {
-      target_p.z() += target_z;
+      target_p.z() += 1.0;
       // NOTE determin whether to replan
       Eigen::Vector3d dp = target_p - odom_p;
       // std::cout << "dist : " << dp.norm() << std::endl;
@@ -270,9 +267,6 @@ class Nodelet : public nodelet::Nodelet {
     iniState.setZero(3, 3);
     ros::Time replan_stamp = ros::Time::now() + ros::Duration(0.03);
     double replan_t = (replan_stamp - replan_stamp_).toSec();
-    if(RM_six_){
-      force_hover_ = true;
-    }
     if (force_hover_ || replan_t > traj_poly_.getTotalDuration()) {
       // should replan from the hover state
       iniState.col(0) = odom_p;
@@ -397,7 +391,7 @@ class Nodelet : public nodelet::Nodelet {
     }
     if (valid) {
       force_hover_ = false;
-      // ROS_WARN("[planner] REPLAN SUCCESS");
+      ROS_WARN("[planner] REPLAN SUCCESS");
       replanStateMsg_.state = 0;
       replanState_pub_.publish(replanStateMsg_);
       Eigen::Vector3d dp = target_p + target_v * 0.03 - iniState.col(0);
@@ -586,7 +580,7 @@ class Nodelet : public nodelet::Nodelet {
     }
     if (valid) {
       force_hover_ = false;
-      // ROS_WARN("[planner] REPLAN SUCCESS");
+      ROS_WARN("[planner] REPLAN SUCCESS");
       replanStateMsg_.state = 0;
       replanState_pub_.publish(replanStateMsg_);
       // NOTE : if the trajectory is known, watch that direction
@@ -747,14 +741,6 @@ class Nodelet : public nodelet::Nodelet {
     return true;
   }
 
-  void RM2Callback(const mavros_msgs::RCInConstPtr &msg){
-    //down :: 1 AUTO
-    RM_six_ = ((int)msg->channels[5] - 900) / 1000;
-    //0.99 -0.01
-    RM_six_ = !RM_six_;
-    // ROS_ERROR("MSG_RM_6:%d",RM_msgs);
-  }
-
   void init(ros::NodeHandle& nh) {
     // set parameters of planning
     int plan_hz = 10;
@@ -764,7 +750,6 @@ class Nodelet : public nodelet::Nodelet {
     nh.getParam("tolerance_d", tolerance_d_);
     nh.getParam("debug", debug_);
     nh.getParam("fake", fake_);
-    nh.getParam("target_z",target_z);
 
     gridmapPtr_ = std::make_shared<mapping::OccGridMap>();
     envPtr_ = std::make_shared<env::Env>(nh, gridmapPtr_);
@@ -792,10 +777,8 @@ class Nodelet : public nodelet::Nodelet {
     gridmap_sub_ = nh.subscribe<quadrotor_msgs::OccMap3d>("gridmap_inflate", 1, &Nodelet::gridmap_callback, this, ros::TransportHints().tcpNoDelay());
     odom_sub_ = nh.subscribe<nav_msgs::Odometry>("odom", 10, &Nodelet::odom_callback, this, ros::TransportHints().tcpNoDelay());
     target_sub_ = nh.subscribe<nav_msgs::Odometry>("target", 10, &Nodelet::target_callback, this, ros::TransportHints().tcpNoDelay());
-    // target_sub_ = nh.subscribe<nav_msgs::Odometry>("back_target", 10, &Nodelet::target_callback, this, ros::TransportHints().tcpNoDelay());
     triger_sub_ = nh.subscribe<geometry_msgs::PoseStamped>("triger", 10, &Nodelet::triger_callback, this, ros::TransportHints().tcpNoDelay());
     land_triger_sub_ = nh.subscribe<geometry_msgs::PoseStamped>("land_triger", 10, &Nodelet::land_triger_callback, this, ros::TransportHints().tcpNoDelay());
-    RM_sub_  = nh.subscribe("/mavros/rc/in", 1, &Nodelet::RM2Callback, this, ros::TransportHints().tcpNoDelay());
     ROS_WARN("Planning node initialized!");
   }
 
