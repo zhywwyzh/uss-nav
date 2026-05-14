@@ -16,7 +16,7 @@
 
 ## 1. Simulation of Aerial Tracking 
 
-[NOTE] remember to change the CUDA option of **src/uav_simulator/local_sensing/CMakeLists.txt**
+[NOTE] this fork removes the CUDA depth renderer in **src/uav_simulator/local_sensing** and uses the CPU/PCL local point cloud renderer by default.
 
 >Preparation and visualization:
 ```
