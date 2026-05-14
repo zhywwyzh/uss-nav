@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   message_filters
   Eigen3 REQUIRED
+  recognition
 )
 
 

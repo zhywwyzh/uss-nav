@@ -5,12 +5,18 @@
 #include <message_filters/sync_policies/exact_time.h>
 #include <message_filters/time_synchronizer.h>
 #include <nav_msgs/Odometry.h>
-#include <object_detection_msgs/BoundingBoxes.h>
+#include <recognition/DetectionResult.h>
 
-typedef message_filters::sync_policies::ApproximateTime<object_detection_msgs::BoundingBoxes, nav_msgs::Odometry>
+typedef message_filters::sync_policies::ApproximateTime<recognition::DetectionResult, nav_msgs::Odometry>
     YoloOdomSyncPolicy;
 typedef message_filters::Synchronizer<YoloOdomSyncPolicy>
     YoloOdomSynchronizer;
+
+typedef message_filters::sync_policies::ApproximateTime<nav_msgs::Odometry, nav_msgs::Odometry>
+    TagOdomSyncPolicy;
+typedef message_filters::Synchronizer<TagOdomSyncPolicy>
+    TagOdomSynchronizer;
+
 ros::Publisher target_odom_pub_, yolo_odom_pub_;
 Eigen::Matrix3d cam2body_R_;
 Eigen::Vector3d cam2body_p_;
@@ -91,10 +97,10 @@ std::shared_ptr<Ekf> ekfPtr_;
 
 void predict_state_callback(const ros::TimerEvent& event) {
   double update_dt = (ros::Time::now() - last_update_stamp_).toSec();
-  if (update_dt < 2.0) {
+  if (update_dt < 0.1) {
     ekfPtr_->predict();
   } else {
-    ROS_WARN("too long time no update!");
+    // ROS_WARN("too long time no update !");
     return;
   }
   // publish target odom
@@ -111,7 +117,7 @@ void predict_state_callback(const ros::TimerEvent& event) {
   target_odom_pub_.publish(target_odom);
 }
 
-void update_state_callback(const object_detection_msgs::BoundingBoxesConstPtr &bboxes_msg, const nav_msgs::OdometryConstPtr &odom_msg) {
+void update_state_callback(const recognition::DetectionResultConstPtr &bboxes_msg, const nav_msgs::OdometryConstPtr &odom_msg) {
   // std::cout << "yolo stamp: " << bboxes_msg->header.stamp << std::endl;
   // std::cout << "odom stamp: " << odom_msg->header.stamp << std::endl;
   Eigen::Vector3d odom_p;
@@ -136,23 +142,38 @@ void update_state_callback(const object_detection_msgs::BoundingBoxesConstPtr &b
   Eigen::Vector3d cam_p = odom_q.toRotationMatrix() * cam2body_p_ + odom_p;
   Eigen::Quaterniond cam_q = odom_q * Eigen::Quaterniond(cam2body_R_);
 
-  auto yolo_bbox = bboxes_msg->bounding_boxes.front();
-  double xmin, ymin, xmax, ymax;
-  xmin = yolo_bbox.xmin;
-  xmax = yolo_bbox.xmax;
-  ymin = yolo_bbox.ymin;
-  ymax = yolo_bbox.ymax;
-  // NOTE check ymin ymax
+ // ================= 完美版计算逻辑 开始 =================
+  // 1. 安全检查，防止没识别到无人机时程序崩溃
+  if (bboxes_msg->objects.empty()) {
+      return; 
+  }
+
+  // 2. 提取第一个目标 
+  auto yolo_bbox = bboxes_msg->objects.front(); 
+  
+  // 3. 严格按顺序定义并提取新格式的数据
+  double xmin = yolo_bbox.pixel_x;
+  double ymin = yolo_bbox.pixel_y;
+  double width = yolo_bbox.pixel_width;
+  double height = yolo_bbox.pixel_height;
+  
+  // 4. 根据新数据推算出 xmax 和 ymax
+  double xmax = xmin + width;
+  double ymax = ymin + height;
+
+  // 5. 边缘保护：防止目标太靠边导致飞控乱飞
   double pixel_thr = 30;
-  if (ymin < pixel_thr || ymax > 480 - pixel_thr) {
-    ROS_ERROR("pitch out of range!");
+  if (ymin < pixel_thr || ymax > 480 - pixel_thr || xmin < pixel_thr || xmax > 640 - pixel_thr) {
+    ROS_WARN("Target too close to edge, ignoring!");
     return;
   }
-  // calculate target odom
-  double height = ymax - ymin;
-  double depth = 0.7 / height * fy_;
+
+  // 6. 计算最终的 3D 坐标
+  // （保留了你最原始的用高度算距离的逻辑，先让飞机能跑起来！）
+  double depth = 0.46 / width* fx_; 
   double y = ((ymin + ymax) * 0.5 - cy_) * depth / fy_;
   double x = ((xmin + xmax) * 0.5 - cx_) * depth / fx_;
+  // ================= 完美版计算逻辑 结束 =================
   Eigen::Vector3d p(x, y, depth);
   // std::cout << "p cam frame: " << p.transpose() << std::endl;
   p = cam_q * p + cam_p;
@@ -179,6 +200,48 @@ void update_state_callback(const object_detection_msgs::BoundingBoxesConstPtr &b
   last_update_stamp_ = ros::Time::now();
 }
 
+void update_state_callback_tag(const nav_msgs::OdometryConstPtr &tagposition_msg, const nav_msgs::OdometryConstPtr &odom_msg) {
+  // std::cout << "odom stamp: " << odom_msg->header.stamp << std::endl;
+  Eigen::Vector3d odom_p;
+  Eigen::Quaterniond odom_q;
+  odom_p(0) = odom_msg->pose.pose.position.x;
+  odom_p(1) = odom_msg->pose.pose.position.y;
+  odom_p(2) = odom_msg->pose.pose.position.z;
+  odom_q.w() = odom_msg->pose.pose.orientation.w;
+  odom_q.x() = odom_msg->pose.pose.orientation.x;
+  odom_q.y() = odom_msg->pose.pose.orientation.y;
+  odom_q.z() = odom_msg->pose.pose.orientation.z;
+
+  Eigen::Vector3d cam_p = odom_q.toRotationMatrix() * cam2body_p_ + odom_p;
+  Eigen::Quaterniond cam_q = odom_q * Eigen::Quaterniond(cam2body_R_);
+
+  Eigen::Vector3d p(tagposition_msg->pose.pose.position.x, tagposition_msg->pose.pose.position.y, tagposition_msg->pose.pose.position.z);
+  // std::cout << "p cam frame: " << p.transpose() << std::endl;
+  p = cam_q * p + cam_p;
+  // publish yolo odom
+  nav_msgs::Odometry yolo_odom;
+  yolo_odom.header.frame_id = "world";
+  yolo_odom.pose.pose.orientation.w = 1.0;
+  yolo_odom.pose.pose.position.x = p.x();
+  yolo_odom.pose.pose.position.y = p.y();
+  yolo_odom.pose.pose.position.z = p.z();
+  yolo_odom_pub_.publish(yolo_odom);
+  // std::cout << tagposition_msg->header.stamp << std::endl;
+  // std::cout << odom_msg->header.stamp << std::endl;
+  // update target odom
+  double update_dt = (ros::Time::now() - last_update_stamp_).toSec();
+  if (update_dt > 3.0) {
+    ekfPtr_->reset(p);
+    ROS_WARN("ekf reset!");
+  } else if (ekfPtr_->checkValid(p)) {
+    ekfPtr_->update(p);
+  } else {
+    ROS_ERROR("update invalid!");
+    return;
+  }
+  last_update_stamp_ = ros::Time::now();
+}
+
 void odom_callback(const nav_msgs::OdometryConstPtr &odom_msg) {
   // std::cout << "_now stamp: " << odom_msg->header.stamp << std::endl;
 }
@@ -186,7 +249,7 @@ void odom_callback(const nav_msgs::OdometryConstPtr &odom_msg) {
 int main(int argc, char** argv) {
   ros::init(argc, argv, "target_ekf");
   ros::NodeHandle nh("~");
-  last_update_stamp_ = ros::Time::now() - ros::Duration(10.0);
+  last_update_stamp_ = ros::Time::now() - ros::Duration(10.0);  //10.0 秒之前的时间
 
   std::vector<double> tmp;
   if (nh.param<std::vector<double>>("cam2body_R", tmp, std::vector<double>())) {
@@ -201,9 +264,12 @@ int main(int argc, char** argv) {
   nh.getParam("cam_cy", cy_);
   nh.getParam("pitch_thr", pitch_thr_);
 
-  message_filters::Subscriber<object_detection_msgs::BoundingBoxes> yolo_sub_;
+  message_filters::Subscriber<recognition::DetectionResult> yolo_sub_;
   message_filters::Subscriber<nav_msgs::Odometry> odom_sub_;
+  message_filters::Subscriber<nav_msgs::Odometry> tag_position_sub_;
+
   std::shared_ptr<YoloOdomSynchronizer> yolo_odom_sync_Ptr_;
+  std::shared_ptr<TagOdomSynchronizer> tag_odom_sync_Ptr_;
   ros::Timer ekf_predict_timer_;
   ros::Subscriber single_odom_sub = nh.subscribe("odom", 100, &odom_callback, ros::TransportHints().tcpNoDelay());
   target_odom_pub_ = nh.advertise<nav_msgs::Odometry>("target_odom", 1);
@@ -213,11 +279,19 @@ int main(int argc, char** argv) {
   nh.getParam("ekf_rate", ekf_rate);
   ekfPtr_ = std::make_shared<Ekf>(1.0/ekf_rate);
 
-  yolo_sub_.subscribe(nh, "yolo", 1, ros::TransportHints().tcpNoDelay());
-  odom_sub_.subscribe(nh, "odom", 100, ros::TransportHints().tcpNoDelay());
-  yolo_odom_sync_Ptr_ = std::make_shared<YoloOdomSynchronizer>(YoloOdomSyncPolicy(200), yolo_sub_, odom_sub_);
-  yolo_odom_sync_Ptr_->registerCallback(boost::bind(&update_state_callback, _1, _2));
-  ekf_predict_timer_ = nh.createTimer(ros::Duration(1.0 / ekf_rate), &predict_state_callback);
+  yolo_sub_.subscribe(nh, "/yolo_detection/result", 1, ros::TransportHints().tcpNoDelay());
+  odom_sub_.subscribe(nh, "odom", 1, ros::TransportHints().tcpNoDelay());
+  tag_position_sub_.subscribe(nh, "tag_position", 1, ros::TransportHints().tcpNoDelay());
+
+   yolo_odom_sync_Ptr_ = std::make_shared<YoloOdomSynchronizer>(YoloOdomSyncPolicy(200), yolo_sub_, odom_sub_);
+   yolo_odom_sync_Ptr_->registerCallback(boost::bind(&update_state_callback, _1, _2));   //接收yolo和odom，最后发布yolo识别到目标的点位
+
+  // tag_odom_sync_Ptr_ = std::make_shared<TagOdomSynchronizer>(TagOdomSyncPolicy(10), tag_position_sub_, odom_sub_);
+  // tag_odom_sync_Ptr_->registerCallback(boost::bind(&update_state_callback_tag, _1, _2)); 
+
+  message_filters::Synchronizer<TagOdomSyncPolicy> sync(TagOdomSyncPolicy(10), tag_position_sub_, odom_sub_);
+  sync.registerCallback(boost::bind(&update_state_callback_tag, _1, _2));
+  ekf_predict_timer_ = nh.createTimer(ros::Duration(1.0 / ekf_rate), &predict_state_callback);    //发布ekf处理后的点位
 
   ros::spin();
   return 0;

@@ -23,6 +23,11 @@ typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, nav_
 typedef message_filters::Synchronizer<ImageOdomSyncPolicy>
     ImageOdomSynchronizer;
 
+typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry>
+    PointCloudOdomSyncPolicy;
+typedef message_filters::Synchronizer<PointCloudOdomSyncPolicy>
+    PointCloudOdomSynchronizer;
+
 struct CamConfig {
   // camera paramters
   double rate;
@@ -61,6 +66,10 @@ class Nodelet : public nodelet::Nodelet {
   std::shared_ptr<ImageOdomSynchronizer> depth_odom_sync_Ptr_;
   ros::Publisher gridmap_inflate_pub_, local_pc_pub_, pcl_pub_;
 
+  message_filters::Subscriber<sensor_msgs::PointCloud2> map_sub_;
+  std::shared_ptr<PointCloudOdomSynchronizer> map_odom_sync_Ptr_;
+  ros::Publisher gridmap_inflate_pub_1;
+
   // NOTE just for global map in simulation
   ros::Timer global_map_timer_;
   ros::Subscriber map_pc_sub_;
@@ -68,7 +77,7 @@ class Nodelet : public nodelet::Nodelet {
   bool use_global_map_ = false;
 
   // NOTE for mask target
-  bool use_mask_ = false;
+  bool use_mask_ = true;
   ros::Subscriber target_odom_sub_;
   std::atomic_flag target_lock_ = ATOMIC_FLAG_INIT;
   Eigen::Vector3d target_odom_;
@@ -76,119 +85,194 @@ class Nodelet : public nodelet::Nodelet {
   OccGridMap gridmap_;
   int inflate_size_;
 
-  void depth_odom_callback(const sensor_msgs::ImageConstPtr& depth_msg,
-                           const nav_msgs::OdometryConstPtr& odom_msg) {
-    if (callback_lock_.test_and_set()) {
-      return;
-    }
-    ros::Time t1, t2;
-    // t1 = ros::Time::now();
-    Eigen::Vector3d body_p(odom_msg->pose.pose.position.x,
-                           odom_msg->pose.pose.position.y,
-                           odom_msg->pose.pose.position.z);
-    Eigen::Quaterniond body_q(
-        odom_msg->pose.pose.orientation.w, odom_msg->pose.pose.orientation.x,
-        odom_msg->pose.pose.orientation.y, odom_msg->pose.pose.orientation.z);
-    Eigen::Vector3d cam_p = body_q.toRotationMatrix() * cam2body_p_ + body_p;
-    Eigen::Quaterniond cam_q = body_q * Eigen::Quaterniond(cam2body_R_);
-    cv_bridge::CvImagePtr depth_ptr = cv_bridge::toCvCopy(depth_msg);
-    if (depth_msg->encoding == sensor_msgs::image_encodings::TYPE_32FC1) {
-      (depth_ptr->image).convertTo(depth_ptr->image, CV_16UC1, camConfig_.depth_scaling_factor);
-    }
-    cv::Mat depth_img = depth_ptr->image;
+void depth_odom_callback(const sensor_msgs::ImageConstPtr& depth_msg,
+                         const nav_msgs::OdometryConstPtr& odom_msg) {
+  // 检查回调是否被锁定，如果是则直接返回
+  if (callback_lock_.test_and_set()) {
+    return;
+  }
+  
+  ros::Time t1, t2;
+  // t1 = ros::Time::now();
 
-    // pub target
+  // 从里程计消息中获取机体坐标系下的位置和姿态
+  Eigen::Vector3d body_p(odom_msg->pose.pose.position.x,
+                         odom_msg->pose.pose.position.y,
+                         odom_msg->pose.pose.position.z);
+  Eigen::Quaterniond body_q(
+      odom_msg->pose.pose.orientation.w, odom_msg->pose.pose.orientation.x,
+      odom_msg->pose.pose.orientation.y, odom_msg->pose.pose.orientation.z);
 
-    int nr = depth_img.rows;
-    int nc = depth_img.cols;
-    std::vector<Eigen::Vector3d> obs_pts;
-    // put the points of the depth into the list of obs_points
+  // 将相机坐标系下的位置转换为机体坐标系下的位置
+  Eigen::Vector3d cam_p = body_q.toRotationMatrix() * cam2body_p_ + body_p;
+  Eigen::Quaterniond cam_q = body_q * Eigen::Quaterniond(cam2body_R_);
 
-    // TODO depth filter
+  // 将深度图像转换为OpenCV格式
+  cv_bridge::CvImagePtr depth_ptr = cv_bridge::toCvCopy(depth_msg);
+  if (depth_msg->encoding == sensor_msgs::image_encodings::TYPE_32FC1) {
+    (depth_ptr->image).convertTo(depth_ptr->image, CV_16UC1, camConfig_.depth_scaling_factor);
+  }
+  cv::Mat depth_img = depth_ptr->image;
 
-    // t1 = ros::Time::now();
-    for (int i = depth_filter_margin_; i < nr - depth_filter_margin_; i += down_sample_factor_) {
-      for (int j = depth_filter_margin_; j < nc - depth_filter_margin_; j += down_sample_factor_) {
-        // (x,y,z) in camera frame
-        double z = (depth_img.at<uint16_t>(i, j)) / camConfig_.depth_scaling_factor;
-        if (depth_img.at<uint16_t>(i, j) == 0) {
-          z = camConfig_.range + 0.5;
-        }
-        if (std::isnan(z) || std::isinf(z))
-          continue;
-        if (z < depth_filter_mindist_) {
-          continue;
-        }
-        double y = (i - camConfig_.cy) * z / camConfig_.fy;
-        double x = (j - camConfig_.cx) * z / camConfig_.fx;
-        Eigen::Vector3d p(x, y, z);
-        p = cam_q * p + cam_p;
-        bool good_point = true;
-        if (get_first_frame_) {
-          // NOTE depth filter:
-          Eigen::Vector3d p_rev_proj =
-              last_cam_q_.inverse().toRotationMatrix() * (p - last_cam_p_);
-          double vv = p_rev_proj.y() * camConfig_.fy / p_rev_proj.z() + camConfig_.cy;
-          double uu = p_rev_proj.x() * camConfig_.fx / p_rev_proj.z() + camConfig_.cx;
-          if (vv >= 0 && vv < nr && uu >= 0 && uu < nc) {
-            double drift_dis = fabs(last_depth_.at<uint16_t>((int)vv, (int)uu) / camConfig_.depth_scaling_factor - p_rev_proj.z());
-            if (drift_dis > depth_filter_tolerance_) {
-              good_point = false;
-            }
+  // 获取深度图像的行数和列数
+  int nr = depth_img.rows;
+  int nc = depth_img.cols;
+  std::vector<Eigen::Vector3d> obs_pts;  // 存储观测点
+
+  // 对深度图像进行遍历，提取有效的深度点
+  for (int i = depth_filter_margin_; i < nr - depth_filter_margin_; i += down_sample_factor_) {
+    for (int j = depth_filter_margin_; j < nc - depth_filter_margin_; j += down_sample_factor_) {
+      // 在相机坐标系下计算深度点的坐标
+      double z = (depth_img.at<uint16_t>(i, j)) / camConfig_.depth_scaling_factor;
+      if (depth_img.at<uint16_t>(i, j) == 0) {
+        z = camConfig_.range + 0.5;
+      }
+      if (std::isnan(z) || std::isinf(z))
+        continue;
+      if (z < depth_filter_mindist_) {
+        continue;
+      }
+      double y = (i - camConfig_.cy) * z / camConfig_.fy;
+      double x = (j - camConfig_.cx) * z / camConfig_.fx;
+      Eigen::Vector3d p(x, y, z);  // 深度点在相机坐标系下的坐标
+      p = cam_q * p + cam_p;        // 将深度点转换到世界坐标系下
+      bool good_point = true;
+      if (get_first_frame_) {
+        // 深度滤波
+        Eigen::Vector3d p_rev_proj =
+            last_cam_q_.inverse().toRotationMatrix() * (p - last_cam_p_);
+        double vv = p_rev_proj.y() * camConfig_.fy / p_rev_proj.z() + camConfig_.cy;
+        double uu = p_rev_proj.x() * camConfig_.fx / p_rev_proj.z() + camConfig_.cx;
+        if (vv >= 0 && vv < nr && uu >= 0 && uu < nc) {
+          double drift_dis = fabs(last_depth_.at<uint16_t>((int)vv, (int)uu) / camConfig_.depth_scaling_factor - p_rev_proj.z());
+          if (drift_dis > depth_filter_tolerance_) {
+            good_point = false;
           }
         }
-        if (good_point) {
-          obs_pts.push_back(p);
-        }
+      }
+      if (good_point) {
+        obs_pts.push_back(p);
       }
     }
-    last_depth_ = depth_img;
-    last_cam_p_ = cam_p;
-    last_cam_q_ = cam_q;
-    get_first_frame_ = true;
-    gridmap_.updateMap(cam_p, obs_pts);
-
-    // NOTE use mask
-    if (use_mask_) {  // mask target
-      while (target_lock_.test_and_set())
-        ;
-      Eigen::Vector3d ld = target_odom_;
-      Eigen::Vector3d ru = target_odom_;
-      ld.x() -= 0.5;
-      ld.y() -= 0.5;
-      ld.z() -= 1.0;
-      ru.x() += 0.5;
-      ru.y() += 0.5;
-      ru.z() += 1.0;
-      gridmap_.setFree(ld, ru);
-      target_lock_.clear();
-    }
-
-    // TODO pub local map
-    // sensor_msgs::PointCloud2 pc_msg;
-    // pcl::PointCloud<pcl::PointXYZ> pcd;
-    // pcl::PointXYZ pt;
-    // for (const auto p : mask_pts_) {
-    //   pt.x = p.x();
-    //   pt.y = p.y();
-    //   pt.z = p.z();
-    //   pcd.push_back(pt);
-    // }
-    // pcd.width = pcd.points.size();
-    // pcd.height = 1;
-    // pcd.is_dense = true;
-    // pcl::toROSMsg(pcd, pc_msg);
-    // pc_msg.header.frame_id = "world";
-    // local_pc_pub_.publish(pc_msg);
-
-    quadrotor_msgs::OccMap3d gridmap_msg;
-    gridmap_msg.header.frame_id = "world";
-    gridmap_msg.header.stamp = ros::Time::now();
-    gridmap_.to_msg(gridmap_msg);
-    gridmap_inflate_pub_.publish(gridmap_msg);
-
-    callback_lock_.clear();
   }
+
+  // 更新上一帧的深度图像、相机位置和姿态
+  last_depth_ = depth_img;
+  last_cam_p_ = cam_p;
+  last_cam_q_ = cam_q;
+  get_first_frame_ = true;
+
+  // 更新地图
+  gridmap_.updateMap(cam_p, obs_pts);
+
+  // 使用遮罩
+  if (use_mask_) {
+    while (target_lock_.test_and_set())
+      ;
+    Eigen::Vector3d ld = target_odom_;
+    Eigen::Vector3d ru = target_odom_;
+    ld.x() -= 0.5;
+    ld.y() -= 0.5;
+    ld.z() -= 1.0;
+    ru.x() += 0.5;
+    ru.y() += 0.5;
+    ru.z() += 1.0;
+    gridmap_.setFree(ld, ru);
+    target_lock_.clear();
+  }
+
+  // 发布栅格地图
+  quadrotor_msgs::OccMap3d gridmap_msg;
+  gridmap_msg.header.frame_id = "world";
+  gridmap_msg.header.stamp = ros::Time::now();
+  gridmap_.to_msg(gridmap_msg);
+  gridmap_inflate_pub_.publish(gridmap_msg);
+
+  callback_lock_.clear();
+}
+
+
+void pointcloud_odom_callback(const sensor_msgs::PointCloud2ConstPtr& msgPtr,
+                         const nav_msgs::OdometryConstPtr& odom_msg) {                       
+  // 检查回调是否被锁定，如果是则直接返回
+  if (callback_lock_.test_and_set()) {
+    return;
+  }
+  
+  ros::Time t1, t2;
+  // t1 = ros::Time::now();
+
+  // 从里程计消息中获取机体坐标系下的位置和姿态
+  Eigen::Vector3d body_p(odom_msg->pose.pose.position.x,
+                         odom_msg->pose.pose.position.y,
+                         odom_msg->pose.pose.position.z);
+  Eigen::Quaterniond body_q(
+      odom_msg->pose.pose.orientation.w, odom_msg->pose.pose.orientation.x,
+      odom_msg->pose.pose.orientation.y, odom_msg->pose.pose.orientation.z);
+
+  // 将相机坐标系下的位置转换为机体坐标系下的位置
+  Eigen::Vector3d cam_p = body_q.toRotationMatrix() * cam2body_p_ + body_p;
+  Eigen::Quaterniond cam_q = body_q * Eigen::Quaterniond(cam2body_R_);
+
+  std::vector<Eigen::Vector3d> obs_pts;  // 存储观测点
+
+  // 更新上一帧的深度图像、相机位置和姿态
+  // last_depth_ = depth_img;
+  last_cam_p_ = cam_p;
+  last_cam_q_ = cam_q;
+  get_first_frame_ = true;
+
+  // 将ROS消息类型转换为PCL点云类型
+  pcl::PointCloud<pcl::PointXYZ> latest_cloud;
+  pcl::fromROSMsg(*msgPtr, latest_cloud);
+
+  // 如果最新的点云为空，则返回
+  if (latest_cloud.points.size() == 0)
+    return;
+
+  // 遍历最新的点云
+  pcl::PointXYZ pt;
+  Eigen::Vector3d p3d, p3d_inf;
+  for (size_t i = 0; i < latest_cloud.points.size(); ++i)
+  {
+    pt = latest_cloud.points[i];
+    p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z;
+    
+    // 检查点的坐标是否包含NaN值，如果是，则跳过该点
+    if (p3d.array().isNaN().sum() || p3d(2) > 3.0)
+      continue;
+
+    obs_pts.push_back(p3d);   //储存点云点
+  }
+
+  // 更新地图
+  gridmap_.updateMap(cam_p, obs_pts);
+
+  // 使用遮罩
+  if (use_mask_) {
+    while (target_lock_.test_and_set())
+      ;
+    Eigen::Vector3d ld = target_odom_;
+    Eigen::Vector3d ru = target_odom_;
+    ld.x() -= 0.5;
+    ld.y() -= 0.5;
+    ld.z() -= 1.0;
+    ru.x() += 0.5;
+    ru.y() += 0.5;
+    ru.z() += 1.0;
+    gridmap_.setFree(ld, ru);
+    target_lock_.clear();
+  }
+
+  // 发布栅格地图
+  quadrotor_msgs::OccMap3d gridmap_msg;
+  gridmap_msg.header.frame_id = "world";
+  gridmap_msg.header.stamp = ros::Time::now();
+  gridmap_.to_msg(gridmap_msg);
+  gridmap_inflate_pub_.publish(gridmap_msg);
+
+  callback_lock_.clear();
+}
 
   // NOTE
   void target_odom_callback(const nav_msgs::OdometryConstPtr& msgPtr) {
@@ -216,6 +300,11 @@ class Nodelet : public nodelet::Nodelet {
     map_recieved_ = true;
     return;
   }
+
+  void map_sub_back(const sensor_msgs::PointCloud2ConstPtr& msgPtr){
+
+  }
+
   void global_map_timer_callback(const ros::TimerEvent& event) {
     if (!map_recieved_) {
       return;
@@ -241,7 +330,7 @@ class Nodelet : public nodelet::Nodelet {
     double res;
     Eigen::Vector3d map_size;
     // NOTE whether to use global map
-    nh.getParam("use_global_map", use_global_map_);
+    nh.getParam("use_global_map", use_global_map_);   //false
     if (use_global_map_) {
       double x, y, z, res;
       nh.getParam("x_length", x);
@@ -287,10 +376,15 @@ class Nodelet : public nodelet::Nodelet {
     // use mask parameter
     nh.getParam("use_mask", use_mask_);
 
+    // 创建用于发布膨胀地图的发布器，消息类型为quadrotor_msgs::OccMap3d，队列长度为1
     gridmap_inflate_pub_ = nh.advertise<quadrotor_msgs::OccMap3d>("gridmap_inflate", 1);
 
+    // 创建用于发布局部点云的发布器，消息类型为sensor_msgs::PointCloud2，队列长度为1
     local_pc_pub_ = nh.advertise<sensor_msgs::PointCloud2>("local_pointcloud", 1);
+
+    // 创建用于发布遮罩点云的发布器，消息类型为sensor_msgs::PointCloud2，队列长度为10
     pcl_pub_ = nh.advertise<sensor_msgs::PointCloud2>("mask_cloud", 10);
+
 
     if (use_global_map_) {
       map_pc_sub_ = nh.subscribe<sensor_msgs::PointCloud2>("global_map", 1, &Nodelet::map_call_back, this);
@@ -300,6 +394,10 @@ class Nodelet : public nodelet::Nodelet {
       odom_sub_.subscribe(nh, "odom", 50);
       depth_odom_sync_Ptr_ = std::make_shared<ImageOdomSynchronizer>(ImageOdomSyncPolicy(100), depth_sub_, odom_sub_);
       depth_odom_sync_Ptr_->registerCallback(boost::bind(&Nodelet::depth_odom_callback, this, _1, _2));
+
+      map_sub_.subscribe(nh, "cloud", 50);
+      map_odom_sync_Ptr_ = std::make_shared<PointCloudOdomSynchronizer>(PointCloudOdomSyncPolicy(100), map_sub_, odom_sub_);
+      map_odom_sync_Ptr_->registerCallback(boost::bind(&Nodelet::pointcloud_odom_callback, this, _1, _2));
     }
 
     if (use_mask_) {

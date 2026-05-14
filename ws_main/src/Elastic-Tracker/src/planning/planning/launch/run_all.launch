@@ -1,0 +1,9 @@
+<launch>
+  <include file="$(find px4ctrl)/launch/run_ctrl.launch" />
+  <include file="$(find ekf)/launch/ekf_lidar.launch" />
+  <include file="$(find usb_cam)/launch/usb_cam.launch" />
+  <include file="$(find apriltag_ros)/launch/continuous_detection.launch" />
+  <include file="$(find multipoint)/launch/multipointplan_exp.launch" />
+  <include file="$(find planning)/launch/run_exp_tag.launch" />
+  <include file="$(find mapping)/launch/rviz_exp.launch" />
+</launch>
