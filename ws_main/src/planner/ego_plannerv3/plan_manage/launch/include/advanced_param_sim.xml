@@ -136,8 +136,8 @@
         <param name="posegraph/keypose_min_gap" value="1.0" type="double"/>
 
         <!-- frontier -->
-        <param name="frontier/floor" value="1.0" type="double"/>
-        <param name="frontier/ceil" value="1.6" type="double"/>
+        <param name="frontier/floor" value="0.6" type="double"/>
+        <param name="frontier/ceil" value="1.0" type="double"/>
         <param name="frontier/cluster_min" value="100" type="int"/>
         <param name="frontier/cluster_size_xy" value="2.0" type="double"/>
         <param name="frontier/cluster_size_z" value="10.0" type="double"/>
