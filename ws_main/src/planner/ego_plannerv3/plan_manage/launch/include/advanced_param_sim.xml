@@ -36,9 +36,11 @@
         <!-- <remap from="/goal" to = "/goal_with_id"/> -->
         <!-- <remap from="/goal" to = "/move_base_simple/goal"/> -->
         <remap from ="/trigger" to="/move_base_simple/goal"/>
-        <remap from="~grid_map/odom" to="/drone_$(arg drone_id)_$(arg odometry_topic)"/>
-        <remap from="~grid_map/cloud" to="/drone_0_cloud_merger/cloud_merged"/>
-        <!-- <remap from="~grid_map/cloud" to="/livox/lidar_world"/> -->
+        <!-- <remap from="~grid_map/odom" to="/drone_$(arg drone_id)_$(arg odometry_topic)"/>
+        <remap from="~grid_map/cloud" to="/drone_0_cloud_merger/cloud_merged"/> -->
+        <remap from="~grid_map/odom" to="/unity_odom_sync"/>
+        <!-- <remap from="~grid_map/cloud" to="/livox/lidar_sync"/> -->
+        <remap from="~grid_map/cloud" to="/livox/lidar_world"/>
         <remap from="~grid_map/pose"   to = "/drone_$(arg drone_id)_$(arg camera_pose_topic)"/>
         <remap from="~grid_map/depth" to = "/drone_$(arg drone_id)_$(arg depth_topic)"/>
         <remap from="/position_cmd" to="$(arg planner_cmd_mux_ego_topic)"/>
@@ -71,6 +73,7 @@
         <param name="fsm/emergency_time" value="1.0" type="double"/>
         <param name="fsm/realworld_experiment" value="false"/>
         <param name="fsm/fail_safe" value="true"/>
+        <param name="fsm/if_handle_yaw" value="false" type="bool"/> <!-- EGO-Planner收aim时是否进入HANDLE_YAW而非直接导航 -->
         <param name="fsm/battery_thr" value="14.0" type="double"/>
         <param name="fsm/enable_area_prediction" value="true" type="bool"/>
         <param name="fsm/enable_scene_graph_update_after_load" value="true" type="bool"/>
@@ -80,7 +83,7 @@
         <param name="fsm/frontier_update_dt" value="0.2" type="double"/>
 
         <!-- VLA_Swarm 独立任务状态机 -->
-        <param name="vla_swarm/enable" value="true" type="bool"/>
+        <param name="vla_swarm/enable" value="false" type="bool"/>
         <param name="vla_swarm/result_topic" value="/planning/vla_swarm_result" type="string"/>
         <param name="vla_swarm/bbox_topic" value="/vla_swarm/bbox" type="string"/>
         <param name="vla_swarm/bbox_fallback_topic" value="/vla_swarm/bbox/fallback" type="string"/>
@@ -163,7 +166,7 @@
         <param name="grid_map/fading_time" value="-1.0"/>
         <param name="grid_map/min_ray_length" value="0.1"/>
         <!-- <param name="grid_map/max_ray_length" value="10.0"/> -->
-        <param name="grid_map/max_ray_length" value="4.0"/>
+        <param name="grid_map/max_ray_length" value="5.0"/>
         <param name="grid_map/show_occ_time" value="false"/>
         <param name="grid_map/pose_type" value="2"/>
         <param name="grid_map/frame_id" value="world"/>

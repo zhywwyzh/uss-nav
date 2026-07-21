@@ -61,9 +61,9 @@
     </node> -->
     <!--    <arg name="map_name" value="$(find map_generator)/pcd/7_9_scans.pcd"/>-->
 
-    <!-- <arg name="map_name" value="$(find map_generator)/pcd/2026-06-29-all-newmap-d0.05_ds.pcd"/> -->
+    <arg name="map_name" value="$(find map_generator)/pcd/2026-06-29-all-newmap-d0.05_ds.pcd"/>
     <!-- 支撑地图: 模拟 FAST_LIO prior_local, 以当前位置截球补充点云辅助建图 -->
-    <!-- <arg name="support_map_name" value="$(find map_generator)/pcd/20260704-magic2-d0.05.pcd"/>
+    <arg name="support_map_name" value="$(find map_generator)/pcd/20260704-magic2-d0.05.pcd"/>
     <node pkg="map_generator" name="map_pub" type="map_pub" output="screen" args="$(arg map_name)">
         <param name="add_boundary" value="0"/>
         <param name="add_boundary2" value="0"/>
@@ -73,38 +73,38 @@
         <param name="map_offset_y" value="0.0"/>
         <param name="map_offset_z" value="0.0"/>
     </node>
-    <node name="map_display" pkg= "map_generator" type="map_display.py" output="screen" /> -->
+    <node name="map_display" pkg= "map_generator" type="map_display.py" output="screen" />
 
     <!-- prior_local 支撑点云合并节点 (C++ / PCL): 移植 FAST_LIO prior_local, 以当前位姿截取先验局部点云补充 -->
-    <!-- <node pkg="map_generator" name="drone_0_cloud_merger" type="support_cloud_pub" output="screen">
+    <node pkg="map_generator" name="drone_0_cloud_merger" type="support_cloud_pub" output="screen">
         <param name="support_pcd_path" value="$(arg support_map_name)"/>
         <param name="prior_local_radius" value="2.0"/>
-        <param name="prior_local_leaf" value="0.1"/> -->
+        <param name="prior_local_leaf" value="0.1"/>
         <!-- 先验局部点云截取形状: 0=球(用 radius), 1=长方体(用下方 6 个延伸距离)
              长方体以当前位置为心, yaw 跟随设备朝向, 上下方向恒沿世界 z 轴(不受 pitch/roll 影响)
              prior_box_extend_*: 前/后/左/右/上/下 各方向延伸距离(米), 各方向可不对称 -->
-        <!-- <param name="prior_local_mode"          type="int"    value="1"/> -->
-        <!-- <param name="prior_box_extend_forward"  type="double" value="2.0"/> -->
-        <!-- <param name="prior_box_extend_backward" type="double" value="0.6"/> -->
-        <!-- <param name="prior_box_extend_left"     type="double" value="0.6"/> -->
-        <!-- <param name="prior_box_extend_right"    type="double" value="0.6"/> -->
-        <!-- <param name="prior_box_extend_up"       type="double" value="1.5"/> -->
-        <!-- <param name="prior_box_extend_down"     type="double" value="2.0"/> -->
+        <param name="prior_local_mode"          type="int"    value="1"/>
+        <param name="prior_box_extend_forward"  type="double" value="2.0"/>
+        <param name="prior_box_extend_backward" type="double" value="0.6"/>
+        <param name="prior_box_extend_left"     type="double" value="0.6"/>
+        <param name="prior_box_extend_right"    type="double" value="0.6"/>
+        <param name="prior_box_extend_up"       type="double" value="1.5"/>
+        <param name="prior_box_extend_down"     type="double" value="2.0"/>
         <!-- 移动阈值优化(对齐 FAST_LIO prior_local_motion_*): 位移不足复用上次截取结果;
              模式1下原地转 yaw 超 motion_yaw_thresh 仍重算(长方体朝向随 yaw) -->
-        <!-- <param name="prior_local_motion_check"      type="bool"   value="false"/> -->
-        <!-- <param name="prior_local_motion_thresh"     type="double" value="0.5"/> -->
-        <!-- <param name="prior_local_motion_yaw_thresh" type="double" value="0.1"/> -->
+        <param name="prior_local_motion_check"      type="bool"   value="false"/>
+        <param name="prior_local_motion_thresh"     type="double" value="0.5"/>
+        <param name="prior_local_motion_yaw_thresh" type="double" value="0.1"/>
         <!-- 支撑地图离群点滤波 (对齐 FAST_LIO prior_outlier_filter, PCD加载时执行一次) -->
-        <!-- <param name="prior_outlier_filter/enable"        type="bool"   value="true"/> -->
-        <!-- <param name="prior_outlier_filter/type"          type="int"    value="1"/>     1:ROR, 2:SOR -->
-        <!-- <param name="prior_outlier_filter/radius"        type="double" value="0.3"/>   ROR搜索半径(m) -->
-        <!-- <param name="prior_outlier_filter/min_neighbors" type="int"    value="30"/>    ROR最少邻居数 -->
-        <!-- <param name="prior_outlier_filter/mean_k"        type="int"    value="20"/>    SOR近邻数 -->
-        <!-- <param name="prior_outlier_filter/std_threshold" type="double" value="2.0"/>   SOR标准差倍数 -->
-        <!-- <remap from="~cloud" to="/drone_0_pcl_render_node/cloud"/>
+        <param name="prior_outlier_filter/enable"        type="bool"   value="true"/>
+        <param name="prior_outlier_filter/type"          type="int"    value="1"/>     <!-- 1:ROR, 2:SOR -->
+        <param name="prior_outlier_filter/radius"        type="double" value="0.3"/>   <!-- ROR搜索半径(m) -->
+        <param name="prior_outlier_filter/min_neighbors" type="int"    value="30"/>     <!-- ROR最少邻居数 -->
+        <param name="prior_outlier_filter/mean_k"        type="int"    value="20"/>    <!-- SOR近邻数 -->
+        <param name="prior_outlier_filter/std_threshold" type="double" value="2.0"/>   <!-- SOR标准差倍数 -->
+        <remap from="~cloud" to="/drone_0_pcl_render_node/cloud"/>
         <remap from="~odom"  to="/drone_0_visual_slam/odom"/>
-    </node> -->
+    </node>
 
     <include file="$(find ego_planner)/launch/include/run_in_sim.xml">
         <arg name="drone_id" value="0"/>
