@@ -51,7 +51,7 @@ FrontierFinder::FrontierFinder(const MapInterface::Ptr& map, ros::NodeHandle& nh
   nh.param("frontier/min_view_finish_fraction", min_view_finish_fraction_, -1.0);
   nh.param("frontier/ftr_blacklist_radius", ftr_blacklist_radius_, 0.2);
   nh.param("frontier/print_info", is_print_info_, false);
-  nh.param("frontier/elimination_max_dist", elimination_max_dist_, 3.0);
+  nh.param("frontier/deletion_mode", deletion_mode_, 0);
 
   nh.param("exploration/radius_far_goal", far_dis_thres_, -1.0);
 
@@ -113,8 +113,7 @@ void FrontierFinder::reCalculateAllFtrTopo(const Eigen::Vector3d &cur_pos) {
    * @param this->tmp_frontiers_     输出 (Output): 存储本次搜索发现的所有新前沿点的列表，这是函数最主要的产出。
    * @param this->edt_env_           输入 (Input): 环境地图接口，提供栅格状态、更新区域等核心数据。
    */
-void FrontierFinder::searchFrontiers(const Vector3d& c_pos, const double yaw,
-                                     bool use_fuel_generation)
+void FrontierFinder::searchFrontiers(const Vector3d& c_pos)
 {
   if (is_print_info_) ROS_WARN_STREAM("[FtrFinder] >>>>>>>>>>>>> SearchFrontiers <<<<<<<<<<<<<");
 
@@ -156,58 +155,35 @@ void FrontierFinder::searchFrontiers(const Vector3d& c_pos, const double yaw,
 
   for (auto iter = frontiers_.begin(); iter != frontiers_.end();)
   {
-    if (is_print_info_)    INFO_MSG("   * iter->id: " << iter->id_ << ", avg: " << iter->average_.transpose());
-    if (is_print_info_)    INFO_MSG("   * boxmin: " << iter->box_min_.transpose() << ", boxmax: " << iter->box_max_.transpose());
-
     auto ft = *iter;
-    // 判断是否一半在localmap内一半在外,如果更新该ftr会造成一半在外一半在内，可能都因为数量不足被删掉，所以保留
+    // local map 边界上的 frontier 一并在外，保留跳过
     if (isHalfInLocalMap(ft))
     {
-      if (is_print_info_)      INFO_MSG_BLUE("   * half in local, reserve.");
       ++rmv_idx;
       ++iter;
     }
-    else
+    // 有重叠且 frontier 发生变化
+    else if (haveOverlap(iter->box_min_, iter->box_max_, update_min, update_max) &&
+        isFrontierChanged(*iter))
     {
-      // 如果有overlap，并且frontier变化，则重置flag，并删除该frontier
-      if (haveOverlap(iter->box_min_, iter->box_max_, update_min, update_max) &&
-          isFrontierChanged(*iter))
+      // deletion_mode_==1: 0720式，额外需要 isWellObserved 确认
+      if (deletion_mode_ == 1 && !isWellObserved(*iter, c_pos))
       {
-        // 距离门：只消除近距离frontier，避免远距离frontier被雷达宽FOV误删
-        if ((iter->average_ - c_pos).norm() > elimination_max_dist_)
-        {
-          if (is_print_info_)          INFO_MSG_BLUE("have overlap, but too far to eliminate, reserve (dist=" << (iter->average_ - c_pos).norm() << ").");
-          ++rmv_idx;
-          ++iter;
-        }
-        // 当前相机FOV门：消除仅对当前朝向相机能覆盖的frontier生效
-        else if (!isInCurrentFOV(*iter, c_pos, yaw))
-        {
-          if (is_print_info_)          INFO_MSG_BLUE("have overlap, but not in current FOV, reserve.");
-          ++rmv_idx;
-          ++iter;
-        }
-        // 防止老的frontier在滚动localmap的unknown区域，这时判断没有被很好地观察，保留
-        else if (!isWellObserved(*iter, c_pos))
-        {
-          if (is_print_info_)          INFO_MSG_BLUE("have overlap, but not well observed, reserve.");
-          ++rmv_idx;
-          ++iter;
-        }
-        else
-        {
-          if (is_print_info_)          INFO_MSG_RED("have overlap, well observed, delete frontier: " << iter->id_);
-          removed_ids_.push_back(rmv_idx);
-          remove_frontiers_.push_back(ft);
-          resetFlag(iter, frontiers_);
-        }
-      }
-      else
-      {
-        if (is_print_info_)  INFO_MSG_RED("have overlap, delete frontier: " << iter->id_);
         ++rmv_idx;
         ++iter;
       }
+      else
+      {
+        // deletion_mode_==0(FUEL式) 直接删，或 mode_1 通过 isWellObserved
+        removed_ids_.push_back(rmv_idx);
+        remove_frontiers_.push_back(ft);
+        resetFlag(iter, frontiers_);
+      }
+    }
+    else
+    {
+      ++rmv_idx;
+      ++iter;
     }
   }
   if (is_print_info_) std::cout << "After remove: " << frontiers_.size() << std::endl;
@@ -233,24 +209,8 @@ void FrontierFinder::searchFrontiers(const Vector3d& c_pos, const double yaw,
   // edt_env_->sdf_map_->posToIndex(search_max, max_id);
 
   Eigen::Vector3i min_id, max_id;
-  bool has_generation_box = true;
-  if (use_fuel_generation)
-  {
-    // FUEL式生成：消费自上次frontier搜索以来累计的雷达地图更新盒。
-    has_generation_box = edt_env_->getFrontierUpdatedBoxIdx(min_id, max_id, true);
-    if (has_generation_box)
-    {
-      const int inflate_xy = std::max(1, static_cast<int>(std::ceil(1.0 / resolution_)));
-      const int inflate_z = std::max(1, static_cast<int>(std::ceil(0.5 / resolution_)));
-      min_id -= Eigen::Vector3i(inflate_xy, inflate_xy, inflate_z);
-      max_id += Eigen::Vector3i(inflate_xy, inflate_xy, inflate_z);
-    }
-  }
-  else
-  {
-    edt_env_->getUpdatedBoxIdx(min_id, max_id);
-  }
-  if (is_print_info_ && has_generation_box)
+  edt_env_->getUpdatedBoxIdx(min_id, max_id);
+  if (is_print_info_)
     ROS_WARN_STREAM("min_id: " << min_id.transpose() << ", max_id: " << max_id.transpose());
 
   vector<Eigen::Vector3d> free_cell;
@@ -258,7 +218,7 @@ void FrontierFinder::searchFrontiers(const Vector3d& c_pos, const double yaw,
   vector<Eigen::Vector3d> seed_cell;
   vector<Eigen::Vector3d> ftr_cell;
 
-  if (is_print_info_ && has_generation_box)
+  if (is_print_info_)
   {
     for (int x = min_id(0) - 1; x <= max_id(0) + 1; ++x)
       for (int y = min_id(1) - 1; y <= max_id(1) + 1; ++y)
@@ -278,30 +238,24 @@ void FrontierFinder::searchFrontiers(const Vector3d& c_pos, const double yaw,
         }
   }
 
-  //! frontier的更新部分必须update_range一致(或者比update_range大)，否则ftr生成的边界在update_range里，找不到unknown邻居
-  if (has_generation_box)
-  {
-    for (int x = min_id(0); x <= max_id(0); ++x)
-      for (int y = min_id(1); y <= max_id(1); ++y)
-        for (int z = min_id(2); z <= max_id(2); ++z)
-        {
-          // Scanning the updated region to find seeds of frontiers
-          Eigen::Vector3i cur(x, y, z);
-          if (!edt_env_->isInLocalMap(cur) || !edt_env_->isInGlobalMap(cur))
-            continue;
-          Eigen::Vector3d p = edt_env_->globalIdx2Pos(cur);
+  // 在 update region 内重新扫描 frontier 种子，重建变化后的 frontier
+  for (int x = min_id(0); x <= max_id(0); ++x)
+    for (int y = min_id(1); y <= max_id(1); ++y)
+      for (int z = min_id(2); z <= max_id(2); ++z)
+      {
+        Eigen::Vector3i cur(x, y, z);
+        if (!edt_env_->isInLocalMap(cur) || !edt_env_->isInGlobalMap(cur))
+          continue;
+        Eigen::Vector3d p = edt_env_->globalIdx2Pos(cur);
 
-          if (is_print_info_ && frontier_flag_[toadr(cur)] == 1 && knownfree(cur) && isNeighborUnknown(cur)){
-            ftr_cell.push_back(p);
-          }
-
-          if (frontier_flag_[toadr(cur)] == 0 && knownfree(cur) && isNeighborUnknown(cur)) {
-            // Expand from the seed cell to find a complete frontier cluster
-            // INFO_MSG_GREEN("   * Expand frontier from seed cell: " << cur.transpose());
-            expandFrontier(cur);
-          }
+        if (is_print_info_ && frontier_flag_[toadr(cur)] == 1 && knownfree(cur) && isNeighborUnknown(cur)){
+          ftr_cell.push_back(p);
         }
-  }
+
+        if (frontier_flag_[toadr(cur)] == 0 && knownfree(cur) && isNeighborUnknown(cur)) {
+          expandFrontier(cur);
+        }
+      }
   if (is_print_info_) ROS_INFO_STREAM("   * New Ftr Search done. ");
   splitLargeFrontiers(tmp_frontiers_);
 
@@ -829,56 +783,20 @@ bool FrontierFinder::isHalfInLocalMap(const Frontier& ft)
     }
 }
 
-// 判断frontier是否有足够多的cell落在当前朝向的相机FOV内
-// 雷达FOV远大于相机FOV，生成frontier时用雷达范围，消除时需额外确认相机能看到
-bool FrontierFinder::isInCurrentFOV(const Frontier& ft, const Vector3d& pos, const double& yaw)
-{
-  percep_utils_->setPose(pos, yaw);
-  int in_fov_count = 0;
-  for (const auto& cell : ft.cells_)
-  {
-    if (percep_utils_->insideFOV(cell)) in_fov_count++;
-  }
-  // 至少20%的cell落在当前相机FOV内才认为该frontier在视野中
-  if (in_fov_count > 0.2 * ft.cells_.size())
-    return true;
-  return false;
-}
-
 bool FrontierFinder::isWellObserved(const Frontier& ft, const Vector3d& pos)
 {
-  // 预计算每个cell是否在至少一个viewpoint的相机FOV内
-  // 防止LiDAR宽FOV清除的cell被误认为相机已观测
-  vector<bool> in_camera_fov(ft.cells_.size(), false);
-  if (!ft.viewpoints_.empty())
-  {
-    for (const auto& vp : ft.viewpoints_)
-    {
-      percep_utils_->setPose(vp.pos_, vp.yaw_);
-      for (size_t i = 0; i < ft.cells_.size(); i++)
-      {
-        if (!in_camera_fov[i] && percep_utils_->insideFOV(ft.cells_[i]))
-          in_camera_fov[i] = true;
-      }
-    }
-  }
-
   int well_observed_count = 0;
-  for (size_t i = 0; i < ft.cells_.size(); i++)
+  for (auto cell : ft.cells_)
   {
     Eigen::Vector3i idx;
-    idx = edt_env_->pos2GlobalIdx(ft.cells_[i]);
-    // occupancy已变化 + 在localmap内 + (无viewpoint时回退原逻辑 / 必须在相机FOV内)
-    if (edt_env_->getOccupancy(idx) != MapInterface::UNKNOWN &&
-        edt_env_->isInLocalMap(idx) &&
-        (ft.viewpoints_.empty() || in_camera_fov[i]))
+    idx = edt_env_->pos2GlobalIdx(cell);
+    if (edt_env_->getOccupancy(idx) != MapInterface::UNKNOWN && edt_env_->isInLocalMap(idx))
     {
       well_observed_count++;
     }
   }
   if (well_observed_count > 0.8 * ft.cells_.size())
     return true;
-  INFO_MSG("well_observed_count: " << well_observed_count << " | thres(20%): " << 0.2 * ft.cells_.size());
   if (well_observed_count > 0.2 * ft.cells_.size())
   {
     for (auto vp : ft.viewpoints_)
@@ -1192,6 +1110,34 @@ void FrontierFinder::frontierForceDeleteAll() {
   removed_ids_.clear();
   std::fill(frontier_flag_.begin(), frontier_flag_.end(), 0);
   first_new_ftr_ = frontiers_.end();
+}
+
+void FrontierFinder::incrementObservationAttempts(const Frontier& ftr, int max_attempts) {
+  for (auto iter = frontiers_.begin(); iter != frontiers_.end();) {
+    if ((iter->average_ - ftr.average_).norm() < 0.05) {
+      iter->observation_attempts_++;
+      if (iter->observation_attempts_ >= max_attempts) {
+        INFO_MSG_RED("[FtrFinder] force delete frontier after " << iter->observation_attempts_
+                     << " attempts, avg: " << iter->average_.transpose());
+        for (auto iter_other = frontiers_.begin(); iter_other != frontiers_.end(); ++iter_other) {
+          if (iter == iter_other) continue;
+          auto iter_cost = iter_other->costs_.begin();
+          std::advance(iter_cost, iter->id_);
+          iter_other->costs_.erase(iter_cost);
+          auto iter_path = iter_other->paths_.begin();
+          std::advance(iter_path, iter->id_);
+          iter_other->paths_.erase(iter_path);
+        }
+        iter = frontiers_.erase(iter);
+      } else {
+        INFO_MSG_YELLOW("[FtrFinder] frontier observation attempt " << iter->observation_attempts_
+                        << "/" << max_attempts << ", avg: " << iter->average_.transpose());
+        ++iter;
+      }
+      return;
+    }
+    ++iter;
+  }
 }
 
 void FrontierFinder::getFrontiersWithInfo(vector<Frontier>& clusters) {
@@ -1568,18 +1514,8 @@ bool FrontierFinder::isAnyFrontierCovered(const Vector3d& c_pos) {
         // edt_env_->sdf_map_->posToIndex(cell, idx);
         if (!(knownfree(idx) && isNeighborUnknown(idx)) && ++change_num >= change_thresh)
         {
-          // INFO_MSG("Frontier " << ftr.id_ << " has " << change_num << " cells changed >= " << change_thresh << ", update");
-          // 进一步判断是否需要更新
           if (isHalfInLocalMap(ftr))
-          {
-            // INFO_MSG("But Frontier " << ftr.id_ << " is half in local map, no update");
             break;
-          }
-          if (!isWellObserved(ftr, c_pos))
-          {
-            // INFO_MSG("But Frontier " << ftr.id_ << " is not well observed, no update");
-            break;
-          }
           return true;
         }
       }

@@ -349,7 +349,7 @@ void FrontierManager::updateFrontiersForPlanning(const Vector3d& pos, const doub
   // 必须在规划器锁定地图输出缓冲前执行，避免与建图线程形成锁顺序反转。
   setCurrentTopoNode(scene_graph_->skeleton_gen_->mountCurTopoPoint(pos, yaw));
   scene_graph_->mountCurPoly(pos, yaw);
-  frontier_finder_->searchFrontiers(pos, yaw, true);
+  frontier_finder_->searchFrontiers(pos);
   frontier_finder_->computeFrontiersToVisit(pos);
   frontier_finder_->updateFrontierCostMatrix();
   frontier_finder_->updateSceneGraphWithFtr();

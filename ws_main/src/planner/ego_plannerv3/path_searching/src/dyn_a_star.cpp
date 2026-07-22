@@ -344,7 +344,8 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
                 continue;
             }
 
-            double static_cost = sqrt(d(0) * d(0) + d(1) * d(1) + d(2) * d(2));
+            // z 方向移动代价 1.2x（匹配 getHeu 中 dz 权重）
+            double static_cost = (d(2) != 0) ? 1.2 : 1.0;
             tentative_gScore = current->gScore + static_cost;
 
             if (!flag_explored)
@@ -477,7 +478,8 @@ ASTAR_RET AStar::AstarSearchConsideredUKRegion(const double step_size, Vector3d 
                 continue;
             }
 
-            double static_cost = sqrt(d(0) * d(0) + d(1) * d(1) + d(2) * d(2));
+            // z 方向移动代价 1.2x（匹配 getHeu 中 dz 权重）
+            double static_cost = (d(2) != 0) ? 1.2 : 1.0;
             tentative_gScore = current->gScore + static_cost;
 
             if (!flag_explored)

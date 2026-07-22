@@ -95,6 +95,9 @@ struct Frontier {
 
   // to avoid repeating exploration on topological paths
   std::unordered_map<int, int> topo_blacklist_;
+
+  // 生命周期：被选为目标但未能消除的累计次数，>= max_observation_attempts 时强制删除
+  int observation_attempts_ = 0;
 };
 }
 

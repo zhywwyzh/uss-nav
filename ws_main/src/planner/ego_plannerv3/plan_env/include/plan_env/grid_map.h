@@ -91,6 +91,9 @@ struct MappingParameters
   /* depth image filter parameter */
   double depth_filter_maxdist_, depth_filter_mindist_;
   int depth_filter_margin_;
+  /* 点云自位置过滤：滤除距离odom过近的不可靠点 */
+  bool cloud_filter_self_enable_{false};
+  double cloud_filter_self_dist_{0.5};
 
   /* raycasting */
   double p_hit_, p_miss_, p_min_, p_max_, p_occ_;                                                          // occupancy probability

@@ -116,6 +116,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   nh.param("topo_block/stuck_force_advance_yaw_rate_thresh", fp_->stuck_force_advance_yaw_rate_thresh_, 0.1);
   nh.param("topo_block/stuck_force_advance_duration",        fp_->stuck_force_advance_duration_, 3.0);
   nh.param("topo_block/stuck_force_advance_max_consecutive", fp_->stuck_force_advance_max_consecutive_, 2);
+  nh.param("frontier/max_observation_attempts", fp_->max_observation_attempts_, 3);
   // object-id-nav replan 参数
   nh.param("object_id_nav_replan/enable",               fp_->object_id_nav_replan_enable_, false);
   nh.param("object_id_nav_replan/mode",                 fp_->object_id_nav_replan_mode_, 0);
@@ -2022,7 +2023,7 @@ void FastExplorationFSM::planRegularExplore() {
     INFO_MSG_RED("================================================================================");
     INFO_MSG_RED("[EXPL-FSM] : Can't reach frontier, delete this frontier and add it to blacklist!");
     INFO_MSG_RED("================================================================================");
-    // expl_manager_->frontier_finder_->addFtrBlacklist(expl_manager_->ed_->frontier_to_explore_.average_);
+    expl_manager_->frontier_finder_->addFtrBlacklist(expl_manager_->ed_->frontier_to_explore_.average_);
     INFO_MSG_RED("add to blacklist: " << expl_manager_->ed_->frontier_to_explore_.average_.transpose());
     expl_manager_->forceDeleteFrontier(expl_manager_->ed_->frontier_to_explore_);
   }
@@ -2074,31 +2075,66 @@ void FastExplorationFSM::approachRegularExplore() {
     INFO_MSG_RED("===========================================================================================");
     INFO_MSG_RED("[EXPL-FSM] : Can't reach frontier, delete this frontier and add it to blacklist, replan!");
     INFO_MSG_RED("===========================================================================================");
-    // expl_manager_->frontier_finder_->addFtrBlacklist(expl_manager_->ed_->frontier_to_explore_.average_);
+    expl_manager_->frontier_finder_->addFtrBlacklist(expl_manager_->ed_->frontier_to_explore_.average_);
     INFO_MSG_RED("Ftr [" << expl_manager_->ed_->frontier_to_explore_.id_ << "] pos : "<< expl_manager_->ed_->frontier_to_explore_.average_.transpose());
     expl_manager_->forceDeleteFrontier(expl_manager_->ed_->frontier_to_explore_);
     transitState(replan_target_state, "FSM");
   }
 
+  // ====== replan judgement (优先级从高到低) ======
+
+  // [1] 飞行途中目标 frontier 已被传感器覆盖 → 立即重规划
+  if (t_cur > fp_->replan_thresh2_ &&
+      expl_manager_->frontier_finder_->isAnyFrontierCovered(fd_->odom_pos_)) {
+    ROS_WARN("\n-------------> Replan: frontier covered <-------------\n");
+    transitState(replan_target_state, "frontier_covered");
+    return;
+  }
+
+  // [2] 飞行途中 frontier 列表发生变化 → 立即重规划
+  if (fd_->frontier_changed_ && t_cur > fp_->replan_thresh2_) {
+    ROS_WARN("\n-------------> Replan: frontiers changed <-------------\n");
+    fd_->frontier_changed_ = false;
+    transitState(replan_target_state, "frontier_changed");
+    return;
+  }
+
+  // [3] 预到达重规划：距最终目标足够近 → 不等完全到达，直接重规划
+  bool near_final_waypoint = (fd_->path_inx_ >= (int)fd_->path_res_.size() - 2 ||
+                              fd_->path_res_.size() <= 2);
+  if (near_final_waypoint &&
+      dis_2_aim_2d < expl_manager_->ep_->radius_close_ * 2.0 &&
+      t_cur > fp_->replan_thresh2_) {
+    ROS_WARN("\n-------------> Replan: pre-arrival (%.1fm to aim) <-------------\n", dis_2_aim_2d);
+    transitState(replan_target_state, "pre_arrival");
+    return;
+  }
+
+  // [4] 到达视点（兜底）：位置+Yaw都满足 → 累计 observation 并重规划
   if (dis_2_aim_2d < fp_->replan_dis_thresh_ && fabs(fd_->odom_yaw_ - fd_->aim_yaw_) < 10.0 / 180.0f * M_PI) {
     ROS_WARN("\n-------------> Replan: [Reach Both Pos&Yaw Aim] <-------------\n");
+    // B3 生命周期: 到达视点但 frontier 仍在活跃列表中 → 累计尝试次数
+    expl_manager_->frontier_finder_->incrementObservationAttempts(expl_manager_->ed_->frontier_to_explore_, fp_->max_observation_attempts_);
     ros::Duration(0.5).sleep();
     ROS_INFO_STREAM("t_cur: " << t_cur);
     transitState(replan_target_state, "FSM");
     return;
   }
 
-  // Replan after some time
+  // [5] 兜底卡死恢复：长时间静止 → 强制重规划
   if (t_cur > fp_->replan_thresh3_ && fd_->odom_vel_.norm() <= 0.1) {
-    ROS_WARN("\n-------------> Replan: periodic call <-------------\n");
+    ROS_WARN("\n-------------> Replan: periodic stuck recovery <-------------\n");
     ROS_WARN("t_cur: %f s", t_cur);
     transitState(replan_target_state, "FSM");
     return;
   }
 
-  // Close to aim, rotate yaw
+  // [6] Yaw 旋转（兜底：预到达未触发时才走到这里，避免死锁）
+  // fallback: ego 未完成但位置极近+速度极低时也允许旋转
   if ((fd_->path_inx_ == fd_->path_res_.size() - 1 || fd_->path_res_.size() == 2) &&
-      dis_2_aim_2d < expl_manager_->ep_->radius_close_ && !fd_->has_rotated_ && fd_->ego_exec_finished_){
+      dis_2_aim_2d < expl_manager_->ep_->radius_close_ && !fd_->has_rotated_ &&
+      (fd_->ego_exec_finished_ ||
+       (dis_2_aim_2d < 0.5 && fd_->odom_vel_.norm() <= 0.3))) {
     INFO_MSG_CYAN("\n[Approach EXPLORE] Close to Aim Position, Rotate Yaw to Aim Yaw!\n");
     pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false,
                  quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED);
@@ -2107,9 +2143,9 @@ void FastExplorationFSM::approachRegularExplore() {
     return;
   }
 
-  // Local goal
+  // [7] Waypoint 推进（原逻辑不变）
   if (fd_->path_res_.size() > 2 && dis_2_local_aim < 2.0){
-    if (fd_->path_inx_ >= fd_->path_res_.size() - 1 && 
+    if (fd_->path_inx_ >= fd_->path_res_.size() - 1 &&
     fd_->ego_exec_finished_ && fd_->ego_modify_status_) {
       INFO_MSG_RED("\n[Approach EXPLORE] Force Replan, because local goal can't reach!\n");
       transitState(MISSION_FSM_STATE::PLAN_EXPLORE, "can't reach local goal");
@@ -3464,14 +3500,20 @@ void FastExplorationFSM::frontierCallback(const ros::TimerEvent& e) {
   if (new_topo) {
     ft->reCalculateAllFtrTopo(fd_->odom_pos_);
   }
-  ft->searchFrontiers(fd_->odom_pos_, fd_->odom_yaw_,
-                      expl_manager_->ep_->frontier_tsp_mode_ == 1);
+  ft->searchFrontiers(fd_->odom_pos_);
   ft->computeFrontiersToVisit(fd_->odom_pos_);
   ft->updateFrontierCostMatrix();
   ft->updateSceneGraphWithFtr();
 
   //! Update HGrid
   expl_manager_->updateHgrid();
+
+  // 检测 frontier 变化（新增/消失），供 approachRegularExplore 持续重规划使用
+  size_t cur_ftr_count = ft->frontiers_.size();
+  if (fd_->frontier_last_count_ != 0 && cur_ftr_count != fd_->frontier_last_count_) {
+    fd_->frontier_changed_ = true;
+  }
+  fd_->frontier_last_count_ = cur_ftr_count;
 
   // int area_id = scene_graph_->getAreaFromPoly(scene_graph_->getCurPoly());
   // expl_manager_->planLLMExploration(area_id, fd_->odom_pos_, fd_->odom_vel_, fd_->odom_yaw_,

@@ -108,7 +108,10 @@ namespace dyn_a_star
 
 	inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)
 	{
-		return tie_breaker_ * getManhHeu(node1, node2);
+		double dx = abs(node1->index(0) - node2->index(0));
+		double dy = abs(node1->index(1) - node2->index(1));
+		double dz = abs(node1->index(2) - node2->index(2));
+		return tie_breaker_ * (dx + dy + 1.2 * dz);
 	}
 
 	inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector3i &index) const

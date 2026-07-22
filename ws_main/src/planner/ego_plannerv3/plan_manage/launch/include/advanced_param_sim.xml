@@ -155,6 +155,8 @@
         <param name="grid_map/depth_filter_maxdist"   value="4.5"/>
         <param name="grid_map/depth_filter_mindist"   value="0.1"/>
         <param name="grid_map/depth_filter_margin"    value="2"/>
+        <param name="grid_map/cloud_filter_self_enable" value="true" type="bool"/>   <!-- 是否滤除odom自身近处不可靠激光点 -->
+        <param name="grid_map/cloud_filter_self_dist"   value="0.4" type="double"/> <!-- 自身近处过滤距离(m) -->
         <!-- local fusion -->
         <!-- <param name="grid_map/p_hit" value="0.90"/>
         <param name="grid_map/p_miss" value="0.45"/> -->
@@ -201,7 +203,7 @@
         <param name="frontier/candidate_phinum" value="6" type="int"/>
         <param name="frontier/candidate_rnum" value="4" type="int"/>
         <param name="frontier/candidate_rmin" value="0.8" type="double"/>
-        <param name="frontier/candidate_rmax" value="2.2" type="double"/>
+        <param name="frontier/candidate_rmax" value="1.8" type="double"/>
         <param name="frontier/candidate_znum" value="3" type="int"/>
         <param name="frontier/candidate_zmin" value="-0.2" type="double"/>
         <param name="frontier/candidate_zmax" value="0.2" type="double"/>
@@ -209,7 +211,8 @@
         <param name="frontier/min_view_finish_fraction" value="0.5" type="double"/>;
         <param name="frontier/ftr_blacklist_radius" value="1.0" type="double"/>;
         <param name="frontier/print_info" value="false" type="bool"/>;
-        <param name="frontier/elimination_max_dist" value="4.0" type="double"/>; <!-- 消除距离门(m)，仅此距离内的frontier参与消除 -->
+        <param name="frontier/deletion_mode" value="0" type="int"/>; <!-- 0=FUEL式(isFrontierChanged直接删+重建), 1=0720式(isFrontierChanged+isWellObserved) -->
+        <param name="frontier/max_observation_attempts" value="3" type="int"/>; <!-- B3生命周期: 被选为目标但未能消除的累计次数阈值 -->
         
         <!-- Hgrid -->
         <param name="global_map/box_min_x" value="-20" type="double"/>
@@ -235,7 +238,7 @@
         <!-- exploration -->
         <param name="exploration/radius_close_goal" value="1.5" type="double"/>
         <param name="exploration/radius_far_goal" value="7.5" type="double"/>
-        <param name="exploration/frontier_tsp_mode" value="0" type="int"/><!-- 0: 使用异步frontier列表；1: 基于FUEL的TSP规划前同步刷新frontier -->
+        <param name="exploration/frontier_tsp_mode" value="1" type="int"/><!-- 0: 异步frontier列表, 1: TSP前同步刷新frontier -->
         <param name="exploration/refine_local" value="false" type="bool"/>
         <param name="exploration/refined_num" value="4" type="int"/>
         <param name="exploration/refined_radius" value="5.0" type="double"/>

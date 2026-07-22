@@ -112,6 +112,10 @@ struct FSMData
   u_int8_t explore_count_{0};
   int      df_demo_target_id_{-100};
   bool     df_demo_mode_{false};
+
+  // 探索持续重规划：frontier 变化感知
+  size_t   frontier_last_count_{0};   // 上次 frontier 数量
+  bool     frontier_changed_{false};  // frontier 列表是否发生变化
 };
 
 struct FSMParam
@@ -155,6 +159,8 @@ struct FSMParam
   double object_id_nav_replan_mode2_stuck_fallback_delay_{10.0}; // mode2卡死后等待进入topo-block的延迟(s)
   // object-id-nav 导航语义参数
   bool   object_id_nav_require_final_yaw_{true};          // 导航到物体后是否需要旋转面向它
+  // B3 生命周期: frontier 被选为目标但未能消除的累计次数阈值
+  int    max_observation_attempts_{3};
 };
 
 struct ExplorationData {

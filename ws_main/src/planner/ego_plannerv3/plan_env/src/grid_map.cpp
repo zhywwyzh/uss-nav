@@ -29,6 +29,8 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/depth_filter_maxdist", mp_.depth_filter_maxdist_, 5.0);
   node_.param("grid_map/depth_filter_mindist", mp_.depth_filter_mindist_, 0.2);
   node_.param("grid_map/depth_filter_margin", mp_.depth_filter_margin_, 2);
+  node_.param("grid_map/cloud_filter_self_enable", mp_.cloud_filter_self_enable_, false);
+  node_.param("grid_map/cloud_filter_self_dist", mp_.cloud_filter_self_dist_, 0.5);
 
   node_.param("grid_map/p_hit", mp_.p_hit_, 0.70);
   node_.param("grid_map/p_miss", mp_.p_miss_, 0.35);
@@ -1164,6 +1166,10 @@ void GridMap::projectPC(pcl::PointCloud<pcl::PointXYZ> &pc)
     {
       proj_pt = md_.camera_pos_ + (mp_.depth_filter_maxdist_ + 0.1) * (proj_pt - md_.camera_pos_).normalized();
     }
+
+    // 滤除距离自身太近的不可靠激光点(雷达近场盲区杂点)
+    if (mp_.cloud_filter_self_enable_ && (proj_pt - md_.camera_pos_).norm() < mp_.cloud_filter_self_dist_)
+      continue;
 
     md_.proj_points_[md_.proj_points_cnt_++] = proj_pt;
   }
