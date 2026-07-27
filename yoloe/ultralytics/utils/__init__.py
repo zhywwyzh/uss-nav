@@ -508,9 +508,85 @@ def yaml_print(yaml_file: Union[str, Path, dict]) -> None:
     LOGGER.info(f"Printing '{colorstr('bold', 'black', yaml_file)}'\n\n{dump}")
 
 
+class YAML:
+    """YAML utility class for efficient file operations with automatic C-implementation detection.
+
+    This class provides optimized YAML loading and saving operations using PyYAML's fastest available implementation
+    (C-based when possible). It implements a singleton pattern with lazy initialization, allowing direct class method
+    usage without explicit instantiation.
+    """
+
+    _instance = None
+
+    @classmethod
+    def _get_instance(cls):
+        """Initialize singleton instance on first use."""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        """Initialize with optimal YAML implementation (C-based when available)."""
+        import yaml as _yaml
+
+        self.yaml = _yaml
+        try:
+            self.SafeLoader = _yaml.CSafeLoader
+            self.SafeDumper = _yaml.CSafeDumper
+        except (AttributeError, ImportError):
+            self.SafeLoader = _yaml.SafeLoader
+            self.SafeDumper = _yaml.SafeDumper
+
+    @classmethod
+    def save(cls, file="data.yaml", data=None, header=""):
+        """Save Python object as YAML file."""
+        instance = cls._get_instance()
+        if data is None:
+            data = {}
+        file = Path(file)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        valid_types = int, float, str, bool, list, tuple, dict, type(None)
+        for k, v in data.items():
+            if not isinstance(v, valid_types):
+                data[k] = str(v)
+        with open(file, "w", errors="ignore", encoding="utf-8") as f:
+            if header:
+                f.write(header)
+            instance.yaml.dump(data, f, sort_keys=False, allow_unicode=True, Dumper=instance.SafeDumper)
+
+    @classmethod
+    def load(cls, file="data.yaml", append_filename=False):
+        """Load YAML file to Python object with robust error handling."""
+        instance = cls._get_instance()
+        assert str(file).endswith((".yaml", ".yml")), f"Not a YAML file: {file}"
+        with open(file, errors="ignore", encoding="utf-8") as f:
+            s = f.read()
+        try:
+            data = instance.yaml.load(s, Loader=instance.SafeLoader)
+        except Exception as e:
+            s = re.sub(r"[^\x09\x0A\x0D\x20-\x7E\x85\xA0-퟿-�\U00010000-\U0010ffff]+", "", s)
+            try:
+                data = instance.yaml.load(s, Loader=instance.SafeLoader)
+            except Exception:
+                raise ValueError(
+                    f"YAML syntax error in '{file}': {e}\nVerify YAML with https://ray.run/tools/yaml-formatter"
+                ) from None
+        if data is None:
+            data = {}
+        elif not isinstance(data, dict):
+            raise ValueError(
+                f"'{file}' is not a valid YAML mapping. Verify YAML with https://ray.run/tools/yaml-formatter"
+            )
+        if "None" in data.values():
+            data = {k: None if v == "None" else v for k, v in data.items()}
+        if append_filename:
+            data["yaml_file"] = str(file)
+        return data
+
+
 # Default configuration
-DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
-DEFAULT_SOL_DICT = yaml_load(DEFAULT_SOL_CFG_PATH)  # Ultralytics solutions configuration
+DEFAULT_CFG_DICT = YAML.load(DEFAULT_CFG_PATH)
+DEFAULT_SOL_DICT = YAML.load(DEFAULT_SOL_CFG_PATH)  # Ultralytics solutions configuration
 for k, v in DEFAULT_CFG_DICT.items():
     if isinstance(v, str) and v.lower() == "none":
         DEFAULT_CFG_DICT[k] = None

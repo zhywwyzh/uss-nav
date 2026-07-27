@@ -124,7 +124,7 @@ class TrackRequest(BaseModel):
     strict_identity: bool = Field(True, description="已有 target_id 后是否禁止普通帧自动切换到其他 id")
     allow_rebind: bool = Field(False, description="是否允许本次请求按 bbox/last_bbox 重新绑定新 id")
     lost_rebind: bool = Field(False, description="是否为 lost 后显式重捕获请求")
-    tracker: str = Field("botsort", description="botsort 或 bytetrack")
+    tracker: str = Field("deepocsort", description="deepocsort / botsort / bytetrack / ocsort / tracktrack / fasttrack")
     prompt_mode: str = Field("text", description="text / visual / hybrid")
     update_visual_prompt: bool = Field(False, description="是否使用当前 init_bbox 更新 visual prompt embedding")
     visual_prompt_reset_tracker: bool = Field(True, description="visual prompt 更新后是否重置底层 tracker")
@@ -167,7 +167,7 @@ class YoloeTrackEngine:
         self.model = self._load_model()
 
         self.current_label = ""
-        self.current_tracker = "botsort"
+        self.current_tracker = "deepocsort"
         self.current_prompt_mode = "text"
         self.current_prompt_source = "text"
         self.target_id: int | None = None
@@ -189,8 +189,10 @@ class YoloeTrackEngine:
         return model
 
     def _tracker_cfg_path(self, tracker: str) -> str:
-        tracker = str(tracker or "botsort").strip().lower()
-        if tracker not in {"botsort", "bytetrack"}:
+        from ultralytics.trackers.track import TRACKER_MAP  # noqa: E402
+
+        tracker = str(tracker or "deepocsort").strip().lower()
+        if tracker not in TRACKER_MAP:
             raise ValueError(f"unsupported tracker: {tracker}")
         cfg = self.tracker_dir / f"{tracker}.yaml"
         if not cfg.exists():
@@ -642,6 +644,9 @@ class YoloeTrackEngine:
     def _normalize_prompt_mode(self, prompt_mode: str) -> str:
         """规整 prompt 模式，避免请求侧大小写或空字符串影响运行。"""
         mode = str(prompt_mode or "text").strip().lower()
+        if mode in {"fixed_vocab", "fixed-vocab"}:
+            # 兼容 old config 使用 TensorRT 模式的 run_main 请求
+            return "text"
         if mode not in {"text", "visual", "hybrid"}:
             raise ValueError(f"unsupported prompt_mode: {prompt_mode}")
         return mode

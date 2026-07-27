@@ -131,7 +131,7 @@ class TrackRequest(BaseModel):
     strict_identity: bool = Field(True, description="已有 target_id 后是否禁止普通帧自动切换到其他 id")
     allow_rebind: bool = Field(False, description="是否允许本次请求按 bbox/last_bbox 重新绑定新 id")
     lost_rebind: bool = Field(False, description="是否为 lost 后显式重捕获请求")
-    tracker: str = Field("botsort", description="botsort 或 bytetrack")
+    tracker: str = Field("deepocsort", description="deepocsort / botsort / bytetrack / ocsort / tracktrack / fasttrack")
     prompt_mode: str = Field("fixed_vocab", description="兼容字段；TensorRT API 固定为 fixed_vocab")
     update_visual_prompt: bool = Field(False, description="兼容字段；TensorRT API 忽略")
     visual_prompt_reset_tracker: bool = Field(True, description="兼容字段；TensorRT API 忽略")
@@ -217,7 +217,7 @@ class YoloeTensorRtTrackEngine:
 
         self.current_label = ""
         self.current_class_id: int | None = None
-        self.current_tracker = "botsort"
+        self.current_tracker = "deepocsort"
         self.current_prompt_mode = "fixed_vocab"
         self.current_prompt_source = "fixed_vocab"
         self.target_id: int | None = None
@@ -367,8 +367,8 @@ class YoloeTensorRtTrackEngine:
         print("[YOLOE_TRT_WARMUP] done", flush=True)
 
     def _tracker_cfg_path(self, tracker: str) -> str:
-        tracker = str(tracker or "botsort").strip().lower()
-        if tracker not in {"botsort", "bytetrack"}:
+        tracker = str(tracker or "deepocsort").strip().lower()
+        if tracker not in TRACKER_MAP:
             raise ValueError(f"unsupported tracker: {tracker}")
         cfg = self.tracker_dir / f"{tracker}.yaml"
         if not cfg.exists():

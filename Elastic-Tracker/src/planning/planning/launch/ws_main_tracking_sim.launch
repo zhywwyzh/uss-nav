@@ -75,7 +75,7 @@
       <param name="inflate_size" value="$(arg inflate_num)"/>
       <param name="use_mask" value="true"/>
     </node>
-
+ 
     <node name="mapping_vis" pkg="mapping" type="mapping_vis_node">
       <remap from="~gridmap_inflate" to="$(arg gridmap_inflate_topic)"/>
     </node>
@@ -110,7 +110,7 @@
       <param name="theta_clearance" value="0.8"/>
       <param name="clearance_d" value="0.2"/>
       <param name="tolerance_d" value="0.3"/>
-      <param name="tracking_dist" value="2.5"/>
+      <param name="tracking_dist" value="1.5"/>
       <param name="tracking_dur" value="3.0"/>
       <param name="tracking_dt" value="0.2"/>
       <param name="debug" value="false"/>
