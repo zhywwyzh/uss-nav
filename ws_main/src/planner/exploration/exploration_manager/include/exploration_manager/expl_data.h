@@ -91,6 +91,8 @@ struct FSMData
   std::string target_cmd_, prior_knowledge_;
   int object_target_id_;
   u_int8_t go_object_process_phase{0};
+  bool     go_object_in_prior_guide_{false}; // true=当前是先验引导(cloud未构建), 到达后回phase0重试
+  u_int8_t go_object_prior_guide_count_{0};  // 先验引导重试计数(最多2次)
   u_int8_t go_waypoint_process_phase{0};
   // 卡死强制推进
   double  stuck_begin_time_{-1.0};       // 进入卡死计时起点(秒), -1表示未进入
@@ -159,6 +161,8 @@ struct FSMParam
   double object_id_nav_replan_mode2_stuck_fallback_delay_{10.0}; // mode2卡死后等待进入topo-block的延迟(s)
   // object-id-nav 导航语义参数
   bool   object_id_nav_require_final_yaw_{true};          // 导航到物体后是否需要旋转面向它
+  bool   object_id_nav_use_thinking_{true};               // 是否使用THINKING引导探索(true=LLM引导, false=纯frontier+直接匹配)
+  int    object_id_nav_prior_guide_max_retries_{2};       // 先验引导最大重试次数(cloud未构建时)
   // B3 生命周期: frontier 被选为目标但未能消除的累计次数阈值
   int    max_observation_attempts_{3};
 };

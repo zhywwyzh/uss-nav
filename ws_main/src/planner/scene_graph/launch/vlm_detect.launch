@@ -1,0 +1,20 @@
+<launch>
+    <arg name="vlm_base_url"    default="http://127.0.0.1:2230/v1" />
+    <arg name="vlm_api_key_env" default="DOUBAO_API_KEY" />
+    <arg name="query_interval_s" default="2.0" />
+    <arg name="rgb_topic"       default="/camera1/color_sync/image/compressed" />
+    <arg name="depth_topic"     default="/camera1/depth_sync/image/compressed" />
+    <arg name="odom_topic"      default="/unity_odom_sync" />
+    <arg name="encodemask_topic" default="/yoloe/encodemask" />
+
+    <node pkg="scene_graph" type="vlm_detect_server.py" name="vlm_detect_server"
+          output="screen">
+        <param name="vlm_base_url"     value="$(arg vlm_base_url)" />
+        <param name="vlm_api_key_env"  value="$(arg vlm_api_key_env)" />
+        <param name="query_interval_s" value="$(arg query_interval_s)" />
+        <param name="rgb_topic"        value="$(arg rgb_topic)" />
+        <param name="depth_topic"      value="$(arg depth_topic)" />
+        <param name="odom_topic"       value="$(arg odom_topic)" />
+        <param name="encodemask_topic" value="$(arg encodemask_topic)" />
+    </node>
+</launch>

@@ -126,6 +126,8 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   nh.param("object_id_nav_replan/stuck_max_consecutive", fp_->object_id_nav_replan_stuck_max_consecutive_, 0);
   nh.param("object_id_nav_replan/mode2_stuck_fallback_delay", fp_->object_id_nav_replan_mode2_stuck_fallback_delay_, 10.0);
   nh.param("object_id_nav/require_final_yaw",             fp_->object_id_nav_require_final_yaw_, true);
+  nh.param("object_id_nav/use_thinking",                 fp_->object_id_nav_use_thinking_, true);
+  nh.param("object_id_nav/prior_guide_max_retries",      fp_->object_id_nav_prior_guide_max_retries_, 2);
   nh.param("vla_swarm/enable",                  vla_swarm_enabled_, false);
   nh.param("vla_swarm/result_topic",            vla_swarm_result_topic_, std::string("/planning/vla_swarm_result"));
   nh.param("vla_swarm/bbox_topic",              vla_swarm_bbox_topic_, std::string("/vla_swarm/bbox"));
@@ -1844,7 +1846,7 @@ void FastExplorationFSM::planLLMExplore() {
 
   scene_graph_->mountCurPoly(fd_->odom_pos_, fd_->odom_yaw_);
 
-  if (scene_graph_->needAreaPrediction()) {
+  if (fp_->object_id_nav_use_thinking_ && scene_graph_->needAreaPrediction()) {
     expl_manager_->frontier_finder_->updateSceneGraphWithFtr();
     INFO_MSG_YELLOW("[FSM] Plan LLM Explore : Area Need Prediction ... start area predict process");
     std::string llm_prompt_str;
@@ -1891,29 +1893,66 @@ void FastExplorationFSM::planLLMExplore() {
     }
   }
 
-  if(fd_->llm_plan_explore_counter_ == 1){
+  if(fd_->llm_plan_explore_counter_ == 1 && scene_graph_->cur_poly_ != nullptr){
     has_made_area_decision_ = true;
     auto it = scene_graph_->skeleton_gen_->area_handler_->area_map_.find(scene_graph_->cur_poly_->area_id_);
-    expl_area_id_ = it->second->id_;
+    if (it != scene_graph_->skeleton_gen_->area_handler_->area_map_.end()) {
+      expl_area_id_ = it->second->id_;
+    }
     INFO_MSG_YELLOW("*** [FSM] Plan LLM Explore : Regular explore ...");
   }
 
   if (!has_made_area_decision_) {
-    INFO_MSG_YELLOW("[FSM] Plan LLM Explore : No Area Decision Made ... start llm-exploration process");
-    scene_graph_->history_visited_area_ids_.push_back(scene_graph_->cur_poly_->area_id_);
+    // THINKING模式: 通过LLM选择探索区域; 非THINKING模式则跳过, 直接fall-through到常规探索
+    if (fp_->object_id_nav_use_thinking_) {
+      INFO_MSG_YELLOW("[FSM] Plan LLM Explore : No Area Decision Made ... start llm-exploration process");
 
-    std::string prompt;
-    scene_graph_->chooseAreaToGoPromptGen(prompt);
-    scene_graph_->sendPrompt(scene_graph_->getCurPromptIdAndPlusOne(),
-                             scene_graph::PromptMsg::PROMPT_TYPE_EXPL_PREDICTION,
-                             prompt, std::chrono::seconds(10), 1);
-    stashCurStateAndTransit(MISSION_FSM_STATE::THINKING, "llm explore plan!");
-    think_start_time_     = ros::Time::now().toSec();
-    think_duration_limit_ = 10.0 * 1.0;
-    return ;
+      // cur_poly_ 为空时（骨架尚未生成或已被 reset），不能解引用 area_id_。
+      // 此时直接发送 LLM prompt 让大模型根据场景图文本信息选择探索区域。
+      if (scene_graph_->cur_poly_ != nullptr) {
+        scene_graph_->history_visited_area_ids_.push_back(scene_graph_->cur_poly_->area_id_);
+      }
+
+      std::string prompt;
+      scene_graph_->chooseAreaToGoPromptGen(prompt);
+      scene_graph_->sendPrompt(scene_graph_->getCurPromptIdAndPlusOne(),
+                               scene_graph::PromptMsg::PROMPT_TYPE_EXPL_PREDICTION,
+                               prompt, std::chrono::seconds(10), 1);
+      stashCurStateAndTransit(MISSION_FSM_STATE::THINKING, "llm explore plan!");
+      think_start_time_     = ros::Time::now().toSec();
+      think_duration_limit_ = 10.0 * 1.0;
+      return ;
+    } else {
+      // 非THINKING模式: 使用当前area继续, planLLMExploration内Fix2兜底全局fallback
+      has_made_area_decision_ = true;
+      if (expl_area_id_ < 0 && scene_graph_->cur_poly_ != nullptr) {
+        expl_area_id_ = scene_graph_->cur_poly_->area_id_;
+      }
+    }
   }
 
   fd_->path_res_.clear();
+
+  // 全景旋转期间 VLM 可能已检测到目标物体。
+  // 若 target_cmd_ 非空且场景图中存在匹配的 object，直接切入终止目标导航，
+  // 不再走 frontier 探索路径。
+  if (!fd_->target_cmd_.empty() && fd_->target_cmd_ != "None") {
+    int found_obj_id = -1;
+    for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
+      if (obj_pair.second->label == fd_->target_cmd_) {
+        found_obj_id = obj_pair.second->id;
+        break;
+      }
+    }
+    if (found_obj_id >= 0) {
+      INFO_MSG_GREEN("[FSM] Target object '" << fd_->target_cmd_
+                     << "' (id=" << found_obj_id << ") found in scene graph, navigate to it.");
+      fd_->object_target_id_ = found_obj_id;
+      transitState(MISSION_FSM_STATE::FIND_TERMINATE_TARGET, "LLM target found in scene graph");
+      return;
+    }
+  }
+
   int res = callExplorationLLMPlanner(fd_->aim_pos_, fd_->aim_vel_, fd_->aim_yaw_, fd_->path_res_);
 
   fd_->llm_plan_explore_counter_ ++;
@@ -1924,6 +1963,25 @@ void FastExplorationFSM::planLLMExplore() {
 
   if (res == NO_FRONTIER) {
     has_made_area_decision_ = false;
+    // 非THINKING模式: 无frontier时先检查是否有匹配目标物体, 有则直接导航过去
+    if (!fp_->object_id_nav_use_thinking_ && !fd_->target_cmd_.empty() && fd_->target_cmd_ != "None") {
+      int found_id = -1;
+      int best_cnt = 0;
+      for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
+        const auto& obj = obj_pair.second;
+        if (obj->label == fd_->target_cmd_ && (int)obj->detection_count > best_cnt) {
+          found_id = obj->id;
+          best_cnt = obj->detection_count;
+        }
+      }
+      if (found_id >= 0) {
+        fd_->object_target_id_ = found_id;
+        INFO_MSG_GREEN("[FSM] No frontier, direct match target: '" << fd_->target_cmd_
+                       << "' id=" << found_id << " detections=" << best_cnt);
+        transitState(MISSION_FSM_STATE::FIND_TERMINATE_TARGET, "no frontier, direct object match");
+        return;
+      }
+    }
     publishExplorationResult(false, "target_not_found", "target area has no frontier");
     transitState(FINISH, "LLM Plan No Frontier");
     return;
@@ -1983,6 +2041,24 @@ void FastExplorationFSM::planRegularExplore() {
     return ;
   }
 
+  // 探索过程中检查VLM是否已检测到目标物体, 若匹配则直接导航过去
+  if (!fd_->target_cmd_.empty() && fd_->target_cmd_ != "None") {
+    int found_obj_id = -1;
+    for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
+      if (obj_pair.second->label == fd_->target_cmd_) {
+        found_obj_id = obj_pair.second->id;
+        break;
+      }
+    }
+    if (found_obj_id >= 0) {
+      INFO_MSG_GREEN("[FSM] Target object '" << fd_->target_cmd_
+                     << "' (id=" << found_obj_id << ") found in scene graph, navigate to it.");
+      fd_->object_target_id_ = found_obj_id;
+      transitState(MISSION_FSM_STATE::FIND_TERMINATE_TARGET, "regular explore: target found in scene graph");
+      return;
+    }
+  }
+
   fd_->path_res_.clear();
   int res = callExplorationPlanner(fd_->aim_pos_, fd_->aim_vel_, fd_->aim_yaw_, fd_->path_res_);
 
@@ -2011,6 +2087,25 @@ void FastExplorationFSM::planRegularExplore() {
   }
   else if (res == NO_FRONTIER)
   {
+    // 无frontier时最后检查一次VLM是否检测到匹配目标物体
+    if (!fd_->target_cmd_.empty() && fd_->target_cmd_ != "None") {
+      int found_id = -1;
+      int best_cnt = 0;
+      for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
+        const auto& obj = obj_pair.second;
+        if (obj->label == fd_->target_cmd_ && (int)obj->detection_count > best_cnt) {
+          found_id = obj->id;
+          best_cnt = obj->detection_count;
+        }
+      }
+      if (found_id >= 0) {
+        fd_->object_target_id_ = found_id;
+        INFO_MSG_GREEN("[FSM] No frontier, direct match target: '" << fd_->target_cmd_
+                       << "' id=" << found_id << " detections=" << best_cnt);
+        transitState(MISSION_FSM_STATE::FIND_TERMINATE_TARGET, "regular explore: no frontier, direct object match");
+        return;
+      }
+    }
     const std::string reason = expl_manager_->hasExplorationRegion() ? "region_explored" : "global_explored";
     publishExplorationResult(true, reason, "no frontier remains");
     transitState(FINISH, "FSM");
@@ -2490,6 +2585,10 @@ void FastExplorationFSM::handlePanoramaYaw() {
              panorama_accumulated_yaw_ * 180.0 / M_PI);
     panorama_command_active_ = false;
     need_panorama_ = false;
+    // 全景期间 stopMotion 等正常 goal 的 trajectory 链路被 WAIT_YAW 打断，
+    // ego FSM 从未到达 WAIT_TARGET，exec_finish_trigger 未发布导致 ego_exec_finished_ 为 false。
+    // 全景结束后显式置 true，确保 planLLMExplore 能被 FSM 回调继续调用。
+    fd_->ego_exec_finished_ = true;
     return;
   }
 
@@ -2769,20 +2868,58 @@ void FastExplorationFSM::goTargetObject() {
     scene_graph_->mountCurPoly(fd_->odom_pos_, fd_->odom_yaw_);
     if (scene_graph_->getPathToObjectWithId(fd_->object_target_id_, fd_->path_res_, fd_->aim_pos_, fd_->aim_yaw_)) {
       INFO_MSG_GREEN("[Targ Obj] | find path to object success, size: " << fd_->path_res_.size());
-    
+
       fd_->has_rotated_     = false;
       fd_->stuck_begin_time_ = -1.0;                  // 新路径生成时重置卡死计时
       fd_->stuck_force_advance_count_ = 0;             // 新路径生成时重置强制推进计数
       fd_->stuck_force_advance_triggered_ = false;
       fd_->last_pub_time_   = ros::Time::now();
+      fd_->go_object_in_prior_guide_ = false;          // 精确导航
       INFO_MSG_CYAN("[Targ Obj] | PubNxtLocalAim, aim: " << fd_->local_aim_pos_ << ", global aim: " << fd_->aim_pos_);
-      getAndPublishNextAim(fd_->path_res_, true, 0.0f);
+      getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
 
       displayPath();
       fd_->go_object_process_phase ++;
     }else {
       fd_->go_object_process_phase = 0;
       if(fd_->find_terminate_target_mode_) {
+        // === 先验引导: cloud未构建(polyhedron_father==null)时, 用obj近似位置找最近poly做粗导航 ===
+        auto obj_map = scene_graph_->object_factory_->object_map_;
+        auto obj_it = obj_map.find(fd_->object_target_id_);
+        if (obj_it != obj_map.end()) {
+          ObjectNode::Ptr obj = obj_it->second;
+          if (obj->edge.polyhedron_father == nullptr &&
+              fd_->go_object_prior_guide_count_ < fp_->object_id_nav_prior_guide_max_retries_) {
+            PolyHedronPtr nearest = scene_graph_->skeleton_gen_->getFrontierTopo(obj->pos);
+            if (nearest != nullptr && scene_graph_->cur_poly_ != nullptr &&
+                nearest != scene_graph_->cur_poly_) {
+              double dis = scene_graph_->skeleton_gen_->astarSearch(
+                  scene_graph_->cur_poly_, nearest, fd_->path_res_);
+              if (!fd_->path_res_.empty() && dis < 99998.0) {
+                fd_->aim_pos_ = nearest->center_;
+                Eigen::Vector3d dxy = nearest->center_ - obj->pos;
+                double aim_direction = atan2(dxy(1), dxy(0)) + M_PI;
+                if (aim_direction > M_PI)  aim_direction -= 2 * M_PI;
+                if (aim_direction < -M_PI) aim_direction += 2 * M_PI;
+                fd_->aim_yaw_ = aim_direction;
+                fd_->has_rotated_ = false;
+                fd_->stuck_begin_time_ = -1.0;
+                fd_->stuck_force_advance_count_ = 0;
+                fd_->stuck_force_advance_triggered_ = false;
+                fd_->last_pub_time_ = ros::Time::now();
+                fd_->go_object_in_prior_guide_ = true;   // 标记为先验引导
+                fd_->go_object_prior_guide_count_++;
+                getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
+                displayPath();
+                fd_->go_object_process_phase++;
+                INFO_MSG_GREEN("[Targ Obj] prior guidance #" << (int)fd_->go_object_prior_guide_count_
+                               << ": obj at " << obj->pos.transpose()
+                               << " -> nearest poly area " << nearest->area_id_);
+                return;
+              }
+            }
+          }
+        }
         publishExplorationResult(false, "target_path_failed", "failed to plan path to target object");
         transitState(FINISH, "** FIND TERMINATE TARGET PATH FAILED **");
       }
@@ -2816,6 +2953,13 @@ void FastExplorationFSM::goTargetObject() {
       ROS_INFO_STREAM("t_cur: " << t_cur);
       fd_->go_object_process_phase = 0;
       if (fd_->find_terminate_target_mode_) {
+        if (fd_->go_object_in_prior_guide_) {
+          // 先验引导到达: 已靠近obj, cloud大概率已构建, 回phase0走精确导航
+          INFO_MSG_GREEN("[Targ Obj] prior guidance #" << (int)fd_->go_object_prior_guide_count_
+                         << " arrived, retry getPathToObjectWithId");
+          return;  // phase已归零, 下次tick重试 (prior guidance或正常路径)
+        }
+        fd_->go_object_prior_guide_count_ = 0;
         publishExplorationResult(true, "target_found", "reached target object");
         transitState(FINISH, "Find Terminate Target Finish");
       }
@@ -3038,7 +3182,7 @@ void FastExplorationFSM::goTargetWithWaypoint() {
     fd_->aim_yaw_ = fd_->waypoint_target_yaw_;
 
     INFO_MSG_GREEN("[Targ Wpt] | find path to waypoint success, size: " << fd_->path_res_.size());
-    getAndPublishNextAim(fd_->path_res_, true, 0.0f);
+    getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
     fd_->path_inx_      = 0;
     fd_->has_rotated_   = false;
     fd_->last_pub_time_ = ros::Time::now();
@@ -3164,8 +3308,36 @@ void FastExplorationFSM::execDFDemo() {
 
 void FastExplorationFSM::findTerminateTarget(){
   fd_->go_object_process_phase    = 0;
+  fd_->go_object_in_prior_guide_   = false;  // 新任务重置先验引导标记
+  fd_->go_object_prior_guide_count_ = 0;    // 新任务重置先验引导计数
   fd_->find_terminate_target_mode_ = true;
-  
+
+  // 非THINKING模式: 直接从VLM检测结果中按label匹配目标物体
+  if (!fp_->object_id_nav_use_thinking_) {
+    std::string target_label = fd_->target_cmd_;
+    int best_id = -1;
+    int best_count = 0;
+    for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
+      const auto& obj = obj_pair.second;
+      if (obj->label == target_label && (int)obj->detection_count > best_count) {
+        best_id = obj->id;
+        best_count = obj->detection_count;
+      }
+    }
+    if (best_id >= 0) {
+      fd_->object_target_id_ = best_id;
+      INFO_MSG_GREEN("[FSM] Direct match (no thinking): target='" << target_label
+                     << "' id=" << best_id << " detections=" << best_count);
+      transitState(MISSION_FSM_STATE::GO_TARGET_OBJECT, "Direct object match (no thinking)");
+    } else {
+      publishExplorationResult(false, "target_not_found",
+                               "no object matching '" + target_label + "' in detections");
+      transitState(MISSION_FSM_STATE::FINISH, "No matching object (no thinking)");
+    }
+    return;
+  }
+
+  // THINKING模式: 通过LLM识别目标物体
   std::string prompt;
   scene_graph_->chooseTerminateObjIdPromptGen(prompt);
   scene_graph_->sendPrompt(scene_graph_->getCurPromptIdAndPlusOne(),
@@ -3462,37 +3634,40 @@ void FastExplorationFSM::frontierCallback(const ros::TimerEvent& e) {
   scene_graph_->updateSceneGraph(fd_->odom_pos_, fd_->odom_yaw_, new_topo);
 
   if (new_topo && fp_->enable_area_prediction_ && fd_->new_topo_need_predict_immediately_) {
-    std::string llm_prompt_str;
-    scene_graph_->newAreaPredictionPromptGen(llm_prompt_str);
-    cur_prompt_id_ = scene_graph_->getCurPromptId();
-    scene_graph_->sendPrompt(scene_graph_->getCurPromptIdAndPlusOne(),
-                             scene_graph::PromptMsg::PROMPT_TYPE_ROOM_PREDICTION,
-                             llm_prompt_str, std::chrono::seconds(10), 1);
-    if (scene_graph_->skeleton_gen_->cur_iter_first_poly_ != nullptr) {
-      // double aim_direction = atan2(fd_->odom_pos_.y() - scene_graph_->skeleton_gen_->cur_iter_first_poly_->center_.y(),
-      //                         fd_->odom_pos_.x() - scene_graph_->skeleton_gen_->cur_iter_first_poly_->center_.x()) + M_PI;
-      
-      double aim_direction = fd_->odom_yaw_;
-
-      if (aim_direction > M_PI)
-        aim_direction -= 2 * M_PI;
-      if (aim_direction < -M_PI)
-        aim_direction += 2 * M_PI;
-
-      Eigen::Vector3d aim_pos = scene_graph_->skeleton_gen_->cur_iter_first_poly_->center_;
-      pubLocalGoal(aim_pos, aim_direction, false,
-                   quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED);
-      // pubLocalGoal(fd_->odom_pos_, fd_->odom_yaw_, false, false);
-      INFO_MSG_GREEN("Get New skeleton info, stop motion & predict new area");
+    // 全景旋转期间不中断 yaw 指令：当前 360° 扫描尚未完成，
+    // 中途发布非全景 goal 会覆盖全景 yaw 目标，导致 handlePanoramaYaw 无法恢复。
+    // 新拓扑的 LLM 预测推迟到全景结束后的 planLLMExplore 中自然触发。
+    if (need_panorama_) {
+      new_topo = false;
+    } else if (fp_->object_id_nav_use_thinking_) {
+      // THINKING模式: 发送LLM预测新区域类型, 暂停运动避免边界区域误判
+      std::string llm_prompt_str;
+      scene_graph_->newAreaPredictionPromptGen(llm_prompt_str);
+      cur_prompt_id_ = scene_graph_->getCurPromptId();
+      scene_graph_->sendPrompt(scene_graph_->getCurPromptIdAndPlusOne(),
+                               scene_graph::PromptMsg::PROMPT_TYPE_ROOM_PREDICTION,
+                               llm_prompt_str, std::chrono::seconds(10), 1);
+      if (scene_graph_->skeleton_gen_->cur_iter_first_poly_ != nullptr) {
+        double aim_direction = fd_->odom_yaw_;
+        if (aim_direction > M_PI)
+          aim_direction -= 2 * M_PI;
+        if (aim_direction < -M_PI)
+          aim_direction += 2 * M_PI;
+        Eigen::Vector3d aim_pos = scene_graph_->skeleton_gen_->cur_iter_first_poly_->center_;
+        pubLocalGoal(aim_pos, aim_direction, false,
+                     quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED);
+        INFO_MSG_GREEN("Get New skeleton info, stop motion & predict new area");
+      }
+      if (md_->mission_state_ == MISSION_FSM_STATE::WAIT_TRIGGER)
+        return;
+      transitState(MISSION_FSM_STATE::LLM_PLAN_EXPLORE, "ftr_callback -> New Topo Found -> Replan");
+      stashCurStateAndTransit(MISSION_FSM_STATE::THINKING, "frontierCallback -> New Topo Found -> Predict!");
+      think_start_time_        = ros::Time::now().toSec();
+      think_duration_limit_    = 10.0;
+      has_made_area_decision_  = false;
+      need_rotate_yaw_         = enable_yaw_scan_;
     }
-    if (md_->mission_state_ == MISSION_FSM_STATE::WAIT_TRIGGER)
-      return ;
-    transitState(MISSION_FSM_STATE::LLM_PLAN_EXPLORE, "ftr_callback -> New Topo Found -> Replan");
-    stashCurStateAndTransit(MISSION_FSM_STATE::THINKING, "frontierCallback -> New Topo Found -> Predict!");
-    think_start_time_        = ros::Time::now().toSec();
-    think_duration_limit_    = 10.0;
-    has_made_area_decision_  = false;
-    need_rotate_yaw_         = enable_yaw_scan_;
+    // 非THINKING模式: 跳过new-topo中断, 当前探索路径正常replan即可处理
   }
 
   expl_manager_->setCurrentTopoNode(scene_graph_->skeleton_gen_->mountCurTopoPoint(fd_->odom_pos_, fd_->odom_yaw_));
@@ -3741,6 +3916,8 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       fd_->object_target_id_ = msg->target_obj_id;
       fd_->path_inx_        = 0;
       fd_->go_object_process_phase = 0;
+      fd_->go_object_in_prior_guide_ = false;
+      fd_->go_object_prior_guide_count_ = 0;
       fd_->find_terminate_target_mode_ = false;
       scene_graph_->clearAllBlocked();     // 新导航任务: 清除上次遗留的不可达标记, 不跨任务持久
       transitState(MISSION_FSM_STATE::GO_TARGET_OBJECT, "instructionCallback");
@@ -3767,7 +3944,6 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
 
     case quadrotor_msgs::Instruction::TURN_OBJECT_NAV:
       applyExplorationRegionFromInstruction(msg);
-      fd_->regular_explore_ = false;
       if (msg->source_task_id == quadrotor_msgs::Instruction::SOURCE_TASK_COUNTING &&
           msg->task_session_id > 0) {
         counting_scene_graph_->startSession(msg->task_session_id, fd_->odom_pos_);
@@ -3785,7 +3961,15 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       fd_->df_demo_mode_ = false;
       fd_->target_cmd_ = msg->command;
       scene_graph_->setTargetAndPriorKnowledge(fd_->target_cmd_, fd_->prior_knowledge_);
-      transitState(MISSION_FSM_STATE::LLM_PLAN_EXPLORE, "instructionCallback");
+      // THINKING关闭时, LLM不参与area选择, 直接走PLAN_EXPLORE(全局TSP);
+      // THINKING开启时, 走LLM_PLAN_EXPLORE让LLM选area
+      if (fp_->object_id_nav_use_thinking_) {
+        fd_->regular_explore_ = false;
+        transitState(MISSION_FSM_STATE::LLM_PLAN_EXPLORE, "instructionCallback");
+      } else {
+        fd_->regular_explore_ = true;
+        transitState(MISSION_FSM_STATE::PLAN_EXPLORE, "instructionCallback");
+      }
       break;
 
     case quadrotor_msgs::Instruction::TURN_REGULAR_EXPLORATION:
@@ -3933,6 +4117,8 @@ void FastExplorationFSM::triggerObjectIdNavReplan(const std::string& reason) {
   fd_->object_target_id_ = msg.target_obj_id;
   fd_->path_inx_ = 0;
   fd_->go_object_process_phase = 0;
+  fd_->go_object_in_prior_guide_ = false;
+  fd_->go_object_prior_guide_count_ = 0;
   fd_->find_terminate_target_mode_ = false;
   scene_graph_->clearAllBlocked();
   transitState(MISSION_FSM_STATE::GO_TARGET_OBJECT, "object_id_nav_replan:" + reason);
@@ -4118,6 +4304,11 @@ void FastExplorationFSM::hardResetExploreArea(bool clear_occupancy, bool clear_p
   fd_->explore_count_ = 0;
   has_made_area_decision_ = false;
   expl_area_id_ = -1;
+
+  // 清除当前挂载的 polyhedron 引用，强制 planLLMExplore 在下一轮重新 mount。
+  // 不清理 skeleton / area_handler 的数据（保留 VLM 检测物体与 polyhedron 的关联）。
+  scene_graph_->cur_poly_ = nullptr;
+
   INFO_MSG_GREEN("=================================");
   INFO_MSG_GREEN("[FSM] : Explore Area Reset Done .");
   INFO_MSG_GREEN("=================================");

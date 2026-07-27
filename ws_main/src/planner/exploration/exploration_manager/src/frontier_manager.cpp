@@ -601,6 +601,17 @@ int FrontierManager::planLLMExploration(const int &area_id, const Eigen::Vector3
   for (const auto& ftr : ftrs_in_area)
     INFO_MSG_YELLOW("Candidate frontier : " << ftr.id_ << ", pos " << ftr.average_.transpose());
 
+  // 指定area无frontier时, 退化为全局frontier搜索 (防御性fallback)
+  if (ftrs_in_area.empty()) {
+    INFO_MSG_YELLOW("[LLM-Plan] : area " << area_id << " has no frontier, fallback to global frontiers");
+    for (auto& ftr: frontier_finder_->frontiers_) {
+      if (ftr.topo_father_ != nullptr)
+        ftrs_in_area.push_back(ftr);
+    }
+    filterFrontiersByExplorationRegion(ftrs_in_area);
+    INFO_MSG_YELLOW("[LLM-Plan] : global fallback found " << ftrs_in_area.size() << " frontiers");
+  }
+
   Frontier nxt_ftr;
   bool     found_path_2_nxt_ftr = false;
   vector<Eigen::Vector3d> path_2_nxt_ftr;
@@ -668,17 +679,10 @@ int FrontierManager::planLLMExploration(const int &area_id, const Eigen::Vector3
       ed_->refined_views1_.insert(ed_->refined_views1_.end(), v1.begin(), v1.end());
       ed_->refined_views2_.insert(ed_->refined_views2_.end(), v2.begin(), v2.end());
     }
-  }else if (ftrs_in_area.size() == 1){
-    nxt_ftr = ftrs_in_area.front();
-    aim_pos = nxt_ftr.viewpoints_.front().pos_;
-    aim_yaw = nxt_ftr.viewpoints_.front().yaw_;
-    found_path_2_nxt_ftr = planNextFtr(cur_pos, nxt_ftr, aim_pos, path_2_nxt_ftr, false);
-    if (!found_path_2_nxt_ftr){
-      ed_->frontier_to_explore_ = nxt_ftr;
-      return FAIL;
-    }
-  }else {
-    INFO_MSG_RED("Target Area [" << area_id << "] has no frontier!");
+  }
+
+  if (ftrs_in_area.empty()) {
+    INFO_MSG_RED("Target Area [" << area_id << "] has no frontier globally!");
     return NO_FRONTIER;
   }
 

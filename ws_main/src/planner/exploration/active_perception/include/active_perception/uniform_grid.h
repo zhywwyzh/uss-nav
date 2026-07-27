@@ -36,6 +36,7 @@ public:
   int id_;
   int local_id_;
   int unknown_num_;
+  int free_;            // 格子内 FREE 状态的体素数量，供 free_ratio 判断用
   int frontier_num_;
   Eigen::Vector3d center_;
   unordered_map<int, int> frontier_cell_nums_;
@@ -112,6 +113,7 @@ private:
   int min_unknown_, min_frontier_, min_free_;
   double consistent_cost_, inside_ratio_;
   double w_unknown_;
+  double free_ratio_threshold_;  // free_ratio 阈值: cell 内 free 占比超此值且无 frontier → covered
 
   // Swarm tf
   Eigen::Matrix3d rot_sw_;

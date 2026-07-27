@@ -18,6 +18,7 @@ UniformGrid::UniformGrid(
   nh.param("partitioning/w_unknown", w_unknown_, 3.5);
   nh.param("partitioning/grid_size", grid_size_, 5.0);
   nh.param("partitioning/multilayer_hgrid", multilayer_hgrid_, false);
+  nh.param("partitioning/free_ratio_threshold", free_ratio_threshold_, 0.7);
 }
 
 UniformGrid::~UniformGrid() {
@@ -85,6 +86,7 @@ void UniformGrid::initGridData(const int& id_offset) {
         grid.is_cur_relevant_ = true;
         grid.is_covered_ = false;
         grid.need_divide_ = false;
+        grid.free_ = 0;
         if (level_ == 1)
           grid.active_ = true;
         else
@@ -354,6 +356,9 @@ void UniformGrid::updateGridInfo(const Eigen::Vector3i& id) {
     }
   }
 
+  // 保存 free 计数到 grid，供 isRelevant 的 free_ratio 判断使用
+  grid.free_ = free;
+
   grid.is_cur_relevant_ = isRelevant(grid);
   if (!grid.is_cur_relevant_) grid.is_covered_ = true;
 
@@ -445,9 +450,24 @@ void UniformGrid::inputFrontiers(const vector<vector<Eigen::Vector3d>>& frontier
  * @return true 参与更新 false 不参与更新
  */
 bool UniformGrid::isRelevant(const GridInfo& grid) {
-  // return grid.unknown_num_ >= min_unknown_ || grid.frontier_num_ >= min_frontier_;
-  // return grid.unknown_num_ >= min_unknown_ || !grid.frontier_cell_nums_.empty();
-  return grid.unknown_num_ >= min_unknown_ || !grid.contained_frontier_ids_.empty();
+  // 有 frontier → 一定相关，不参与 free_ratio 判断
+  if (!grid.contained_frontier_ids_.empty())
+    return true;
+
+  // unknown 数量不足 → 不相关（原有逻辑）
+  if (grid.unknown_num_ < min_unknown_)
+    return false;
+
+  // free_ratio 判断：格内大部分是 free 但没有 frontier
+  // → 那些 unknown 大概率是墙体后不可达的死角，标记为 covered
+  int total = grid.free_ + grid.unknown_num_;
+  if (total > 0) {
+    double free_ratio = static_cast<double>(grid.free_) / total;
+    if (free_ratio > free_ratio_threshold_)
+      return false;
+  }
+
+  return true;
 }
 
 bool UniformGrid::isCovered(const Eigen::Vector3d& pos)

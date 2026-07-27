@@ -292,7 +292,9 @@
         <param name="object_id_nav_replan/stuck_max_consecutive"   type="int"    value="0"/>
         <param name="object_id_nav_replan/mode2_stuck_fallback_delay" type="double" value="3.0"/>
         <!-- object-id-nav 导航语义参数 -->
-        <param name="object_id_nav/require_final_yaw"              type="bool"   value="false"/>
+        <param name="object_id_nav/require_final_yaw"              type="bool"   value="true"/>
+        <param name="object_id_nav/use_thinking"                 type="bool"   value="false"/>
+        <param name="object_id_nav/prior_guide_max_retries"      type="int"    value="2"/>
 
         <!-- skeleton -->
         <param name="skeleton/local_x_max" value="4"/>
@@ -358,7 +360,7 @@
         <param name="obj/mean_k" type="int" value="60"/>
         <param name="obj/std_dev_thresh" type="double" value="0.01"/>
         <param name="obj/obj_cloud_num_thresh" type="int" value="20"/>
-        <param name="obj/detection_counter_thresh" type="int" value="5"/>
+        <param name="obj/detection_counter_thresh" type="int" value="1"/>
 
         <param name="obj/filter_run_duration" type="double" value="3.0"/>
         <param name="obj/obj_main_thread_run_hz" type="int" value="5"/>

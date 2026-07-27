@@ -147,6 +147,16 @@ if(OpenMP_FOUND)
     target_compile_options(yolo_recv_test PRIVATE ${OpenMP_CXX_FLAGS})
 endif()
 
+catkin_install_python(PROGRAMS
+  scripts/vlm_detect_server.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+  FILES_MATCHING PATTERN "*.launch"
+)
+
 add_executable(undistort_node test/image_process_test.cpp)
 target_link_libraries(undistort_node
         ${catkin_LIBRARIES}
