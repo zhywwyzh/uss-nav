@@ -544,7 +544,14 @@ class Nodelet : public nodelet::Nodelet {
       ROS_WARN("[planner] REPLAN SUCCESS");
       replanStateMsg_.state = 0;
       replanState_pub_.publish(replanStateMsg_);
-      Eigen::Vector3d dp = target_p + target_v * 0.03 - iniState.col(0);
+      // 利用预测轨迹消除 yaw 滞后：取 1 秒后的预测目标位置计算期望偏航
+      Eigen::Vector3d future_target = target_p;
+      if (!target_predcit.empty()) {
+        // tracking_dt 默认 0.2s，取第5个点（约 1.0 秒后）
+        const size_t lookahead_idx = std::min(size_t(5), target_predcit.size() - 1);
+        future_target = target_predcit[lookahead_idx];
+      }
+      Eigen::Vector3d dp = future_target - iniState.col(0);
       // NOTE : if the drone is going to unknown areas, watch that direction
       // Eigen::Vector3d un_known_p = traj.getPos(1.0);
       // if (gridmapPtr_->isUnKnown(un_known_p)) {

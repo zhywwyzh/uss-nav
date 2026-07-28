@@ -94,6 +94,7 @@ private:
   ros::Publisher fsm_state_pub_;
   ros::Publisher tracking_finish_pub_;
   ros::Publisher tracking_target_odom_pub_;
+  ros::Publisher tracking_target_3d_pub_;
   ros::Publisher planner_cmd_mux_mode_pub_;
   ros::Publisher elastic_tracker_trigger_pub_;
   ros::Publisher elastic_tracker_stop_pub_;

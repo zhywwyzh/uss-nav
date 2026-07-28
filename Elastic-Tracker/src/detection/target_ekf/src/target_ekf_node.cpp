@@ -1,5 +1,6 @@
 #include <ros/ros.h>
 #include <Eigen/Geometry>
+#include <geometry_msgs/PointStamped.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/sync_policies/exact_time.h>
@@ -12,6 +13,7 @@ typedef message_filters::sync_policies::ApproximateTime<object_detection_msgs::B
 typedef message_filters::Synchronizer<YoloOdomSyncPolicy>
     YoloOdomSynchronizer;
 ros::Publisher target_odom_pub_, yolo_odom_pub_;
+ros::Subscriber target_3d_sub_;
 Eigen::Matrix3d cam2body_R_;
 Eigen::Vector3d cam2body_p_;
 double fx_, fy_, cx_, cy_;
@@ -88,6 +90,21 @@ struct Ekf {
 };
 
 std::shared_ptr<Ekf> ekfPtr_;
+
+void target_3d_callback(const geometry_msgs::PointStampedConstPtr& msg) {
+  Eigen::Vector3d p(msg->point.x, msg->point.y, msg->point.z);
+  double update_dt = (ros::Time::now() - last_update_stamp_).toSec();
+  if (update_dt > 3.0) {
+    ekfPtr_->reset(p);
+    ROS_WARN("target_ekf 3d pos reset!");
+  } else if (ekfPtr_->checkValid(p)) {
+    ekfPtr_->update(p);
+  } else {
+    ROS_ERROR("target_ekf 3d pos update invalid!");
+    return;
+  }
+  last_update_stamp_ = ros::Time::now();
+}
 
 void predict_state_callback(const ros::TimerEvent& event) {
   double update_dt = (ros::Time::now() - last_update_stamp_).toSec();
@@ -217,6 +234,7 @@ int main(int argc, char** argv) {
   odom_sub_.subscribe(nh, "odom", 100, ros::TransportHints().tcpNoDelay());
   yolo_odom_sync_Ptr_ = std::make_shared<YoloOdomSynchronizer>(YoloOdomSyncPolicy(200), yolo_sub_, odom_sub_);
   yolo_odom_sync_Ptr_->registerCallback(boost::bind(&update_state_callback, _1, _2));
+  target_3d_sub_ = nh.subscribe("target_3d_pos", 10, &target_3d_callback, ros::TransportHints().tcpNoDelay());
   ekf_predict_timer_ = nh.createTimer(ros::Duration(1.0 / ekf_rate), &predict_state_callback);
 
   ros::spin();

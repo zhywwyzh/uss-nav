@@ -80,6 +80,16 @@
       <remap from="~gridmap_inflate" to="$(arg gridmap_inflate_topic)"/>
     </node>
 
+    <!-- KF 速度估计：接收 ws_main 发来的 3D 目标位置，输出滤波后的位置+速度 -->
+    <node pkg="target_ekf" type="target_ekf_node" name="target_ekf_node" output="screen">
+      <rosparam command="load" file="$(find target_ekf)/config/camera.yaml"/>
+      <remap from="~target_3d_pos" to="/target_3d_pos"/>
+      <remap from="~target_odom" to="$(arg target_topic)"/>
+      <remap from="~odom" to="$(arg odom_topic)"/>
+      <remap from="~yolo" to="/unused_yolo_topic"/>
+      <param name="pitch_thr" value="37"/>
+    </node>
+
     <node pkg="nodelet" type="nodelet" name="planning" args="load planning/Nodelet manager" output="screen">
       <remap from="~odom" to="$(arg odom_topic)"/>
       <remap from="~gridmap_inflate" to="$(arg gridmap_inflate_topic)"/>

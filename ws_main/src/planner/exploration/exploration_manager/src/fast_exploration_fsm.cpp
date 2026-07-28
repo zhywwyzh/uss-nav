@@ -104,6 +104,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   nh.param("tracking/finish_yaw_thresh",      fp_->track_finish_yaw_thresh_, 0.2);
   nh.param("tracking/backend",                 fp_->tracking_backend_, std::string("ego"));
   nh.param("tracking/target_odom_topic",       fp_->tracking_target_odom_topic_, std::string("/target_ekf_odom"));
+  nh.param("tracking/target_3d_topic",         fp_->tracking_target_3d_topic_, std::string("/target_3d_pos"));
   nh.param("planner_cmd_mux/mode_topic",       fp_->planner_cmd_mux_mode_topic_, std::string("/planner_mux/mode"));
   nh.param("planner_cmd_mux/ego_mode",         fp_->planner_cmd_mux_ego_mode_, std::string("ego"));
   nh.param("planner_cmd_mux/elastic_mode",     fp_->planner_cmd_mux_elastic_mode_, std::string("elastic"));
@@ -312,6 +313,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   fsm_state_pub_        = nh.advertise<std_msgs::String>("/planner/fsm_state", 10);
   tracking_finish_pub_  = nh.advertise<std_msgs::Bool>("/tracking_finish", 10);
   tracking_target_odom_pub_ = nh.advertise<nav_msgs::Odometry>(fp_->tracking_target_odom_topic_, 10);
+  tracking_target_3d_pub_ = nh.advertise<geometry_msgs::PointStamped>(fp_->tracking_target_3d_topic_, 10);
   planner_cmd_mux_mode_pub_ = nh.advertise<std_msgs::String>(fp_->planner_cmd_mux_mode_topic_, 10, true);
   elastic_tracker_trigger_pub_ = nh.advertise<geometry_msgs::PoseStamped>(fp_->elastic_tracker_trigger_topic_, 10);
   elastic_tracker_stop_pub_ = nh.advertise<std_msgs::Empty>(fp_->elastic_tracker_stop_topic_, 10);
@@ -2380,9 +2382,20 @@ void FastExplorationFSM::publishTrackingTargetOdom(const Eigen::Vector3d& target
   target_odom.twist.twist.linear.y = 0.0;
   target_odom.twist.twist.linear.z = 0.0;
   tracking_target_odom_pub_.publish(target_odom);
-  ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] publish target odom for Elastic-Tracker: "
+
+  // 同时发布 PointStamped 到 target_ekf 供 KF 速度估计
+  geometry_msgs::PointStamped target_3d;
+  target_3d.header.stamp = target_odom.header.stamp;
+  target_3d.header.frame_id = target_odom.header.frame_id;
+  target_3d.point.x = target_pos.x();
+  target_3d.point.y = target_pos.y();
+  target_3d.point.z = target_pos.z();
+  tracking_target_3d_pub_.publish(target_3d);
+
+  ROS_INFO_STREAM_THROTTLE(0.5, "[TRACK] publish target pos for Elastic-Tracker: "
                            << target_pos.transpose() << " -> "
-                           << fp_->tracking_target_odom_topic_);
+                           << fp_->tracking_target_odom_topic_
+                           << " (3D -> " << fp_->tracking_target_3d_topic_ << ")");
 }
 
 void FastExplorationFSM::planTrack() {

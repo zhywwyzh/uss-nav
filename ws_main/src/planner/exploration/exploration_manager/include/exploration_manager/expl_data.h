@@ -139,6 +139,7 @@ struct FSMParam
   double                  track_finish_yaw_thresh_{0.2};
   std::string             tracking_backend_{"ego"};
   std::string             tracking_target_odom_topic_{"/target_ekf_odom"};
+  std::string             tracking_target_3d_topic_{"/target_3d_pos"};
   std::string             planner_cmd_mux_mode_topic_{"/planner_mux/mode"};
   std::string             planner_cmd_mux_ego_mode_{"ego"};
   std::string             planner_cmd_mux_elastic_mode_{"elastic"};
