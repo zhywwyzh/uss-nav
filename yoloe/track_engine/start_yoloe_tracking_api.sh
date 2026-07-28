@@ -8,7 +8,7 @@ YOLOE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # HTTP 请求中可通过 "tracker" 字段覆盖: deepocsort/botsort/bytetrack/ocsort/tracktrack/fasttrack
 # 配置: ultralytics/cfg/trackers/deepocsort.yaml
 python3 "${SCRIPT_DIR}/api.py" \
-  --model "${YOLOE_DIR}/yoloe-v8m-seg.pt" \
+  --model "${YOLOE_DIR}/yoloe-26m-seg.pt" \
   --host "${YOLOE_TRACK_HOST:-127.0.0.1}" \
   --port "${YOLOE_TRACK_PORT:-2250}" \
   --device "${YOLOE_TRACK_DEVICE:-cuda:0}" \

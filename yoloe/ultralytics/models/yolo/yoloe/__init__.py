@@ -1,7 +1,22 @@
-# Ultralytics YOLO 🚀, AGPL-3.0 license
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
-from .train import YOLOETrainer
-from .train_seg import YOLOESegTrainer
+from .predict import YOLOEVPDetectPredictor, YOLOEVPSegPredictor
+from .train import YOLOEPEFreeTrainer, YOLOEPETrainer, YOLOETrainer, YOLOETrainerFromScratch, YOLOEVPTrainer
+from .train_seg import YOLOEPESegTrainer, YOLOESegTrainer, YOLOESegTrainerFromScratch, YOLOESegVPTrainer
 from .val import YOLOEDetectValidator, YOLOESegValidator
 
-__all__ = ["YOLOETrainer", "YOLOESegTrainer", "YOLOEDetectValidator", "YOLOESegValidator"]
+__all__ = [
+    "YOLOEDetectValidator",
+    "YOLOEPEFreeTrainer",
+    "YOLOEPESegTrainer",
+    "YOLOEPETrainer",
+    "YOLOESegTrainer",
+    "YOLOESegTrainerFromScratch",
+    "YOLOESegVPTrainer",
+    "YOLOESegValidator",
+    "YOLOETrainer",
+    "YOLOETrainerFromScratch",
+    "YOLOEVPDetectPredictor",
+    "YOLOEVPSegPredictor",
+    "YOLOEVPTrainer",
+]

@@ -17,15 +17,5 @@ gmc_method: sparseOptFlow # (str) Global motion compensation: sparseOptFlow|orb|
 # ReID model related thresh
 proximity_thresh: 0.5 # (float) Min IoU to consider tracks proximate for ReID; higher is stricter
 appearance_thresh: 0.8 # (float) Min appearance similarity for ReID; raise to avoid identity swaps
-with_reid: True # (bool) Enable ReID model use; needs extra model and compute
+with_reid: False # (bool) Enable ReID model use; needs extra model and compute
 model: auto # (str) ReID model name/path; "auto" uses detector features if available
-
-# Custom FastReID / TensorRT ReID backend (track_engine 使用)
-reid_backend: tensorrt # fastreid / tensorrt
-fast_reid_root: fast-reid
-fast_reid_config: fast-reid/configs/Market1501/bagtricks_R50.yml
-fast_reid_weights: fast-reid/weights/market_bot_R50.pth
-fast_reid_engine: fast-reid/outputs/trt_model/market_bot_R50.engine
-reid_device: cuda:0
-reid_batch_size: 16
-reid_input_size: [256, 128]

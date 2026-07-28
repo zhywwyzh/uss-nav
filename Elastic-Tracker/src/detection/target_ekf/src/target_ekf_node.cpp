@@ -19,6 +19,8 @@ Eigen::Vector3d cam2body_p_;
 double fx_, fy_, cx_, cy_;
 ros::Time last_update_stamp_;
 double pitch_thr_ = 30;
+double predict_timeout_ = 2.0;
+double reset_timeout_ = 3.0;
 
 struct Ekf {
   double dt;
@@ -94,7 +96,7 @@ std::shared_ptr<Ekf> ekfPtr_;
 void target_3d_callback(const geometry_msgs::PointStampedConstPtr& msg) {
   Eigen::Vector3d p(msg->point.x, msg->point.y, msg->point.z);
   double update_dt = (ros::Time::now() - last_update_stamp_).toSec();
-  if (update_dt > 3.0) {
+  if (update_dt > reset_timeout_) {
     ekfPtr_->reset(p);
     ROS_WARN("target_ekf 3d pos reset!");
   } else if (ekfPtr_->checkValid(p)) {
@@ -108,7 +110,7 @@ void target_3d_callback(const geometry_msgs::PointStampedConstPtr& msg) {
 
 void predict_state_callback(const ros::TimerEvent& event) {
   double update_dt = (ros::Time::now() - last_update_stamp_).toSec();
-  if (update_dt < 2.0) {
+  if (update_dt < predict_timeout_) {
     ekfPtr_->predict();
   } else {
     ROS_WARN("too long time no update!");
@@ -184,7 +186,7 @@ void update_state_callback(const object_detection_msgs::BoundingBoxesConstPtr &b
   yolo_odom_pub_.publish(yolo_odom);
   // update target odom
   double update_dt = (ros::Time::now() - last_update_stamp_).toSec();
-  if (update_dt > 3.0) {
+  if (update_dt > reset_timeout_) {
     ekfPtr_->reset(p);
     ROS_WARN("ekf reset!");
   } else if (ekfPtr_->checkValid(p)) {
@@ -217,6 +219,8 @@ int main(int argc, char** argv) {
   nh.getParam("cam_cx", cx_);
   nh.getParam("cam_cy", cy_);
   nh.getParam("pitch_thr", pitch_thr_);
+  nh.param("predict_timeout", predict_timeout_, 2.0);
+  nh.param("reset_timeout", reset_timeout_, 3.0);
 
   message_filters::Subscriber<object_detection_msgs::BoundingBoxes> yolo_sub_;
   message_filters::Subscriber<nav_msgs::Odometry> odom_sub_;

@@ -170,23 +170,7 @@ class BOTSORT(BYTETracker):
         # ReID module
         self.proximity_thresh = args.proximity_thresh
         self.appearance_thresh = args.appearance_thresh
-        self.encoder = build_encoder(args.with_reid, getattr(args, "model", "auto"), getattr(args, "device", None))
-        # track_engine 读取的 ReID 性能统计
-        self.last_reid_stats: dict[str, Any] = {
-            "enabled": self.encoder is not None,
-            "backend": "auto" if self.encoder is not None else "none",
-            "feature_count": 0,
-            "feature_dim": 0,
-            "inference_ms": 0.0,
-        }
-        # 回退到自定义 FastReID / TensorRT encoder（botsort.yaml 中 reid_backend 配置）
-        if self.encoder is None and args.with_reid and hasattr(args, "reid_backend"):
-            from .utils.reid import build_reid_encoder
-
-            try:
-                self.encoder = build_reid_encoder(args)
-            except Exception:
-                pass
+        self.encoder = build_encoder(args.with_reid, args.model, getattr(args, "device", None))
 
     def get_kalmanfilter(self) -> KalmanFilterXYWH:
         """Return an instance of KalmanFilterXYWH for predicting and updating object states in the tracking process."""
@@ -199,25 +183,7 @@ class BOTSORT(BYTETracker):
         bboxes = parse_bboxes(results)
         if self.args.with_reid and self.encoder is not None and img is not None:
             features_keep = self.encoder(img, bboxes)
-            # 更新 last_reid_stats 供 track_engine 读取
-            encoder_stats = getattr(self.encoder, "last_stats", {}) or {}
-            self.last_reid_stats = {
-                "enabled": True,
-                "backend": str(encoder_stats.get("backend", getattr(self.args, "reid_backend", "auto"))),
-                "gpu": bool(encoder_stats.get("gpu", False)),
-                "gpu_idx": int(encoder_stats.get("gpu_idx", -1)),
-                "feature_count": int(encoder_stats.get("feature_count", len(features_keep))),
-                "feature_dim": int(encoder_stats.get("feature_dim", features_keep[0].shape[0] if len(features_keep) > 0 and features_keep[0] is not None else 0)),
-                "inference_ms": float(encoder_stats.get("inference_ms", 0.0)),
-            }
             return [BOTrack(xywh, s, c, f) for (xywh, s, c, f) in zip(bboxes, results.conf, results.cls, features_keep)]
-        self.last_reid_stats = {
-            "enabled": False,
-            "backend": "none",
-            "feature_count": 0,
-            "feature_dim": 0,
-            "inference_ms": 0.0,
-        }
         return [BOTrack(xywh, s, c) for (xywh, s, c) in zip(bboxes, results.conf, results.cls)]
 
     def get_dists(self, tracks: list[BOTrack], detections: list[BOTrack]) -> np.ndarray:
