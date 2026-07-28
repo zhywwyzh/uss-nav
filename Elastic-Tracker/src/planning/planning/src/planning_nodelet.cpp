@@ -54,6 +54,8 @@ class Nodelet : public nodelet::Nodelet {
   quadrotor_msgs::OccMap3d occmap_msg_;
 
   double tracking_dur_, tracking_dist_, tolerance_d_;
+  double tracking_dt_ = 0.2;
+  double yaw_lookahead_time_ = 1.0;
   double hover_finish_hold_time_ = 2.0;
   double optimized_traj_vis_dt_ = 0.05;
   bool hover_finish_enable_ = true;
@@ -544,11 +546,12 @@ class Nodelet : public nodelet::Nodelet {
       ROS_WARN("[planner] REPLAN SUCCESS");
       replanStateMsg_.state = 0;
       replanState_pub_.publish(replanStateMsg_);
-      // 利用预测轨迹消除 yaw 滞后：取 1 秒后的预测目标位置计算期望偏航
+      // 利用预测轨迹消除 yaw 滞后：取 lookahead_time 后的预测目标位置计算期望偏航
       Eigen::Vector3d future_target = target_p;
       if (!target_predcit.empty()) {
-        // tracking_dt 默认 0.2s，取第5个点（约 1.0 秒后）
-        const size_t lookahead_idx = std::min(size_t(5), target_predcit.size() - 1);
+        const size_t lookahead_idx = std::min(
+            size_t(yaw_lookahead_time_ / std::max(tracking_dt_, 0.01)),
+            target_predcit.size() - 1);
         future_target = target_predcit[lookahead_idx];
       }
       Eigen::Vector3d dp = future_target - iniState.col(0);
@@ -910,6 +913,8 @@ class Nodelet : public nodelet::Nodelet {
     nh.getParam("tracking_dur", tracking_dur_);
     nh.getParam("tracking_dist", tracking_dist_);
     nh.getParam("tolerance_d", tolerance_d_);
+    nh.param("tracking_dt", tracking_dt_, 0.2);
+    nh.param("yaw_lookahead_time", yaw_lookahead_time_, 1.0);
     nh.getParam("debug", debug_);
     nh.getParam("fake", fake_);
     nh.param("debug_replan", debug_replan_, false);

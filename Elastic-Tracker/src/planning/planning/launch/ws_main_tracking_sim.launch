@@ -123,6 +123,7 @@
       <param name="tracking_dist" value="1.5"/>
       <param name="tracking_dur" value="3.0"/>
       <param name="tracking_dt" value="0.2"/>
+      <param name="yaw_lookahead_time" value="1.0"/>
       <param name="debug" value="false"/>
 
       <param name="prediction/rho_a" value="1.0"/>

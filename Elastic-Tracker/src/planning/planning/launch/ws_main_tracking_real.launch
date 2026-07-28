@@ -128,6 +128,7 @@
       <param name="tracking_dist" value="2.5"/>
       <param name="tracking_dur" value="1.5"/>
       <param name="tracking_dt" value="0.2"/>
+      <param name="yaw_lookahead_time" value="1.0"/>
       <param name="debug" value="false"/>
       <param name="debug_search" value="$(arg elastic_debug_search)"/>
       <param name="debug_replan" value="$(arg elastic_debug_replan)"/>
