@@ -351,7 +351,9 @@ def build_text_model(variant: str, device: torch.device = None) -> TextModel:
     if base == "clip":
         return CLIP(size, device)
     elif base == "mobileclip":
-        return MobileCLIPTS(device)
+        # 使用 MobileCLIP（原生 PyTorch）替代 TorchScript, 避免兼容性问题
+        # 容器内已有 mobileclip_blt.pt (572MB PyTorch checkpoint)
+        return MobileCLIP(size, device)
     elif base == "mobileclip2":
         return MobileCLIPTS(device, weight="mobileclip2_b.ts")
     else:
