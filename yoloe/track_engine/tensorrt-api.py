@@ -569,6 +569,9 @@ class YoloeTensorRtTrackEngine:
                 tracker = self._pipeline_tracker
 
                 boxes = detection.boxes
+                # 只保留当前目标类别的 bbox，避免无关类别干扰 tracker 关联
+                if boxes is not None and len(boxes) > 0:
+                    boxes = boxes[boxes[:, 5] == frame.class_id]
                 if boxes is None or len(boxes) == 0:
                     tracks = []
                     timings["tracker_input_det_count"] = 0.0
@@ -748,6 +751,8 @@ class YoloeTensorRtTrackEngine:
                 predictor.vid_path[i if is_stream else 0] = vid_path
 
             det = (predictor.results[i].obb if is_obb else predictor.results[i].boxes).cpu().numpy()
+            # 只保留当前目标类别的 bbox，避免无关类别干扰 tracker 关联
+            det = det[det.cls == self.current_class_id]
             total_tracker_input_dets += int(len(det))
             if len(det) == 0:
                 continue

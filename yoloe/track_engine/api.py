@@ -34,22 +34,7 @@ from ultralytics import YOLOE  # noqa: E402
 from ultralytics.models.yolo.yoloe.predict_vp import YOLOEVPSegPredictor  # noqa: E402
 from ultralytics.trackers.track import on_predict_start  # noqa: E402
 
-import os
-# 1. 动态定位你当前虚拟环境 site-packages 里的 nvidia-cudnn 物理路径
-# 根据 pip show，你的路径在 /opt/yoloe-tracker/lib/python3.10/site-packages
-venv_site_packages = Path("/opt/yoloe-tracker/lib/python3.10/site-packages")
-cudnn_lib_path = venv_site_packages / "nvidia" / "cudnn_cu13" / "lib"
-
-# 2. 如果路径存在，将其强行注入到系统的动态链接库搜索最前列，压制 JetPack 系统层污染
-if cudnn_lib_path.exists():
-    # 彻底刷新当前进程的 LD_LIBRARY_PATH，仅保留虚拟环境专属的配套库路径
-    os.environ["LD_LIBRARY_PATH"] = f"{cudnn_lib_path}:/usr/local/cuda-13.2/lib64"
-else:
-    # 兜底清理，如果路径不符则直接清空外部污染
-    if "LD_LIBRARY_PATH" in os.environ:
-        del os.environ["LD_LIBRARY_PATH"]
-
-# 3. 保持 cuDNN 加速关闭，手动修改数据推理精度
+# 保持 cuDNN 加速关闭，手动修改数据推理精度
 torch.backends.cudnn.enabled = False
 torch.backends.cuda.matmul.allow_tf32 = True
 
