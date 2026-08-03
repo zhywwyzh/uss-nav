@@ -39,6 +39,7 @@ saved_data/
 ws_main/src/planner/exploration/lkh_tsp_solver/resource/
 ws_main/src/planner/uav_simulator/map_generator/pcd/
 *.pt
+*.ts
 *.engine
 *.onnx
 # Byte-compiled / optimized / DLL files
@@ -206,3 +207,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 ws_main/src/planner/uav_simulator/map_generator/pcd/20260629-magic1.pcd
+
+# Runtime-generated tracking label cache (do not commit)
+yoloe/prompt/detection_list.txt

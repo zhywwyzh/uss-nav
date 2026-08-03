@@ -1528,3 +1528,17 @@ torch.save = torch_save
 if WINDOWS:
     # Apply cv2 patches for non-ASCII and non-UTF characters in image paths
     cv2.imread, cv2.imwrite, cv2.imshow = imread, imwrite, imshow
+
+def yaml_load(file="data.yaml", append_filename=False):
+    """从 YAML 文件中加载数据。
+
+    兼容 ultralytics>=8.2.0 新增接口。
+    """
+    assert Path(file).exists(), f"File not found: {file}"
+    with open(file, errors="ignore", encoding="utf-8") as f:
+        s = f.read()
+    if not s:
+        return {}
+    if append_filename:
+        s += f"\n__filename__: {file!r}"
+    return yaml.safe_load(s)

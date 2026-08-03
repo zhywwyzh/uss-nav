@@ -10,8 +10,8 @@ cd "${YOLOE_ROOT}"
 # ReID 回退到 model=auto 的内建特征; 若需外观区分, 使用 standard 版 (start_yoloe_tracking_api.sh)
 # HTTP 请求中可通过 "tracker" 字段覆盖: deepocsort/botsort/bytetrack/ocsort/tracktrack/fasttrack
 python track_engine/tensorrt-api.py \
-  --pt-model "${YOLOE_ROOT}/yoloe-v8m-seg.pt" \
-  --engine "${YOLOE_ROOT}/yoloe-v8m-seg.engine" \
+  --pt-model "${YOLOE_ROOT}/pretrain/yoloe-v8m-seg.pt" \
+  --engine "${YOLOE_ROOT}/pretrain/yoloe-v8m-seg.engine" \
   --classes "${YOLOE_ROOT}/prompt/prompt.txt" \
   --tracker-dir "${YOLOE_ROOT}/ultralytics/cfg/trackers" \
   --host "127.0.0.1" \

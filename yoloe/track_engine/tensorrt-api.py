@@ -54,13 +54,18 @@ def _uses_cuda_device(device: str) -> bool:
 
 
 def _decode_image_base64(image_base64: str) -> np.ndarray:
-    """将 base64 编码图像解码为 RGB ndarray。"""
+    """将 base64 编码图像解码为 BGR ndarray。
+
+    Ultralytics 的 numpy 输入口径是 OpenCV BGR（见 LoadPilAndNumpy._single_check），
+    predictor.preprocess 内部会无条件做一次 BGR->RGB。这里必须保持 cv2.imdecode 的原始
+    BGR，不能提前转 RGB，否则通道会被翻两次，模型实际吃到 BGR，与训练口径相反。
+    """
     raw = base64.b64decode(image_base64)
     np_buf = np.frombuffer(raw, dtype=np.uint8)
     image_bgr = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
     if image_bgr is None:
         raise ValueError("cv2.imdecode returned None")
-    return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    return image_bgr
 
 
 def _clip_bbox(bbox: list[float], image: np.ndarray) -> list[int] | None:
@@ -153,7 +158,7 @@ class PipelineFrame:
     seq: int
     generation: int
     stamp: float
-    image_rgb: np.ndarray
+    image_bgr: np.ndarray
     label: str
     class_id: int
     tracker: str
@@ -381,7 +386,9 @@ class YoloeTensorRtTrackEngine:
         cfg = IterableSimpleNamespace(**yaml_load(check_yaml(cfg_path)))
         if cfg.tracker_type not in TRACKER_MAP:
             raise ValueError(f"unsupported tracker type: {cfg.tracker_type}")
-        return TRACKER_MAP[cfg.tracker_type](args=cfg, frame_rate=30)
+        # 当前 ultralytics 的 tracker 构造函数只接 args；旧版的 frame_rate 已被移除，
+        # 其作用（max_frames_lost = frame_rate/30 * track_buffer）现在直接取 args.track_buffer。
+        return TRACKER_MAP[cfg.tracker_type](args=cfg)
 
     def _clear_pipeline_queues_locked(self) -> None:
         """清空服务端流水线排队帧，并让正在处理的旧帧失效。"""
@@ -434,7 +441,7 @@ class YoloeTensorRtTrackEngine:
     def _submit_pipeline_frame(
         self,
         *,
-        image_rgb: np.ndarray,
+        image_bgr: np.ndarray,
         label: str,
         class_id: int,
         tracker: str,
@@ -450,7 +457,7 @@ class YoloeTensorRtTrackEngine:
                 seq=int(self.frame_seq),
                 generation=int(self._pipeline_generation),
                 stamp=float(stamp),
-                image_rgb=image_rgb,
+                image_bgr=image_bgr,
                 label=str(label),
                 class_id=int(class_id),
                 tracker=str(tracker),
@@ -486,7 +493,7 @@ class YoloeTensorRtTrackEngine:
                 with torch.no_grad():
                     with self.model_lock:
                         results = self.model.predict(
-                            source=frame.image_rgb,
+                            source=frame.image_bgr,
                             conf=frame.conf,
                             iou=frame.iou,
                             imgsz=self.default_imgsz,
@@ -579,7 +586,7 @@ class YoloeTensorRtTrackEngine:
                     timings["tracker_update_ms"] = 0.0
                 else:
                     tracker_t0 = time.perf_counter()
-                    tracks = tracker.update(boxes, frame.image_rgb)
+                    tracks = tracker.update(boxes, frame.image_bgr)
                     timings["tracker_update_ms"] = _ms(time.perf_counter() - tracker_t0)
                     reid_stats = dict(getattr(tracker, "last_reid_stats", {}) or {})
                     timings["tracker_reid_enabled"] = float(1 if reid_stats.get("enabled") else 0)
@@ -606,7 +613,7 @@ class YoloeTensorRtTrackEngine:
                     )
                 return
 
-            candidates = self._extract_candidates_from_tracks(tracks, frame.image_rgb)
+            candidates = self._extract_candidates_from_tracks(tracks, frame.image_bgr)
             candidates = [item for item in candidates if int(item["cls"]) == int(frame.class_id)]
             timings["candidate_count"] = float(len(candidates))
             timings["all_candidate_count"] = float(len(tracks))
@@ -859,7 +866,7 @@ class YoloeTensorRtTrackEngine:
         total_t0 = time.perf_counter()
         timings: dict[str, float] = {}
         t0 = time.perf_counter()
-        image_rgb = _decode_image_base64(req.image_base64)
+        image_bgr = _decode_image_base64(req.image_base64)
         timings["decode_ms"] = _ms(time.perf_counter() - t0)
         stamp = float(req.stamp if req.stamp is not None else _now())
         label, class_id = self._resolve_label(req.label)
@@ -877,7 +884,7 @@ class YoloeTensorRtTrackEngine:
             and tracker == self.current_tracker
         ):
             return self._submit_pipeline_frame(
-                image_rgb=image_rgb,
+                image_bgr=image_bgr,
                 label=label,
                 class_id=class_id,
                 tracker=tracker,
@@ -895,7 +902,7 @@ class YoloeTensorRtTrackEngine:
             timings["yoloe_trt_engine"] = str(self.engine_path)
             label_changed = class_id != self.current_class_id
             tracker_changed = tracker != self.current_tracker
-            init_bbox = _clip_bbox(req.init_bbox, image_rgb) if req.init_bbox is not None else None
+            init_bbox = _clip_bbox(req.init_bbox, image_bgr) if req.init_bbox is not None else None
             pipeline_rebind = bool(self.pipeline_track and (init_bbox is not None or req.allow_rebind or req.lost_rebind))
             new_target_started = False
 
@@ -934,7 +941,7 @@ class YoloeTensorRtTrackEngine:
             if new_target_started or pipeline_rebind:
                 with self.model_lock:
                     results = self.model.predict(
-                        source=image_rgb,
+                        source=image_bgr,
                         conf=conf,
                         iou=iou,
                         imgsz=imgsz,
@@ -945,7 +952,7 @@ class YoloeTensorRtTrackEngine:
             else:
                 with self.model_lock:
                     results = self._track_with_timing(
-                        source=image_rgb,
+                        source=image_bgr,
                         tracker=tracker_cfg,
                         conf=conf,
                         iou=iou,
@@ -956,7 +963,7 @@ class YoloeTensorRtTrackEngine:
 
             result = results[0] if results else None
             t0 = time.perf_counter()
-            all_candidates = self._extract_candidates(result, image_rgb)
+            all_candidates = self._extract_candidates(result, image_bgr)
             candidates = [item for item in all_candidates if int(item["cls"]) == int(class_id)]
             timings["extract_candidates_ms"] = _ms(time.perf_counter() - t0)
             timings["candidate_count"] = float(len(candidates))
@@ -1010,7 +1017,7 @@ class YoloeTensorRtTrackEngine:
             )
             return dict(self.latest_result)
 
-    def _extract_candidates(self, result, image_rgb: np.ndarray) -> list[dict[str, Any]]:
+    def _extract_candidates(self, result, image_bgr: np.ndarray) -> list[dict[str, Any]]:
         if result is None or result.boxes is None:
             return []
 
@@ -1031,7 +1038,7 @@ class YoloeTensorRtTrackEngine:
 
         candidates = []
         for track_id, bbox, score, cls in zip(ids, xyxy, confs, classes):
-            clipped = _clip_bbox(bbox, image_rgb)
+            clipped = _clip_bbox(bbox, image_bgr)
             if clipped is None:
                 continue
             candidates.append(
@@ -1045,7 +1052,7 @@ class YoloeTensorRtTrackEngine:
             )
         return candidates
 
-    def _extract_candidates_from_tracks(self, tracks, image_rgb: np.ndarray) -> list[dict[str, Any]]:
+    def _extract_candidates_from_tracks(self, tracks, image_bgr: np.ndarray) -> list[dict[str, Any]]:
         """将 tracker.update 返回的 ndarray 转为统一候选列表。"""
         if tracks is None or len(tracks) == 0:
             return []
@@ -1054,7 +1061,7 @@ class YoloeTensorRtTrackEngine:
             if len(row) < 7:
                 continue
             bbox = row[:4].tolist()
-            clipped = _clip_bbox(bbox, image_rgb)
+            clipped = _clip_bbox(bbox, image_bgr)
             if clipped is None:
                 continue
             candidates.append(

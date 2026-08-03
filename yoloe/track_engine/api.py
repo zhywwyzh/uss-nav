@@ -53,13 +53,19 @@ def _ms(seconds: float) -> float:
 
 
 def _decode_image_base64(image_base64: str) -> np.ndarray:
-    """将 base64 编码图像解码为 RGB OpenCV ndarray。"""
+    """将 base64 编码图像解码为 BGR OpenCV ndarray。
+
+    Ultralytics 的 numpy 输入口径是 OpenCV BGR（见 LoadPilAndNumpy._single_check），
+    predictor.preprocess 内部会无条件做一次 BGR->RGB。这里必须保持 cv2.imdecode 的原始
+    BGR，不能提前转 RGB，否则通道会被翻两次，模型实际吃到 BGR，与训练口径相反。
+    visual prompt 走 SAVPE 抽 vpe 时同样依赖这个口径。
+    """
     raw = base64.b64decode(image_base64)
     np_buf = np.frombuffer(raw, dtype=np.uint8)
     image_bgr = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
     if image_bgr is None:
         raise ValueError("cv2.imdecode returned None")
-    return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    return image_bgr
 
 
 def _clip_bbox(bbox: list[float], image: np.ndarray) -> list[int] | None:
@@ -451,7 +457,7 @@ class YoloeTrackEngine:
         total_t0 = time.perf_counter()
         timings: dict[str, float] = {}
         t0 = time.perf_counter()
-        image_rgb = _decode_image_base64(req.image_base64)
+        image_bgr = _decode_image_base64(req.image_base64)
         timings["decode_ms"] = _ms(time.perf_counter() - t0)
         stamp = float(req.stamp if req.stamp is not None else _now())
         label = req.label.strip()
@@ -476,7 +482,7 @@ class YoloeTrackEngine:
                 "prompt_changed=", prompt_changed,
                 flush=True,
             )
-            init_bbox = _clip_bbox(req.init_bbox, image_rgb) if req.init_bbox is not None else None
+            init_bbox = _clip_bbox(req.init_bbox, image_bgr) if req.init_bbox is not None else None
             new_target_started = False
 
             if req.reset or label_changed or tracker_changed or prompt_changed:
@@ -526,7 +532,7 @@ class YoloeTrackEngine:
                         )
                 else:
                     t0 = time.perf_counter()
-                    self._set_visual_prompt(image_rgb, label, init_bbox, imgsz=imgsz)
+                    self._set_visual_prompt(image_bgr, label, init_bbox, imgsz=imgsz)
                     timings["set_visual_prompt_ms"] = _ms(time.perf_counter() - t0)
                     self.current_prompt_mode = prompt_mode
                     self.current_prompt_source = "visual"
@@ -543,7 +549,7 @@ class YoloeTrackEngine:
                 # label/reset 切换时已重载模型，避免 predict() 仍执行旧 BoT-SORT / ByteTrack 状态。
                 timing_mode = "predict"
                 results = self.model.predict(
-                    source=image_rgb,
+                    source=image_bgr,
                     conf=conf,
                     iou=iou,
                     imgsz=imgsz,
@@ -553,7 +559,7 @@ class YoloeTrackEngine:
                 timings["model_predict_ms"] = _ms(time.perf_counter() - t0)
             else:
                 results = self._track_with_timing(
-                    source=image_rgb,
+                    source=image_bgr,
                     tracker=tracker_cfg,
                     conf=conf,
                     iou=iou,
@@ -565,7 +571,7 @@ class YoloeTrackEngine:
             result = results[0] if results else None
             self._record_yoloe_speed(result, timings)
             t0 = time.perf_counter()
-            candidates = self._extract_candidates(result, image_rgb)
+            candidates = self._extract_candidates(result, image_bgr)
             timings["extract_candidates_ms"] = _ms(time.perf_counter() - t0)
             timings["candidate_count"] = float(len(candidates))
             if not candidates:
@@ -656,7 +662,7 @@ class YoloeTrackEngine:
 
         self._current_text_prompt = label
 
-    def _set_visual_prompt(self, image_rgb: np.ndarray, label: str, bbox: list[int], *, imgsz: int) -> None:
+    def _set_visual_prompt(self, image_bgr: np.ndarray, label: str, bbox: list[int], *, imgsz: int) -> None:
         """使用慢模型 bbox 生成 visual prompt embedding，并切换为单目标视觉 prompt 检测空间。"""
         prompts = {
             "bboxes": np.asarray([bbox], dtype=np.float32),
@@ -666,7 +672,7 @@ class YoloeTrackEngine:
         # visual prompt 必须强制重建为 YOLOEVPSegPredictor，才能拿到 vpe。
         self._reset_predictor_and_tracker_state()
         self.model.predict(
-            [image_rgb],
+            [image_bgr],
             prompts=prompts,
             predictor=YOLOEVPSegPredictor,
             return_vpe=True,
@@ -681,7 +687,7 @@ class YoloeTrackEngine:
         self._reset_predictor_and_tracker_state()
         self._current_text_prompt = ""
 
-    def _extract_candidates(self, result, image_rgb: np.ndarray) -> list[dict[str, Any]]:
+    def _extract_candidates(self, result, image_bgr: np.ndarray) -> list[dict[str, Any]]:
         if result is None or result.boxes is None:
             return []
 
@@ -704,7 +710,7 @@ class YoloeTrackEngine:
 
         candidates = []
         for track_id, bbox, score, cls in zip(ids, xyxy, confs, classes):
-            clipped = _clip_bbox(bbox, image_rgb)
+            clipped = _clip_bbox(bbox, image_bgr)
             if clipped is None:
                 continue
             candidates.append(
