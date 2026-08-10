@@ -79,6 +79,7 @@ namespace ego_planner
     exec_finish_trigger_pub_ = nh.advertise<std_msgs::Bool>("exec_finish_trigger", 10);
     ego_plan_state_pub_ = nh.advertise<quadrotor_msgs::EgoPlannerResult>("/planning/ego_plan_result", 10);
     ego_state_trigger_pub_ = nh.advertise<quadrotor_msgs::EgoStateTrigger>("/planning/ego_state_trigger", 10);
+    goal_processed_pub_ = nh.advertise<geometry_msgs::PointStamped>("/planning/goal_processed", 10);
 
     // ROS_INFO("Wait for 3 seconds.");
     // ros::Time t0 = ros::Time::now();
@@ -326,6 +327,15 @@ namespace ego_planner
           }
 
           /* The navigation task completed */
+          {
+            geometry_msgs::PointStamped gp_msg;
+            gp_msg.header.stamp = ros::Time::now();
+            gp_msg.header.frame_id = "world";
+            gp_msg.point.x = final_goal_.x();
+            gp_msg.point.y = final_goal_.y();
+            gp_msg.point.z = final_goal_.z();
+            goal_processed_pub_.publish(gp_msg);
+          }
           changeFSMExecState(WAIT_TARGET, "EGOFSM");
         }
         else
@@ -333,6 +343,15 @@ namespace ego_planner
           ROS_ERROR("t_cur > info->duration but touch_goal_ is false! ERROR");
           pending_goal_finish_trigger_ = false;
           goal_finish_stable_start_time_ = ros::Time(0);
+          {
+            geometry_msgs::PointStamped gp_msg;
+            gp_msg.header.stamp = ros::Time::now();
+            gp_msg.header.frame_id = "world";
+            gp_msg.point.x = final_goal_.x();
+            gp_msg.point.y = final_goal_.y();
+            gp_msg.point.z = final_goal_.z();
+            goal_processed_pub_.publish(gp_msg);
+          }
           changeFSMExecState(WAIT_TARGET, "EGOFSM"); // no better choises
         }
       }
@@ -559,6 +578,15 @@ namespace ego_planner
         }
 
         /* The navigation task terminated */
+        {
+          geometry_msgs::PointStamped gp_msg;
+          gp_msg.header.stamp = ros::Time::now();
+          gp_msg.header.frame_id = "world";
+          gp_msg.point.x = final_goal_.x();
+          gp_msg.point.y = final_goal_.y();
+          gp_msg.point.z = final_goal_.z();
+          goal_processed_pub_.publish(gp_msg);
+        }
         callEmergencyStop(odom_pos_);
         changeFSMExecState(WAIT_TARGET, "RetChk");
       }
