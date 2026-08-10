@@ -19,6 +19,7 @@
 #include <optimizer/poly_traj_optimizer.h>
 #include <plan_env/grid_map.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PointStamped.h>
 #include <quadrotor_msgs/EgoGoalSet.h>
 #include <quadrotor_msgs/EgoPlannerResult.h>
 #include <quadrotor_msgs/EgoStateTrigger.h>
@@ -147,7 +148,7 @@ namespace ego_planner
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
     ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, odom_sub_, if_handle_yaw_sub_,
-                    trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_;
+                    trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, face_center_sub_;
     ros::Publisher data_disp_pub_, broadcast_ploytraj_pub_, ground_height_pub_, state_pub_, exec_finish_trigger_pub_, ego_state_trigger_pub_;
     ros::Publisher ego_plan_state_pub_;
 
@@ -185,6 +186,7 @@ namespace ego_planner
     /* input-output */
     void mandatoryStopCallback(const std_msgs::Empty &msg);
     void ifHandleYawCallback(const std_msgs::BoolConstPtr &msg);
+    void faceTargetCenterCallback(const geometry_msgs::PointStampedConstPtr &msg);
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void triggerCallback(const geometry_msgs::PoseStampedPtr &msg);
     void RecvBroadcastMINCOTrajCallback(const traj_utils::MINCOTrajConstPtr &msg);

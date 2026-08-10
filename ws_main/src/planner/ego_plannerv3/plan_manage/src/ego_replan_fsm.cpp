@@ -63,6 +63,8 @@ namespace ego_planner
     odom_sub_ = nh.subscribe("odom_world", 50, &EGOReplanFSM::odometryCallback, this);
     mandatory_stop_sub_ = nh.subscribe("mandatory_stop", 10, &EGOReplanFSM::mandatoryStopCallback, this);
     if_handle_yaw_sub_ = nh.subscribe("if_handle_yaw", 10, &EGOReplanFSM::ifHandleYawCallback, this);
+    face_center_sub_ = nh.subscribe("/planning/face_target_center", 10,
+                                    &EGOReplanFSM::faceTargetCenterCallback, this);
 
     /* Use MINCO trajectory to minimize the message size in wireless communication */
     broadcast_ploytraj_pub_ = nh.advertise<traj_utils::MINCOTraj>("planning/broadcast_traj_send", 10);
@@ -1751,5 +1753,16 @@ namespace ego_planner
       ego_plan_result_.planner_goal.z = goal.z();
     }
     ego_plan_state_pub_.publish(ego_plan_result_);
+  }
+
+  void EGOReplanFSM::faceTargetCenterCallback(const geometry_msgs::PointStampedConstPtr &msg)
+  {
+    if (std::isnan(msg->point.z))
+    {
+      traj_server_.setFaceCenter(Eigen::Vector3d::Zero(), false);
+      return;
+    }
+    Eigen::Vector3d center(msg->point.x, msg->point.y, msg->point.z);
+    traj_server_.setFaceCenter(center, true);
   }
 } // namespace ego_planner

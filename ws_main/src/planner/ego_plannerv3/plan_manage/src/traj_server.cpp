@@ -100,6 +100,18 @@ namespace ego_planner
     yaw_given_.path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_KEEP_DIRECTION;
   }
 
+  void TrajServer::setFaceCenter(const Eigen::Vector3d &center, bool valid)
+  {
+    if (!valid)
+    {
+      pending_clear_face_center_ = true;
+      return;
+    }
+    face_center_ = center;
+    has_face_center_ = true;
+    pending_clear_face_center_ = false;
+  }
+
   void TrajServer::syncYawFromOdom(const double yaw, const std::string& source)
   {
     double normalized_yaw = yaw;
@@ -139,7 +151,15 @@ namespace ego_planner
     double yaw_temp;
     // ROS_INFO_STREAM("[traj_server] yaw: " << yaw_given_.yaw << ", auto yaw: " << yaw_given_.auto_yaw_);
     // ROS_INFO_STREAM("dt: " << dt);
-    if (yaw_given_.look_forward && yaw_given_.reach_given_yaw_)
+    if (has_face_center_ &&
+        yaw_given_.control_mode != quadrotor_msgs::EgoGoalSet::YAW_MODE_PANORAMA)
+    {
+      Eigen::Vector3d to_center = face_center_ - pos;
+      yaw_temp = to_center.head<2>().norm() > 0.05
+                     ? atan2(to_center(1), to_center(0))
+                     : last_yaw_;
+    }
+    else if (yaw_given_.look_forward && yaw_given_.reach_given_yaw_)
     // if (yaw_given_.reach_given_yaw_)
     {
       Eigen::Vector3d dir = t_cur + time_forward_ <= traj_duration_
@@ -332,6 +352,12 @@ namespace ego_planner
         return;
       }
       receive_traj_ = false;
+    }
+
+    if (!receive_traj_ && pending_clear_face_center_)
+    {
+      has_face_center_ = false;
+      pending_clear_face_center_ = false;
     }
 
     if (!receive_traj_)

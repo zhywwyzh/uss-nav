@@ -47,6 +47,12 @@ namespace ego_planner
         double yaw_vel_panorama_, yaw_acc_panorama_;
         bool panorama_yaw_active_{false};
 
+        // face target center: yaw points at the object center continuously.
+        // Clear request is deferred until hover to avoid mid-flight yaw jumps.
+        bool has_face_center_{false};
+        bool pending_clear_face_center_{false};
+        Eigen::Vector3d face_center_{Eigen::Vector3d::Zero()};
+
         struct LAST_POS
         {
             Eigen::Vector3d p;
@@ -82,6 +88,7 @@ namespace ego_planner
                     uint8_t control_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL,
                     uint8_t path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST);
         void setPanoramaYaw(double des_yaw, double cur_yaw, const Eigen::Vector3d& hold_pos);
+        void setFaceCenter(const Eigen::Vector3d &center, bool valid);
         void resetYawLookforward(Eigen::Vector3d pos);
         void syncYawFromOdom(const double yaw, const std::string& source = "");
         void feedDog();
