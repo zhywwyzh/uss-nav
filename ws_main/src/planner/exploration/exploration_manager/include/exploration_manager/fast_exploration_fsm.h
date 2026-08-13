@@ -114,6 +114,10 @@ private:
   bool panorama_command_active_{false};
   uint8_t active_instruction_task_id_{0};
   uint32_t active_instruction_session_id_{0};
+  // 探索任务计时：收到 TURN_REGULAR_EXPLORATION 启动，publishExplorationResult 结算
+  ros::Time exploration_start_time_;
+  bool exploration_timer_active_{false};
+  std::string exploration_timing_dir_;  // 探索耗时日志目录（默认 logs/exploration_timing）
   double panorama_last_odom_yaw_{0.0};
   double panorama_start_yaw_{0.0};
   double panorama_unwrapped_yaw_{0.0};
@@ -226,6 +230,8 @@ private:
   void applyExplorationRegionFromInstruction(const quadrotor_msgs::InstructionConstPtr& msg);
   void publishExplorationResult(bool success, const std::string& reason,
                                 const std::string& message = "");
+  // 探索任务计时：收到 TURN_REGULAR_EXPLORATION 时启动，publishExplorationResult 时结算并写入本地文件
+  void logExplorationTiming(bool success, const std::string& reason, const std::string& message);
   bool isVlaSwarmState(MISSION_FSM_STATE state) const;
   void resetVlaSwarmContext();
   void startVlaSwarmTask(const quadrotor_msgs::InstructionConstPtr& msg);
@@ -248,6 +254,12 @@ private:
   void transitState(MISSION_FSM_STATE new_state, string pos_call);
   void stashCurStateAndTransit(MISSION_FSM_STATE new_state, string who_called);
   void triggerObjectIdNavReplan(const std::string& reason);  // object-id-nav replan
+
+  // === 探索脱困通用 helper (建议 D/E: 抽取自 goTargetObject 的卡死检测, 供 approachRegularExplore 复用) ===
+  // 背景: 旧探索路径无卡死强制推进机制, 与 goTargetObject 的 tier1/tier2 严重不对称.
+  bool detectExploreStuck();        // 统一卡死检测: vel+yaw_rate+计时, 返回是否处于卡死状态
+  void resetExploreStuckState();    // 重置探索卡死状态(正常推进/重规划时调用, 含失败计数清零)
+  void resetExploreEgoState();      // 重置 ego 反馈相关状态(删 frontier/重规划时调用, 建议E)
   bool getSceneGraphInitSeed(Eigen::Vector3d& init_seed, std::string* reason = nullptr) const;
 
   /* ROS functions */

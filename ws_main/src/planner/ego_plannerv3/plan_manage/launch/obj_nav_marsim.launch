@@ -61,9 +61,9 @@
     </node> -->
     <!--    <arg name="map_name" value="$(find map_generator)/pcd/7_9_scans.pcd"/>-->
 
-    <arg name="map_name" value="$(find map_generator)/pcd/2026-06-29-all-newmap-d0.05_ds.pcd"/>
+    <arg name="map_name" value="$(find map_generator)/pcd/diankeyuan-0813-1038.pcd"/>
     <!-- 支撑地图: 模拟 FAST_LIO prior_local, 以当前位置截球补充点云辅助建图 -->
-    <arg name="support_map_name" value="$(find map_generator)/pcd/20260704-magic2-d0.05.pcd"/>
+    <arg name="support_map_name" value="$(find map_generator)/pcd/diankeyuan-0813-1038.pcd"/>
     <node pkg="map_generator" name="map_pub" type="map_pub" output="screen" args="$(arg map_name)">
         <param name="add_boundary" value="0"/>
         <param name="add_boundary2" value="0"/>
@@ -106,7 +106,7 @@
         <remap from="~odom"  to="/drone_0_visual_slam/odom"/>
     </node>
 
-    <include file="$(find ego_planner)/launch/include/run_in_sim.xml">
+    <include file="$(find ego_planner)/launch/include/run_in_marsim.xml">
         <arg name="drone_id" value="0"/>
         <arg name="init_x" value="$(arg init_x)" />
         <arg name="init_y" value="$(arg init_y)" />
@@ -134,6 +134,15 @@
         <arg name="moge_root" value="$(arg vla_swarm_moge_root)"/>
         <arg name="moge_model_path" value="$(arg vla_swarm_moge_model_path)"/>
     </include>
+
+    <!-- 消息广播器：将相机/odom 帧经 TCP 广播给机载外部服务(yoloe_remote_service)，并接收其回传的检测结果。
+         外部服务未启动时广播器自动退避重连，不影响本 launch 其它节点。 -->
+    <arg name="enable_broadcaster" default="true"/>
+    <group if="$(arg enable_broadcaster)">
+        <include file="$(find topic_broadcaster)/launch/broadcaster.launch">
+            <arg name="config" value="$(find topic_broadcaster)/config/broadcast_marsim.yaml"/>
+        </include>
+    </group>
 
 
 <!--    <include file="$(find ego_planner)/launch/include/run_in_sim.xml">-->

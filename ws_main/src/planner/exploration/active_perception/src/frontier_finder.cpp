@@ -1,5 +1,6 @@
 #include <active_perception/frontier_finder.h>
 #include <plan_env/raycast.h>
+#include <plan_env/perf_logger.h>  // 性能日志插桩
 
 
 // #include <path_searching/astar2.h>
@@ -52,6 +53,7 @@ FrontierFinder::FrontierFinder(const MapInterface::Ptr& map, ros::NodeHandle& nh
   nh.param("frontier/ftr_blacklist_radius", ftr_blacklist_radius_, 0.2);
   nh.param("frontier/print_info", is_print_info_, false);
   nh.param("frontier/deletion_mode", deletion_mode_, 0);
+  nh.param("frontier/prefer_topo_path", prefer_topo_path_, true);  // 默认true：代价矩阵优先用拓扑图路径，跳过栅格A*
 
   nh.param("exploration/radius_far_goal", far_dis_thres_, -1.0);
 
@@ -120,6 +122,7 @@ void FrontierFinder::searchFrontiers(const Vector3d& c_pos)
   edt_env_->mtxLock();
 
   ros::Time t1 = ros::Time::now();
+  auto t1_perf = PERF_NOW();  // 性能插桩计时起点
   tmp_frontiers_.clear();
 
   // Bounding box of updated region
@@ -282,6 +285,14 @@ void FrontierFinder::searchFrontiers(const Vector3d& c_pos)
 
 
   if (is_print_info_) ROS_WARN_STREAM("Frontier time consume: " << (ros::Time::now() - t1).toSec());
+
+  // 性能插桩：记录 frontier 搜索耗时与数量
+  PERF_LOG_ELAPSED_EX("FTR_SEARCH", t1_perf,
+    "ftr_num=" + std::to_string(frontiers_.size()) + " "
+    "new_ftr_num=" + std::to_string(tmp_frontiers_.size()) + " "
+    "removed_num=" + std::to_string(removed_ids_.size()) + " "
+    "dormant_num=" + std::to_string(dormant_frontiers_.size()));
+
   edt_env_->mtxUnlock();
 }
 /**
@@ -437,6 +448,11 @@ void FrontierFinder::updateFrontierCostMatrix() {
 //  }
   if (is_print_info_) INFO_MSG_YELLOW("[Ftr] Update Frontier Cost Matrix ... ");
 
+  // 性能插桩：代价矩阵计时与 searchPath 调用统计
+  auto perf_t0 = PERF_NOW();
+  int sp_calls = 0, sp_success = 0, sp_fail = 0;
+  int topo_fallback = 0;
+
   if (!removed_ids_.empty()) {
     // Delete path and cost for removed clusters
     for (auto it = frontiers_.begin(); it != first_new_ftr_; ++it) {
@@ -457,7 +473,8 @@ void FrontierFinder::updateFrontierCostMatrix() {
     }
     removed_ids_.clear();
   }
-  auto updateCost = [this](list<Frontier>::iterator& it1, list<Frontier>::iterator& it2) {
+  // 性能插桩：lambda 捕获统计计数器
+  auto updateCost = [this, &sp_calls, &sp_success, &sp_fail, &topo_fallback](list<Frontier>::iterator& it1, list<Frontier>::iterator& it2) {
     // std::cout << "(" << it1->id_ << "->" << it2->id_ << "), ";
     // Search path from old cluster's top viewpoint to new cluster'
     Viewpoint& vui = it1->viewpoints_.front();
@@ -465,9 +482,14 @@ void FrontierFinder::updateFrontierCostMatrix() {
     vector<Vector3d> path_ij;
     double dis_ij = -1.0;
     bool a_star_success = false;
-    if (edt_env_->isVisible(vui.pos_, vuj.pos_, 0.0) && (vui.pos_ - vuj.pos_).norm() < this->far_dis_thres_)
+    // 优先拓扑图路径模式（prefer_topo_path_=true）：直接用拓扑图，跳过栅格A*
+    // 适用于大地图场景：栅格A*固定池易越界，拓扑图节点少、查询快且稳定
+    if (!this->prefer_topo_path_ &&
+        edt_env_->isVisible(vui.pos_, vuj.pos_, 0.0) && (vui.pos_ - vuj.pos_).norm() < this->far_dis_thres_)
     {
+      sp_calls++;
       a_star_success = ViewNode::searchPath(vui.pos_, vuj.pos_, path_ij, dis_ij);
+      if (a_star_success) sp_success++; else sp_fail++;
     }
     if (dis_ij < 0.0 || !a_star_success)
     {
@@ -476,6 +498,7 @@ void FrontierFinder::updateFrontierCostMatrix() {
         path_ij.push_back(vui.pos_);
         path_ij.push_back(vuj.pos_);
       }else {
+        topo_fallback++;
         if (is_print_info_) {
           INFO_MSG("   * vui pos: " << vui.pos_.transpose() << " , vuj pos: " << vuj.pos_.transpose());
           INFO_MSG("   * vui topo inx: " << it1->topo_father_->center_ << " , vuj topo inx: " << it2->topo_father_->center_);
@@ -564,6 +587,14 @@ void FrontierFinder::updateFrontierCostMatrix() {
       std::cout << "(" << ftr.costs_.size() << "," << ftr.paths_.size() << "), ";
     std::cout << "" << std::endl;
   }
+
+  // 性能插桩：记录代价矩阵耗时与 searchPath 统计
+  PERF_LOG_ELAPSED_EX("FTR_COST", perf_t0,
+    "N=" + std::to_string(frontiers_.size()) + " "
+    "searchPath_calls=" + std::to_string(sp_calls) + " "
+    "success=" + std::to_string(sp_success) + " "
+    "fail=" + std::to_string(sp_fail) + " "
+    "topo_fallback=" + std::to_string(topo_fallback));
 }
 
 void FrontierFinder::updateFrontierCostMatrix(list<Frontier> &frontiers)
@@ -1075,26 +1106,34 @@ void FrontierFinder::frontierForceDelete(const Frontier &frontier_to_delete) {
   {
     if((iter->average_ - frontier_to_delete.average_).norm() < 0.05)
     {
+      // 用 frontier 在 list 中的实际位置作为 costs_/paths_ 数组索引
+      // 旧代码用 iter->id_ 当索引，但 id_ 与数组位置在增量更新后可能错位导致越界崩溃
+      const int delete_idx = std::distance(frontiers_.begin(), iter);
       for (auto iter_other_frontier = frontiers_.begin(); iter_other_frontier != frontiers_.end(); iter_other_frontier ++)
       {
         if (iter == iter_other_frontier) continue;
-        // delete cost info between deleted frontier and other frontiers
-
-        try{
-          auto iter_cost = iter_other_frontier->costs_.begin();
-          std::advance(iter_cost, iter->id_);
-          iter_other_frontier->costs_.erase(iter_cost);
-          // delete path between deleted frontier and other frontiers
-          auto iter_path = iter_other_frontier->paths_.begin();
-          std::advance(iter_path, iter->id_);
-          iter_other_frontier->paths_.erase(iter_path);
-        } catch (const std::exception& e){
-          std::cout << "[FrontierFinder] : delete frontier cost info failed, skip it!" << e.what() << std::endl;
+        // 边界检查：costs_/paths_ 大小可能与 frontiers_.size() 不一致（增量更新遗留）
+        if (delete_idx >= (int)iter_other_frontier->costs_.size() ||
+            delete_idx >= (int)iter_other_frontier->paths_.size()) {
+          ROS_WARN("[FtrFinder] skip delete cost/path: idx=%d >= costs_size=%zu paths_size=%zu",
+                   delete_idx, iter_other_frontier->costs_.size(), iter_other_frontier->paths_.size());
+          continue;
         }
+        // 删除代价信息
+        auto iter_cost = iter_other_frontier->costs_.begin();
+        std::advance(iter_cost, delete_idx);
+        iter_other_frontier->costs_.erase(iter_cost);
+        // 删除路径信息
+        auto iter_path = iter_other_frontier->paths_.begin();
+        std::advance(iter_path, delete_idx);
+        iter_other_frontier->paths_.erase(iter_path);
       }
       // erase frontier !
       INFO_MSG("delete frontier avg_pos:(" << iter->average_.transpose() << ") id:" << iter->id_);
       iter = frontiers_.erase(iter);
+      // 删除后重排所有剩余 frontier 的 id_，保持 id_ 与 list 位置一致
+      int idx = 0;
+      for (auto& ft : frontiers_) ft.id_ = idx++;
       std::cout << "erase done." << std::endl;
       break;
     }else
@@ -1119,16 +1158,28 @@ void FrontierFinder::incrementObservationAttempts(const Frontier& ftr, int max_a
       if (iter->observation_attempts_ >= max_attempts) {
         INFO_MSG_RED("[FtrFinder] force delete frontier after " << iter->observation_attempts_
                      << " attempts, avg: " << iter->average_.transpose());
+        // 用 frontier 在 list 中的实际位置作为索引（修复 id_ 错位越界）
+        const int delete_idx = std::distance(frontiers_.begin(), iter);
         for (auto iter_other = frontiers_.begin(); iter_other != frontiers_.end(); ++iter_other) {
           if (iter == iter_other) continue;
+          // 边界检查：costs_/paths_ 大小可能与 frontiers_.size() 不一致
+          if (delete_idx >= (int)iter_other->costs_.size() ||
+              delete_idx >= (int)iter_other->paths_.size()) {
+            ROS_WARN("[FtrFinder] skip delete cost/path: idx=%d >= costs_size=%zu paths_size=%zu",
+                     delete_idx, iter_other->costs_.size(), iter_other->paths_.size());
+            continue;
+          }
           auto iter_cost = iter_other->costs_.begin();
-          std::advance(iter_cost, iter->id_);
+          std::advance(iter_cost, delete_idx);
           iter_other->costs_.erase(iter_cost);
           auto iter_path = iter_other->paths_.begin();
-          std::advance(iter_path, iter->id_);
+          std::advance(iter_path, delete_idx);
           iter_other->paths_.erase(iter_path);
         }
         iter = frontiers_.erase(iter);
+        // 删除后重排 id_，保持 id_ 与 list 位置一致
+        int idx = 0;
+        for (auto& ft : frontiers_) ft.id_ = idx++;
       } else {
         INFO_MSG_YELLOW("[FtrFinder] frontier observation attempt " << iter->observation_attempts_
                         << "/" << max_attempts << ", avg: " << iter->average_.transpose());

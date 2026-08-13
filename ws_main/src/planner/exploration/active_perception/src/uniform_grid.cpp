@@ -19,6 +19,10 @@ UniformGrid::UniformGrid(
   nh.param("partitioning/grid_size", grid_size_, 5.0);
   nh.param("partitioning/multilayer_hgrid", multilayer_hgrid_, false);
   nh.param("partitioning/free_ratio_threshold", free_ratio_threshold_, 0.7);
+  // 与 frontier_finder 共用参数：HGrid 仅统计 frontier 生成范围内的 unknown/free，
+  // 使 is_covered_ 的语义与 frontier 生成范围对齐（"该区域的 frontier 被探索"而非"该区域被探索"）
+  nh.param("frontier/floor", ftr_floor_, -1.0);
+  nh.param("frontier/ceil",  ftr_ceil_,  -1.0);
 }
 
 UniformGrid::~UniformGrid() {
@@ -338,9 +342,14 @@ void UniformGrid::updateGridInfo(const Eigen::Vector3i& id) {
   grid.center_.setZero();
   grid.unknown_num_ = 0;
   int free = 0;
+  // z 范围限制为 frontier 生成范围（ftr_floor_ ~ ftr_ceil_），使 covered 语义与 frontier 生成对齐
+  // - 仅统计此范围内的 unknown/free，避免地面/天花板 unknown 导致 covered 永远无法达成
+  // - 当 ftr_floor_/ftr_ceil_ 未配置（= -1）时退化为原逻辑（整个 z 柱子）
+  double z_lo = (ftr_floor_ > 0.0) ? std::max(grid.vmin_[2], ftr_floor_) : grid.vmin_[2];
+  double z_hi = (ftr_ceil_  > 0.0) ? std::min(gmax[2],       ftr_ceil_ ) : gmax[2];
   for (double x = grid.vmin_[0]; x <= grid.vmax_[0]; x += res) {
     for (double y = grid.vmin_[1]; y <= grid.vmax_[1]; y += res) {
-      for (double z = grid.vmin_[2]; z <= gmax[2]; z += res) {
+      for (double z = z_lo; z <= z_hi; z += res) {
 
         Eigen::Vector3d pos(x, y, z);
         if (!inside_box_3d(pos, grid)) continue;
@@ -472,6 +481,11 @@ bool UniformGrid::isRelevant(const GridInfo& grid) {
 
 bool UniformGrid::isCovered(const Eigen::Vector3d& pos)
 {
+  // 边界检查：pos 超出 HGrid 范围，视为 covered（不在此生成 frontier）
+  // 防止 posToIndex/toAddress 越界访问 grid_data_，导致 is_covered_ 误判
+  for (int i = 0; i < 3; ++i) {
+    if (pos(i) < min_(i) || pos(i) >= max_(i)) return true;
+  }
   Eigen::Vector3i idx;
   posToIndex(pos, idx);
   const int ads = toAddress(idx);

@@ -1,5 +1,6 @@
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
+#include <plan_env/perf_logger.h>  // 性能日志插桩
 #include <thread>
 
 namespace ego_planner
@@ -53,6 +54,7 @@ namespace ego_planner
   {
     ros::Time t_start = ros::Time::now();
     ros::Duration t_init, t_opt;
+    auto perf_t0 = PERF_NOW();  // 性能插桩计时起点
 
     static int count = 0;
     cout << "\033[47;30m\n[" << t_start << "] Drone " << pp_.drone_id << " Replan " << count++ << "\033[0m" << endl;
@@ -77,6 +79,7 @@ namespace ego_planner
     {
       continous_failures_count_++;
       failure_cnt_++;
+      PERF_LOG_ELAPSED_EX("REPLAN", perf_t0, "result=INIT_FAIL stage=computeInitState");
       return PLAN_RET::INIT_FAIL;
     }
 
@@ -92,6 +95,7 @@ namespace ego_planner
     {
       continous_failures_count_++;
       failure_cnt_++;
+      PERF_LOG_ELAPSED_EX("REPLAN", perf_t0, "result=INIT_FAIL stage=checkConstraints");
       return PLAN_RET::INIT_FAIL;
     }
 
@@ -236,10 +240,18 @@ namespace ego_planner
       visualization_->displayFailedList(cstr_pts, 0);
     }
 
-    if (flag_success)
+    if (flag_success) {
+      PERF_LOG_ELAPSED_EX("REPLAN", perf_t0,
+        "result=SUCCESS t_init_ms=" + std::to_string(t_init.toSec() * 1000) +
+        " t_opt_ms=" + std::to_string(t_opt.toSec() * 1000));
       return PLAN_RET::SUCCESS;
-    else
+    }
+    else {
+      PERF_LOG_ELAPSED_EX("REPLAN", perf_t0,
+        "result=DEFAULT_FAIL t_init_ms=" + std::to_string(t_init.toSec() * 1000) +
+        " t_opt_ms=" + std::to_string(t_opt.toSec() * 1000));
       return PLAN_RET::DEFAULT_FAIL;
+    }
   }
 
   double EGOPlannerManager::computeInitDuration(

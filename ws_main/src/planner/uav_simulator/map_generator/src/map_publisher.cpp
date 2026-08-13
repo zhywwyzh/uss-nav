@@ -301,23 +301,16 @@ int main(int argc, char **argv)
   // pcl::toROSMsg(cloud_output, minus_msg);
   // minus_msg.header.frame_id = "world";
 
-  int count = 0;
-  while (ros::ok()) //! viewer->wasStopped()
+  // 按需持续发布：每秒发布一次，仅当话题存在订阅者时才真正发布，否则跳过。
+  // 发布器是 latched（advertise 第 3 个参数 true），迟到的订阅者也能立即收到最近一帧。
+  while (ros::ok())
   {
-
-    // viewer->spinOnce(100);
-    // boost::this_thread::sleep(boost::posix_time::microseconds(100000));
-
     ros::Duration(1.0).sleep();
-    cloud_pub.publish(msg);
-    // minus_cloud_pub.publish(minus_msg);
-    ++count;
-    if (count > 10)
+    if (cloud_pub.getNumSubscribers() > 0)
     {
-      break;
+      cloud_pub.publish(msg);
     }
   }
-  cout << "finish publish map." << endl;
 
   return 0;
 }

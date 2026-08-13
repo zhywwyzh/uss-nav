@@ -114,6 +114,7 @@ private:
   double consistent_cost_, inside_ratio_;
   double w_unknown_;
   double free_ratio_threshold_;  // free_ratio 阈值: cell 内 free 占比超此值且无 frontier → covered
+  double ftr_floor_, ftr_ceil_;  // frontier 生成范围（与 frontier_finder 共用参数），HGrid 仅统计此范围内的 unknown/free
 
   // Swarm tf
   Eigen::Matrix3d rot_sw_;

@@ -1,4 +1,5 @@
 #include <active_perception/graph_node.h>
+#include <plan_env/perf_logger.h>  // 性能日志插桩
 
 
 // #include <path_searching/astar2.h>
@@ -32,9 +33,13 @@ double ViewNode::costTo(const ViewNode::Ptr& node) {
   return c;
 }
 
-bool ViewNode::searchPath(const Vector3d& p1, const Vector3d& p2, vector<Vector3d>& path, double& dis_res) 
+bool ViewNode::searchPath(const Vector3d& p1, const Vector3d& p2, vector<Vector3d>& path, double& dis_res)
 {
   path.clear();
+
+  // 性能插桩：记录每次 searchPath 调用
+  auto t0 = PERF_NOW();
+  double straight_dist = (p1 - p2).norm();
 
   // If the svp is directly visible and within the sensor_range
   if ((p1 - p2).norm() < 2.0 * sensor_range_ &&
@@ -44,6 +49,10 @@ bool ViewNode::searchPath(const Vector3d& p1, const Vector3d& p2, vector<Vector3
     path.push_back(p1);
     path.push_back(p2);
     dis_res = (p1 - p2).norm();
+    PERF_LOG_ELAPSED_EX("ASTAR", t0,
+      "p1=(" + std::to_string(p1.x()) + "," + std::to_string(p1.y()) + "," + std::to_string(p1.z()) + ") "
+      "p2=(" + std::to_string(p2.x()) + "," + std::to_string(p2.y()) + "," + std::to_string(p2.z()) + ") "
+      "dist=" + std::to_string(straight_dist) + " ret=VISIBLE");
     return true;
   }
   // Else calculate using a_star
@@ -56,6 +65,10 @@ bool ViewNode::searchPath(const Vector3d& p1, const Vector3d& p2, vector<Vector3
       double dis = 0.0;
       for (size_t i = 0; i < path.size() - 1; i++) dis += (path[i] - path[i+1]).norm();
       dis_res = dis;
+      PERF_LOG_ELAPSED_EX("ASTAR", t0,
+        "p1=(" + std::to_string(p1.x()) + "," + std::to_string(p1.y()) + "," + std::to_string(p1.z()) + ") "
+        "p2=(" + std::to_string(p2.x()) + "," + std::to_string(p2.y()) + "," + std::to_string(p2.z()) + ") "
+        "dist=" + std::to_string(straight_dist) + " ret=SUCCESS path_len=" + std::to_string(dis));
       return true;
     }
     else
@@ -64,6 +77,12 @@ bool ViewNode::searchPath(const Vector3d& p1, const Vector3d& p2, vector<Vector3
       ROS_WARN_STREAM("Astar failed to find path, using early termination cost as an estimate");
 
       path = { p1, p2 };
+      // 记录失败原因，便于定位是 INIT_ERR(池越界) 还是其他
+      std::string ret_str = (ret == dyn_a_star::ASTAR_RET::INIT_ERR) ? "INIT_ERR" : "NO_PATH";
+      PERF_LOG_ELAPSED_EX("ASTAR", t0,
+        "p1=(" + std::to_string(p1.x()) + "," + std::to_string(p1.y()) + "," + std::to_string(p1.z()) + ") "
+        "p2=(" + std::to_string(p2.x()) + "," + std::to_string(p2.y()) + "," + std::to_string(p2.z()) + ") "
+        "dist=" + std::to_string(straight_dist) + " ret=" + ret_str);
       return false;
     }
   }

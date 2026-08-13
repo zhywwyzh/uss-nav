@@ -32,4 +32,13 @@
         <arg name="flight_type" value="2"/>
     </include>
 
+    <!-- 消息广播器：将相机/odom 帧经 TCP 广播给机载外部服务(yoloe_remote_service)，并接收其回传的检测结果。
+         外部服务未启动时广播器自动退避重连，不影响本 launch 其它节点。 -->
+    <arg name="enable_broadcaster" default="true"/>
+    <group if="$(arg enable_broadcaster)">
+        <include file="$(find topic_broadcaster)/launch/broadcaster.launch">
+            <arg name="config" value="$(find topic_broadcaster)/config/broadcast_real.yaml"/>
+        </include>
+    </group>
+
 </launch>

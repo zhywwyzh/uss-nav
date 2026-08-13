@@ -43,7 +43,7 @@
 <!--	</include>-->
 
     <!-- main algorithm params -->
-    <include file="$(find ego_planner)/launch/include/advanced_param_sim.xml">
+    <include file="$(find ego_planner)/launch/include/advanced_param_marsim.xml">
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="odometry_topic" value="$(arg odom_topic)"/>
         <!-- camera pose: transform of camera frame in the world frame -->
