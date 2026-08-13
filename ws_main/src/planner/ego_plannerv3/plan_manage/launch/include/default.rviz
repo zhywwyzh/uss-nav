@@ -5,20 +5,19 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /simulation_map1/Autocompute Value Bounds1
-        - /drone01/Planning1/InitTraj1
         - /drone01/Planning1/drone_path1/Offset1
         - /drone01/Explore1/FC1/Namespaces1
         - /drone01/Explore1/HgridInfo1/Namespaces1
         - /drone01/Explore1/Viewpoints_Line1/Namespaces1
         - /drone01/sensors1/CloudWorld1/Autocompute Value Bounds1
+        - /drone01/sensors1/EKFOdometry1/Shape1
         - /drone01/Skeleton&Obj1/skeletonInfo1/Namespaces1
         - /drone01/Skeleton&Obj1/ObjectAllVis1/Namespaces1
         - /drone01/Skeleton&Obj1/SkeletonCluster1/Namespaces1
         - /drone01/Skeleton&Obj1/SkeletonEdgeWeights1/Namespaces1
         - /drone01/Skeleton&Obj1/SceneGraph1/Namespaces1
       Splitter Ratio: 0.5503355860710144
-    Tree Height: 516
+    Tree Height: 819
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -37,7 +36,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: map
+    SyncSource: LocalPC_3DGS
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -58,7 +57,7 @@ Visualization Manager:
       Cell Size: 1
       Class: rviz/Grid
       Color: 160; 160; 164
-      Enabled: false
+      Enabled: true
       Line Style:
         Line Width: 0.029999999329447746
         Value: Lines
@@ -71,7 +70,7 @@ Visualization Manager:
       Plane: XY
       Plane Cell Count: 1000
       Reference Frame: <Fixed Frame>
-      Value: false
+      Value: true
     - Alpha: 0.800000011920929
       Cell Size: 5
       Class: rviz/Grid
@@ -90,62 +89,6 @@ Visualization Manager:
       Plane Cell Count: 1000
       Reference Frame: <Fixed Frame>
       Value: true
-    - Alpha: 0.10000000149011612
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 2.9000000953674316
-        Min Value: 0
-        Value: false
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 178; 178; 206
-      Color Transformer: FlatColor
-      Decay Time: 0
-      Enabled: false
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: simulation_map
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: false
-      Size (Pixels): 3
-      Size (m): 0.10000000149011612
-      Style: Boxes
-      Topic: /map_generator/global_cloud
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: false
-    - Alpha: 0.10000000149011612
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: Intensity
-      Decay Time: 0
-      Enabled: false
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: map_cut
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.10000000149011612
-      Style: Boxes
-      Topic: /map_generator/global_cloud/fixed
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: false
     - Class: rviz/Group
       Displays:
         - Class: rviz/Group
@@ -245,8 +188,8 @@ Visualization Manager:
             - Alpha: 0.5
               Autocompute Intensity Bounds: true
               Autocompute Value Bounds:
-                Max Value: 1.8849999904632568
-                Min Value: -1.1050000190734863
+                Max Value: 4.125
+                Min Value: -2.4749999046325684
                 Value: true
               Axis: Z
               Channel Name: intensity
@@ -254,7 +197,7 @@ Visualization Manager:
               Color: 186; 189; 182
               Color Transformer: AxisColor
               Decay Time: 0
-              Enabled: true
+              Enabled: false
               Invert Rainbow: false
               Max Color: 255; 255; 255
               Min Color: 0; 0; 0
@@ -269,12 +212,12 @@ Visualization Manager:
               Unreliable: false
               Use Fixed Frame: true
               Use rainbow: true
-              Value: true
+              Value: false
             - Alpha: 1
               Autocompute Intensity Bounds: true
               Autocompute Value Bounds:
-                Max Value: 1.8849999904632568
-                Min Value: -1.4950000047683716
+                Max Value: 1.9249999523162842
+                Min Value: -2.805000066757202
                 Value: true
               Axis: Z
               Channel Name: intensity
@@ -774,6 +717,34 @@ Visualization Manager:
               Use Fixed Frame: true
               Use rainbow: true
               Value: false
+            - Alpha: 1
+              Autocompute Intensity Bounds: true
+              Autocompute Value Bounds:
+                Max Value: 10
+                Min Value: -10
+                Value: true
+              Axis: Z
+              Channel Name: intensity
+              Class: rviz/PointCloud2
+              Color: 255; 255; 255
+              Color Transformer: Intensity
+              Decay Time: 0
+              Enabled: false
+              Invert Rainbow: false
+              Max Color: 255; 255; 255
+              Min Color: 0; 0; 0
+              Name: GlobalPC_3DGS
+              Position Transformer: XYZ
+              Queue Size: 10
+              Selectable: true
+              Size (Pixels): 3
+              Size (m): 0.009999999776482582
+              Style: Flat Squares
+              Topic: /ply_points
+              Unreliable: false
+              Use Fixed Frame: true
+              Use rainbow: true
+              Value: false
           Enabled: true
           Name: Simulation
         - Class: rviz/Group
@@ -845,16 +816,16 @@ Visualization Manager:
             - Alpha: 1
               Autocompute Intensity Bounds: true
               Autocompute Value Bounds:
-                Max Value: 3.000103235244751
-                Min Value: 0.47275424003601074
+                Max Value: 33.12736511230469
+                Min Value: -19.25375747680664
                 Value: true
               Axis: Z
               Channel Name: z
               Class: rviz/PointCloud2
               Color: 255; 255; 255
-              Color Transformer: Intensity
+              Color Transformer: AxisColor
               Decay Time: 0
-              Enabled: true
+              Enabled: false
               Invert Rainbow: false
               Max Color: 255; 255; 255
               Min Color: 0; 0; 0
@@ -865,11 +836,11 @@ Visualization Manager:
               Size (Pixels): 3
               Size (m): 0.019999999552965164
               Style: Flat Squares
-              Topic: /livox/lidar_world
+              Topic: /ply_points
               Unreliable: false
               Use Fixed Frame: true
               Use rainbow: true
-              Value: true
+              Value: false
             - Angle Tolerance: 0.0010000000474974513
               Class: rviz/Odometry
               Covariance:
@@ -887,33 +858,33 @@ Visualization Manager:
                   Scale: 1
                   Value: true
                 Value: true
-              Enabled: true
+              Enabled: false
               Keep: 1
               Name: EKFOdometry
               Position Tolerance: 0.0010000000474974513
               Queue Size: 10
               Shape:
                 Alpha: 1
-                Axes Length: 0.800000011920929
-                Axes Radius: 0.10000000149011612
+                Axes Length: 2
+                Axes Radius: 0.5
                 Color: 255; 25; 0
                 Head Length: 0.30000001192092896
                 Head Radius: 0.10000000149011612
                 Shaft Length: 1
                 Shaft Radius: 0.05000000074505806
                 Value: Axes
-              Topic: /ekf_quat/ekf_odom
+              Topic: /drone_0_visual_slam/odom
               Unreliable: false
-              Value: true
+              Value: false
             - Class: rviz/Marker
               Enabled: true
               Marker Topic: /scene_graph/traj_with_vel
               Name: Traj_Vel
               Namespaces:
-                {}
+                trajectory: true
               Queue Size: 100
               Value: true
-          Enabled: false
+          Enabled: true
           Name: sensors
         - Class: rviz/Group
           Displays:
@@ -930,7 +901,13 @@ Visualization Manager:
               Marker Topic: /drone_0_ego_planner_node/skeleton_vis
               Name: skeletonInfo
               Namespaces:
-                {}
+                edges: true
+                frontier_facet: true
+                normal_facet: true
+                poly_belongs_to_area: true
+                polyhedron_center: true
+                polyhedron_orin_center: true
+                sphere_sample_directions: true
               Queue Size: 100
               Value: true
             - Class: rviz/MarkerArray
@@ -1010,7 +987,8 @@ Visualization Manager:
               Marker Topic: /skeleton/cluster_vis
               Name: SkeletonCluster
               Namespaces:
-                {}
+                clusters_box: true
+                clusters_sphere: true
               Queue Size: 100
               Value: true
             - Class: rviz/MarkerArray
@@ -1026,7 +1004,10 @@ Visualization Manager:
               Marker Topic: /scene_graph/vis
               Name: SceneGraph
               Namespaces:
-                {}
+                scene_graph_room_label_text: true
+                scene_graph_room_level: true
+                scene_graph_room_top_edge: true
+                scene_graph_top_level: true
               Queue Size: 100
               Value: true
             - Class: rviz/MarkerArray
@@ -1037,7 +1018,7 @@ Visualization Manager:
                 {}
               Queue Size: 100
               Value: true
-          Enabled: false
+          Enabled: true
           Name: Skeleton&Obj
         - Class: rviz/Group
           Displays:
@@ -1074,7 +1055,7 @@ Visualization Manager:
               Unreliable: false
               Value: true
             - Class: rviz/Image
-              Enabled: true
+              Enabled: false
               Image Topic: /camera0_gsplat/image/depth/raw
               Max Value: 1
               Median window: 5
@@ -1084,7 +1065,7 @@ Visualization Manager:
               Queue Size: 2
               Transport Hint: raw
               Unreliable: false
-              Value: true
+              Value: false
             - Alpha: 1
               Autocompute Intensity Bounds: true
               Autocompute Value Bounds:
@@ -1113,36 +1094,8 @@ Visualization Manager:
               Use Fixed Frame: true
               Use rainbow: true
               Value: true
-            - Alpha: 1
-              Autocompute Intensity Bounds: true
-              Autocompute Value Bounds:
-                Max Value: 10
-                Min Value: -10
-                Value: true
-              Axis: Z
-              Channel Name: intensity
-              Class: rviz/PointCloud2
-              Color: 255; 255; 255
-              Color Transformer: Intensity
-              Decay Time: 0
-              Enabled: false
-              Invert Rainbow: false
-              Max Color: 255; 255; 255
-              Min Color: 0; 0; 0
-              Name: GlobalPC_3DGS
-              Position Transformer: XYZ
-              Queue Size: 10
-              Selectable: true
-              Size (Pixels): 3
-              Size (m): 0.009999999776482582
-              Style: Flat Squares
-              Topic: /ply_points
-              Unreliable: false
-              Use Fixed Frame: true
-              Use rainbow: true
-              Value: false
             - Class: rviz/Image
-              Enabled: true
+              Enabled: false
               Image Topic: /camera0/color/image/raw
               Max Value: 1
               Median window: 5
@@ -1152,9 +1105,9 @@ Visualization Manager:
               Queue Size: 2
               Transport Hint: raw
               Unreliable: false
-              Value: true
+              Value: false
             - Class: rviz/Image
-              Enabled: true
+              Enabled: false
               Image Topic: /camera0/depth/image/raw
               Max Value: 1
               Median window: 5
@@ -1164,7 +1117,7 @@ Visualization Manager:
               Queue Size: 2
               Transport Hint: raw
               Unreliable: false
-              Value: true
+              Value: false
             - Alpha: 1
               Autocompute Intensity Bounds: true
               Autocompute Value Bounds:
@@ -1192,6 +1145,18 @@ Visualization Manager:
               Unreliable: false
               Use Fixed Frame: true
               Use rainbow: true
+              Value: true
+            - Class: rviz/Image
+              Enabled: true
+              Image Topic: /nav_mission_image
+              Max Value: 1
+              Median window: 5
+              Min Value: 0
+              Name: Mission_Image
+              Normalize Range: true
+              Queue Size: 2
+              Transport Hint: raw
+              Unreliable: false
               Value: true
           Enabled: true
           Name: Perception
@@ -1225,30 +1190,6 @@ Visualization Manager:
           Value: false
       Enabled: true
       Name: Fsm
-    - Class: rviz/Image
-      Enabled: true
-      Image Topic: /nav_mission_image
-      Max Value: 1
-      Median window: 5
-      Min Value: 0
-      Name: Image
-      Normalize Range: true
-      Queue Size: 2
-      Transport Hint: raw
-      Unreliable: false
-      Value: true
-    - Class: rviz/Image
-      Enabled: false
-      Image Topic: /nav_mission_image
-      Max Value: 1
-      Median window: 5
-      Min Value: 0
-      Name: Image
-      Normalize Range: true
-      Queue Size: 2
-      Transport Hint: raw
-      Unreliable: false
-      Value: false
   Enabled: true
   Global Options:
     Background Color: 125; 125; 125
@@ -1279,7 +1220,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/XYOrbit
-      Distance: 19.758163452148438
+      Distance: 18.769432067871094
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -1287,17 +1228,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -1.4676523208618164
-        Y: -3.2271029949188232
-        Z: 0.07456032931804657
+        X: -1.9062039852142334
+        Y: -3.0258209705352783
+        Z: 0.0745609849691391
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.114796757698059
+      Pitch: 1.0997967720031738
       Target Frame: body
-      Yaw: 3.4847354888916016
+      Yaw: 3.7347421646118164
     Saved:
       - Class: rviz/XYOrbit
         Distance: 15.792802810668945
@@ -1326,12 +1267,12 @@ Window Geometry:
     collapsed: false
   Displays:
     collapsed: false
-  Height: 1403
+  Height: 1376
   Hide Left Dock: false
   Hide Right Dock: false
-  Image:
+  Mission_Image:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000400000000000001650000041cfc020000003dfb000000100044006900730070006c00610079007301000001440000023f000000c700fffffffb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb0000000a00560069006500770073000000014400000299000000a000fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000c00430061006d00650072006100000001d1000000b50000000000000000fb0000000a00640065007000740068000000037c000001c70000001600fffffffb0000000a0064006500700074006800000003b80000002c0000000000000000fb0000000a0064006500700074006800000004a2000000ac0000000000000000fb0000000a006400650070007400680000000346000002180000000000000000fb0000000a00640065007000740068000000021d000001d90000000000000000fb0000000a006400650070007400680000000481000000cd0000000000000000fb0000000a006400650070007400680000000429000001250000000000000000fb0000000a0064006500700074006800000003b7000000af0000000000000000fb0000000a0064006500700074006800000003d5000000b50000000000000000fb0000000a006400650070007400680000000444000001260000000000000000fb0000000a00640065007000740068000000041f0000014b0000000000000000fb0000000a0064006500700074006800000001b8000000160000000000000000fb0000000a0064006500700074006800000001c1000000160000000000000000fb0000000a0064006500700074006800000004b1000000550000000000000000fb0000000a006400650070007400680000000505000000650000000000000000fb0000000a006400650070007400680000000502000000680000000000000000fb0000000a0064006500700074006800000004f9000000710000000000000000fb0000000a0064006500700074006800000003dd0000018d0000000000000000fb0000000a0064006500700074006800000004de0000008c0000000000000000fb0000000a0064006500700074006800000004cc0000009e0000000000000000fb0000000a00640065007000740068000000048a000000c40000000000000000fb0000000a0064006500700074006800000004aa000000c00000000000000000fb0000000a0049006d0061006700650000000144000002990000001600fffffffb0000000a006400650070007400680000000495000000d50000000000000000fb0000000a0064006500700074006800000001b60000001b0000000000000000fb0000000a0064006500700074006800000001c10000002f0000000000000000fb0000000a0064006500700074006800000001d3000000300000000000000000fb0000000a0064006500700074006800000001e6000000320000000000000000fb0000000a0064006500700074006800000004dc0000008e0000000000000000fb0000000a0064006500700074006800000004f4000000760000000000000000fb0000000a0064006500700074006800000004f2000000780000000000000000fb0000000a006400650070007400680000000503000000670000000000000000fb0000000a006400650070007400680000000509000000610000000000000000fb0000000a006400650070007400680000000511000000590000000000000000fb0000000a006400650070007400680000000517000000530000000000000000fb0000000a00640065007000740068000000051d0000004d0000000000000000fb0000000a00640065007000740068000000051d0000004d0000000000000000fb0000000a006400650070007400680000000526000000440000000000000000fb0000000a00640065007000740068000000052b0000003f0000000000000000fb0000000a00640065007000740068000000052b0000003f0000000000000000fb0000000a00640065007000740068000000052f0000003b0000000000000000fb0000000a006400650070007400680000000532000000380000000000000000fb0000000a006400650070007400680000000536000000340000000000000000fb0000000a00640065007000740068000000046b000000d80000000000000000fb0000000a0049006d0061006700650100000389000001d70000001600fffffffb0000000c00430061006d0065007200610000000319000000cb0000000000000000fb0000000a0049006d0061006700650100000218000001cc0000000000000000fb0000000a006400650070007400680000000319000000cb0000000000000000fb0000000a0049006d0061006700650000000144000002990000000000000000fb0000000a0049006d00610067006501000002c00000011d0000000000000000fb0000000a0049006d00610067006501000002cd000001100000000000000000000000010000015e0000035dfc0200000002fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000a0000000103fc010000000cfb0000001e0079006f006c006f0065002b007200670062002b0064006500700074006800000000000000016f0000000000000000fb000000160079006f006c006f00650044006500740065006300740000000000000001bd0000009500fffffffb000000100064006500700074006800430061006d000000015e0000019c0000008b00fffffffb00000010005200470042005f004d0045005300480100000000000002560000008f00fffffffb0000001400440065007000740068005f004d004500530048010000025c0000024d0000009a00fffffffb00000010005200470042005f003300440047005301000004af000002980000008e00fffffffb0000001400440065007000740068005f0033004400470053010000074d000002b30000009900fffffffb0000000c00720067006200430061006d000000031d0000041b0000007c00fffffffb0000000a0049006d0061006700650100000000000009f40000000000000000fb0000000a0049006d00610067006501000000000000039f0000000000000000fb0000000a0049006d00610067006501000000000000039f0000000000000000fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007380000003bfc0100000002fb0000000800540069006d00650000000000000007380000035c00fffffffb0000000800540069006d00650100000000000004500000000000000000000008950000041c00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000400000000000001650000036efc020000003cfb000000100044006900730070006c00610079007301000001d70000036e000000c700fffffffb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb0000000a00560069006500770073000000014400000299000000a000fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000c00430061006d00650072006100000001d1000000b50000000000000000fb0000000a00640065007000740068000000037c000001c70000001600fffffffb0000000a0064006500700074006800000003b80000002c0000000000000000fb0000000a0064006500700074006800000004a2000000ac0000000000000000fb0000000a006400650070007400680000000346000002180000000000000000fb0000000a00640065007000740068000000021d000001d90000000000000000fb0000000a006400650070007400680000000481000000cd0000000000000000fb0000000a006400650070007400680000000429000001250000000000000000fb0000000a0064006500700074006800000003b7000000af0000000000000000fb0000000a0064006500700074006800000003d5000000b50000000000000000fb0000000a006400650070007400680000000444000001260000000000000000fb0000000a00640065007000740068000000041f0000014b0000000000000000fb0000000a0064006500700074006800000001b8000000160000000000000000fb0000000a0064006500700074006800000001c1000000160000000000000000fb0000000a0064006500700074006800000004b1000000550000000000000000fb0000000a006400650070007400680000000505000000650000000000000000fb0000000a006400650070007400680000000502000000680000000000000000fb0000000a0064006500700074006800000004f9000000710000000000000000fb0000000a0064006500700074006800000003dd0000018d0000000000000000fb0000000a0064006500700074006800000004de0000008c0000000000000000fb0000000a0064006500700074006800000004cc0000009e0000000000000000fb0000000a00640065007000740068000000048a000000c40000000000000000fb0000000a0064006500700074006800000004aa000000c00000000000000000fb0000000a0049006d0061006700650000000144000002990000000000000000fb0000000a006400650070007400680000000495000000d50000000000000000fb0000000a0064006500700074006800000001b60000001b0000000000000000fb0000000a0064006500700074006800000001c10000002f0000000000000000fb0000000a0064006500700074006800000001d3000000300000000000000000fb0000000a0064006500700074006800000001e6000000320000000000000000fb0000000a0064006500700074006800000004dc0000008e0000000000000000fb0000000a0064006500700074006800000004f4000000760000000000000000fb0000000a0064006500700074006800000004f2000000780000000000000000fb0000000a006400650070007400680000000503000000670000000000000000fb0000000a006400650070007400680000000509000000610000000000000000fb0000000a006400650070007400680000000511000000590000000000000000fb0000000a006400650070007400680000000517000000530000000000000000fb0000000a00640065007000740068000000051d0000004d0000000000000000fb0000000a00640065007000740068000000051d0000004d0000000000000000fb0000000a006400650070007400680000000526000000440000000000000000fb0000000a00640065007000740068000000052b0000003f0000000000000000fb0000000a00640065007000740068000000052b0000003f0000000000000000fb0000000a00640065007000740068000000052f0000003b0000000000000000fb0000000a006400650070007400680000000532000000380000000000000000fb0000000a006400650070007400680000000536000000340000000000000000fb0000000a00640065007000740068000000046b000000d80000000000000000fb0000000c00430061006d0065007200610000000319000000cb0000000000000000fb0000000a0049006d0061006700650100000218000001cc0000000000000000fb0000000a006400650070007400680000000319000000cb0000000000000000fb0000000a0049006d0061006700650000000144000002990000000000000000fb0000000a0049006d00610067006501000002c00000011d0000000000000000fb0000000a0049006d00610067006501000002cd000001100000000000000000000000010000015e0000035dfc0200000002fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000001200530065006c0065006300740069006f006e010000025a000000b2000000000000000000000002000009ba00000196fc010000000dfb0000001e0079006f006c006f0065002b007200670062002b0064006500700074006800000000000000016f0000000000000000fb000000160079006f006c006f00650044006500740065006300740000000000000001bd0000009500fffffffb000000100064006500700074006800430061006d000000015e0000019c0000008b00fffffffb00000010005200470042005f004d0045005300480000000000000002560000008f00fffffffb0000001400440065007000740068005f004d0045005300480000000000000003040000009a00fffffffb00000010005200470042005f00330044004700530100000000000004db0000008e00fffffffb0000001a004d0069007300730069006f006e005f0049006d00610067006501000004e1000004d9000000a400fffffffb0000001400440065007000740068005f003300440047005300000004e9000005170000009900fffffffb0000000c00720067006200430061006d000000031d0000041b0000007c00fffffffb0000000a0049006d0061006700650100000000000009f40000000000000000fb0000000a0049006d00610067006501000000000000039f0000000000000000fb0000000a0049006d00610067006501000000000000039f0000000000000000fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007380000003bfc0100000002fb0000000800540069006d00650000000000000007380000035c00fffffffb0000000800540069006d006501000000000000045000000000000000000000084f0000036e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   RGB_3DGS:
     collapsed: false
   RGB_MESH:
@@ -1344,9 +1285,9 @@ Window Geometry:
     collapsed: false
   Views:
     collapsed: false
-  Width: 2560
-  X: 1920
-  Y: 0
+  Width: 2490
+  X: 70
+  Y: 27
   depth:
     collapsed: false
   depthCam:
