@@ -43,10 +43,19 @@ add_library( plan_env
     src/grid_map.cpp
     src/grid_map_frontier_part.cpp
     src/raycast.cpp
+    src/perf_logger.cpp    # 性能日志跨 .so 共享单例实现
     )
+
+# 确保 perf_logger 的 C 接口符号被导出到动态符号表，
+# 其他 .so 通过 dlsym(RTLD_DEFAULT) 查找 ego_perf_get_instance
+set_target_properties(plan_env PROPERTIES
+    CXX_VISIBILITY_PRESET default
+    VISIBILITY_INLINES_HIDDEN OFF
+)
 
 target_link_libraries( plan_env
     ${catkin_LIBRARIES} 
     ${PCL_LIBRARIES}
     ${OpenCV_LIBS}
+    ${CMAKE_DL_LIBS}       # dlsym / dlfcn（perf_logger 跨 .so 共享单例）
 )

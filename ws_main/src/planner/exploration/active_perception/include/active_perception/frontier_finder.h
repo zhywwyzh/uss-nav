@@ -167,6 +167,7 @@ public:
   bool                              is_print_info_;
   double                            ftr_blacklist_radius_;
   int                               deletion_mode_;  // 0=FUEL式(isFrontierChanged直接删+重建), 1=0720式(isFrontierChanged+isWellObserved)
+  bool                              prefer_topo_path_;  // 代价矩阵是否优先用拓扑图路径（true=跳过栅格A*，减少越界与耗时）
 
   // viewpoint params
   double                            candidate_rmax_, candidate_rmin_, candidate_dphi_, min_candidate_dist_,

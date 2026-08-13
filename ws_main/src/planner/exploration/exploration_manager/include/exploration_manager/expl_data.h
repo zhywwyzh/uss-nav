@@ -118,6 +118,16 @@ struct FSMData
   // 探索持续重规划：frontier 变化感知
   size_t   frontier_last_count_{0};   // 上次 frontier 数量
   bool     frontier_changed_{false};  // frontier 列表是否发生变化
+
+  // === 探索脱困: 本地卡死检测与恢复 (建议 A/B/C/D/E) ===
+  // 背景见 doc/handoff/20260813_ego_planner_stuck.md:
+  // 旧逻辑 [7] 分支无论 getAndPublishNextAim 是否成功都刷新 last_pub_time_,
+  // 导致 t_cur 永远 < 15s, [5] 卡死恢复被饿死 → 死锁.
+  ros::Time last_progress_time_;                 // 上次"真正推进路径/发布新目标"的时间(建议B: 替代 last_pub_time_ 做卡死判据)
+  int       local_aim_fail_count_{0};            // getAndPublishNextAim 连续失败计数(建议A: 失败超阈值则重规划)
+  bool      explore_stuck_triggered_{false};     // 探索卡死强制推进本轮已触发(防重复, 建议D)
+  int       explore_stuck_advance_count_{0};     // 探索卡死强制推进连续计数(建议D tier2)
+  double    explore_stuck_begin_time_{-1.0};     // 探索卡死计时起点(秒, -1=未卡死, 建议D)
 };
 
 struct FSMParam
@@ -166,6 +176,15 @@ struct FSMParam
   int    object_id_nav_prior_guide_max_retries_{2};       // 先验引导最大重试次数(cloud未构建时)
   // B3 生命周期: frontier 被选为目标但未能消除的累计次数阈值
   int    max_observation_attempts_{3};
+
+  // === 探索脱困参数 (建议 A/B/C/D/E) ===
+  // 所有参数通过 rosparam explore_stuck/* 读取, 详见 init()
+  int    explore_local_aim_fail_max_{5};            // getLocalAim 连续失败多少次后强制重规划(建议A)
+  bool   explore_stuck_force_advance_enable_{true}; // 探索路径是否启用逐点强制推进 tier2(建议D)
+  double explore_stuck_force_advance_duration_{3.0};// 探索卡死持续多久后触发强制推进(建议D)
+  int    explore_stuck_force_advance_max_consecutive_{2}; // 探索强制推进最大连续次数, 超过则整体重规划(建议D)
+  double explore_local_stuck_vel_thresh_{0.1};      // 探索本地卡死速度阈值(建议C/E)
+  double explore_local_stuck_duration_{8.0};        // 探索本地卡死持续时间阈值(建议C/E)
 };
 
 struct ExplorationData {

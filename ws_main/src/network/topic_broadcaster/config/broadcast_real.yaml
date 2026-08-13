@@ -1,0 +1,25 @@
+# 广播器节点配置（实机环境 / Real）
+# 默认使用实机话题，如需调整请修改对应 topic 字段
+
+connection:
+  server_ip: "127.0.0.1"    # 外部服务地址（外部服务为 TCP server）
+  server_port: 9010          # 外部服务监听端口
+  reconnect_min_sec: 1.0     # 重连最小退避时间(秒)
+  reconnect_max_sec: 5.0     # 重连最大退避时间(秒，指数退避封顶)
+  send_timeout_ms: 100       # 单帧发送超时(毫秒)，超时即放弃该帧
+  queue_size: 8              # 上行发送队列容量(帧)，队满丢最旧
+
+broadcast_topics:
+  out:
+    - topic: /camera/color/image/compressed   # 实机 RGB 压缩图（可改）
+      codec: raw             # raw=CompressedImage 原字节直传（不解码不重编码）
+      max_freq: 10           # 节流上限(Hz)，0 表示不限制
+    - topic: /camera/depth/image/compressed   # 实机 Depth 压缩图（可改）
+      codec: raw
+      max_freq: 10
+    - topic: /ekf_quat/ekf_odom                # 实机 odom（可改）
+      codec: json            # json=Odometry 序列化为 JSON
+      max_freq: 30
+  in:
+    - topic: /yoloe/encodemask
+      codec: encodemask      # 下行 EncodeMask 检测结果

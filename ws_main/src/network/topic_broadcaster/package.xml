@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>topic_broadcaster</name>
+  <version>1.0.0</version>
+  <description>
+    广播器节点：通过单条 TCP 双向连接把相机压缩图/odom 数据发给机载外部服务进程，
+    并接收外部服务回传的 EncodeMask 检测结果 JSON，解码后发布回 ROS。
+  </description>
+
+  <maintainer email="1926038838@qq.com">gwq</maintainer>
+
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>roscpp</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>scene_graph</build_depend>
+  <build_depend>message_runtime</build_depend>
+
+  <build_export_depend>roscpp</build_export_depend>
+  <build_export_depend>std_msgs</build_export_depend>
+  <build_export_depend>sensor_msgs</build_export_depend>
+  <build_export_depend>nav_msgs</build_export_depend>
+  <build_export_depend>scene_graph</build_export_depend>
+  <build_export_depend>message_runtime</build_export_depend>
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>scene_graph</exec_depend>
+  <exec_depend>message_runtime</exec_depend>
+</package>

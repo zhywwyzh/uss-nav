@@ -185,7 +185,7 @@
 
         <!-- frontier -->
         <param name="frontier/floor" value="0.6" type="double"/>
-        <param name="frontier/ceil" value="1.0" type="double"/>
+        <param name="frontier/ceil" value="2.2" type="double"/>
         <param name="frontier/cluster_min" value="80" type="int"/>
         <param name="frontier/cluster_size_xy" value="2.0" type="double"/>
         <param name="frontier/cluster_size_z" value="10.0" type="double"/>
@@ -405,6 +405,14 @@
         <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/> -->
         <param name="optimization/max_jer" value="$(arg max_jer)" type="double"/>
         <param name="optimization/max_sna" value="$(arg max_sna)" type="double"/>
+
+        <!-- 性能日志开关：每次启动生成带时间戳的日志文件到 logs/perf 目录 -->
+        <param name="perf_log/enable" value="true" type="bool"/>
+        <param name="perf_log/dir"    value="" type="string"/>
+
+        <!-- 性能优化开关 -->
+        <!-- 代价矩阵优先拓扑图路径：true=跳过栅格A*直接用拓扑图，false=先栅格A*后拓扑图fallback -->
+        <param name="frontier/prefer_topo_path" value="true" type="bool"/>
     </node>
 
     <!-- RC replan trigger: ch8+ch9 同时 >1500 时触发 /object_id_nav_replan -->

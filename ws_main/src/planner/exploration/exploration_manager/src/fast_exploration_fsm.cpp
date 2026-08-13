@@ -3,6 +3,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <ctime>           // 探索耗时日志：strftime/localtime
+#include <fstream>         // 探索耗时日志：ofstream
+#include <iomanip>         // 探索耗时日志：setprecision
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -11,7 +14,9 @@
 #include <ostream>
 #include <ros/console.h>
 #include <ros/duration.h>
+#include <ros/package.h>            // 性能日志：ros::package::getPath 获取默认日志目录
 #include <ros/time.h>
+#include <plan_env/perf_logger.h>   // 性能日志插桩
 #include <scene_graph/PromptMsg.h>
 #include <scene_graph/data_structure.h>
 #include <scene_graph/scene_graph.h>
@@ -118,6 +123,15 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
   nh.param("topo_block/stuck_force_advance_duration",        fp_->stuck_force_advance_duration_, 3.0);
   nh.param("topo_block/stuck_force_advance_max_consecutive", fp_->stuck_force_advance_max_consecutive_, 2);
   nh.param("frontier/max_observation_attempts", fp_->max_observation_attempts_, 3);
+
+  // === 探索脱困参数 (建议 A/B/C/D/E) ===
+  // 默认值与 FSMParam 成员初值一致, 通过 rosparam explore_stuck/* 覆盖
+  nh.param("explore_stuck/local_aim_fail_max",            fp_->explore_local_aim_fail_max_, 5);
+  nh.param("explore_stuck/force_advance_enable",          fp_->explore_stuck_force_advance_enable_, true);
+  nh.param("explore_stuck/force_advance_duration",        fp_->explore_stuck_force_advance_duration_, 3.0);
+  nh.param("explore_stuck/force_advance_max_consecutive", fp_->explore_stuck_force_advance_max_consecutive_, 2);
+  nh.param("explore_stuck/local_stuck_vel_thresh",        fp_->explore_local_stuck_vel_thresh_, 0.1);
+  nh.param("explore_stuck/local_stuck_duration",          fp_->explore_local_stuck_duration_, 8.0);
   // object-id-nav replan 参数
   nh.param("object_id_nav_replan/enable",               fp_->object_id_nav_replan_enable_, false);
   nh.param("object_id_nav_replan/mode",                 fp_->object_id_nav_replan_mode_, 0);
@@ -199,6 +213,33 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
 
   std::cout << "\n***** Target Cmd : " << fd_->target_cmd_ << "\n" << std::endl;
   std::cout << "ALL Main FSM Params loaded successfully ..." << std::endl;
+
+  // 性能日志初始化：每次启动新建带时间戳的日志文件，仅记录性能插桩输出
+  // perf_log/enable 控制开关；perf_log/dir 指定日志目录，默认放到仓库根 logs/perf
+  {
+    bool perf_log_enable = true;
+    std::string perf_log_dir;
+    nh.param("perf_log/enable", perf_log_enable, true);
+    nh.param("perf_log/dir", perf_log_dir, std::string(""));
+    if (perf_log_dir.empty()) {
+      // 默认目录：plan_env 包目录往上三级到仓库根，再进入 logs/perf
+      perf_log_dir = ros::package::getPath("plan_env") + "/../../../logs/perf";
+    }
+    PERF_INIT(perf_log_dir, perf_log_enable);
+    PERF_LOG("PERF_INIT", "dir=" + perf_log_dir + " enable=" + (perf_log_enable ? "1" : "0"));
+  }
+
+  // 探索耗时日志目录初始化：复用 perf_log 的目录解析逻辑，子目录改为 logs/exploration_timing
+  // 文件固定为 exploration_timing.log（追加模式），每次探索任务完成时追加一条记录
+  {
+    nh.param("exploration_timing/dir", exploration_timing_dir_, std::string(""));
+    if (exploration_timing_dir_.empty()) {
+      exploration_timing_dir_ = ros::package::getPath("plan_env") + "/../../../logs/exploration_timing";
+    }
+    // 确保目录存在（mkdir -p，与 perf_logger 一致）
+    std::string cmd = "mkdir -p " + exploration_timing_dir_;
+    system(cmd.c_str());
+  }
 
 
   fd_->home_pos_ << 0.0, 0.0, 1.0; // TODO
@@ -351,6 +392,12 @@ void FastExplorationFSM::publishExplorationResult(bool success, const std::strin
     counting_scene_graph_->finishSessionAndPublish();
   }
 
+  // 探索任务计时结算：若计时处于激活状态，计算总耗时并写入本地文件
+  if (exploration_timer_active_) {
+    logExplorationTiming(success, reason, message);
+    exploration_timer_active_ = false;
+  }
+
   std_msgs::String msg;
   std::ostringstream ss;
   ss << "{"
@@ -366,6 +413,52 @@ void FastExplorationFSM::publishExplorationResult(bool success, const std::strin
      << "}";
   msg.data = ss.str();
   exploration_result_pub_.publish(msg);
+}
+
+void FastExplorationFSM::logExplorationTiming(bool success, const std::string& reason,
+                                              const std::string& message)
+{
+  // 计算探索总耗时（秒）
+  ros::Time end_time = ros::Time::now();
+  double elapsed_sec = (end_time - exploration_start_time_).toSec();
+
+  // 写入本地文件（追加模式），文件固定为 exploration_timing.log
+  // 每条记录一行，包含时间戳、成功/失败、原因、耗时、session_id、是否有区域
+  std::string file_path = exploration_timing_dir_ + "/exploration_timing.log";
+  std::ofstream ofs(file_path, std::ios::out | std::ios::app);
+  if (!ofs.is_open()) {
+    ROS_WARN("[ExplorationTiming] failed to open %s for writing", file_path.c_str());
+    return;
+  }
+
+  // 写入 header（仅文件首次创建/为空时）
+  ofs.seekp(0, std::ios::end);
+  if (ofs.tellp() == 0) {
+    ofs << "# exploration_timing.log: 每次探索任务的总耗时记录（追加模式）" << std::endl;
+    ofs << "# 格式: [结束时间] success=1/0 reason=xxx elapsed_sec=xxx session_id=xxx has_region=0/1 start_time=xxx end_time=xxx" << std::endl;
+  }
+
+  // 格式化时间戳
+  std::time_t raw_time = static_cast<std::time_t>(end_time.toSec());
+  std::tm* tm_info = std::localtime(&raw_time);
+  char time_buf[32];
+  std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+
+  ofs << "[" << time_buf << "] "
+      << "success=" << (success ? 1 : 0) << " "
+      << "reason=\"" << reason << "\" "
+      << "elapsed_sec=" << std::fixed << std::setprecision(3) << elapsed_sec << " "
+      << "session_id=" << active_instruction_session_id_ << " "
+      << "has_region=" << (expl_manager_->hasExplorationRegion() ? 1 : 0) << " "
+      << "start_time=" << std::fixed << std::setprecision(3) << exploration_start_time_.toSec() << " "
+      << "end_time=" << std::fixed << std::setprecision(3) << end_time.toSec() << " "
+      << "message=\"" << message << "\""
+      << std::endl;
+  ofs.flush();
+  ofs.close();
+
+  ROS_INFO("[ExplorationTiming] elapsed=%.3fs success=%d reason=%s logged to %s",
+           elapsed_sec, success ? 1 : 0, reason.c_str(), file_path.c_str());
 }
 
 bool FastExplorationFSM::isVlaSwarmState(MISSION_FSM_STATE state) const
@@ -2006,6 +2099,9 @@ void FastExplorationFSM::planLLMExplore() {
     fd_->is_lookforward_ = look_forward;
     fd_->has_rotated_ = !look_forward;
     fd_->last_pub_time_ = ros::Time::now();
+    // 建议B/D: 进入 APPROACH_EXPLORE 前初始化 last_progress_time_ 并清零卡死状态
+    fd_->last_progress_time_ = ros::Time::now();
+    resetExploreStuckState();
     INFO_MSG_GREEN("[EXP-FSM] [look_forward = " << look_forward << "] aim: " << fd_->aim_pos_.transpose() << ", local_aim: " << fd_->local_aim_pos_.transpose());
     transitState(APPROACH_EXPLORE, "LLM Plan Success");
   }
@@ -2079,6 +2175,9 @@ void FastExplorationFSM::planRegularExplore() {
     fd_->has_rotated_ = !look_forward;
     INFO_MSG_GREEN("[EXP-FSM] [look_forward = " << look_forward << "] aim: " << fd_->aim_pos_.transpose() << ", local_aim: " << fd_->local_aim_pos_.transpose());
     fd_->last_pub_time_ = ros::Time::now();
+    // 建议B/D: 进入 APPROACH_EXPLORE 前初始化 last_progress_time_ 并清零卡死状态
+    fd_->last_progress_time_ = ros::Time::now();
+    resetExploreStuckState();
 
     transitState(APPROACH_EXPLORE, "FSM");
     need_rotate_yaw_ = enable_yaw_scan_;
@@ -2134,18 +2233,24 @@ void FastExplorationFSM::approachRegularExplore() {
   double dis_2_local_aim = (fd_->local_aim_pos_ - fd_->odom_pos_).norm();
   double dis_yaw         = fd_->aim_yaw_ - fd_->odom_yaw_;
 
-  double t_cur = (ros::Time::now() - fd_->last_pub_time_).toSec();
+  // 建议B: t_cur 改用独立的 last_progress_time_ (仅真正推进时刷新)
+  // 旧逻辑用 last_pub_time_, 被 [7] 分支无条件刷新 → t_cur 永远 <15s → [5] 卡死恢复被饿死
+  double t_cur = (ros::Time::now() - fd_->last_progress_time_).toSec();
   std::string ego_plan_status_str_   = fd_->ego_plan_status_ ? "True" : "False";
   std::string ego_modify_status_str_ = fd_->ego_modify_status_ ? "True" : "False";
 
   ROS_INFO_STREAM_THROTTLE(0.5, "\033[1;33mApproach EXPLORE...\033[0m \n"
                                 "   * Dis to Aim: " << dis_2_aim_2d << "\n"
                                 "   * Dis to LocalAim: " << dis_2_local_aim << "\n"
-                                "   * Dis to yaw: " << dis_yaw);  // 黄
+                                "   * Dis to yaw: " << dis_yaw
+                                << "\n   * local_aim_fail: " << fd_->local_aim_fail_count_
+                                << "\n   * explore_stuck_cnt: " << fd_->explore_stuck_advance_count_
+                                << "\n   * t_cur(progress): " << t_cur);  // 黄
   ROS_INFO_STREAM_THROTTLE(0.5, "[EXPL-FSM] : ego local goal -> (" << fd_->ego_local_goal_.transpose() << ")");
   ROS_INFO_STREAM_THROTTLE(0.5, "[EXPL-FSM] : ego plan times: " << fd_->ego_plan_times_
                                                                 << "  ego plan statue: " << ego_plan_status_str_
                                                                 << "  ego modify status: " << ego_modify_status_str_);
+
   // ! bad frontier delete
   bool bad_frontier = false;
   Eigen::Vector3d cur_viewpoint = fd_->path_res_.back();
@@ -2154,18 +2259,29 @@ void FastExplorationFSM::approachRegularExplore() {
     bad_frontier = true;
   }
 
-  if (fd_->ego_modify_status_ && fd_->ego_exec_finished_ 
+  if (fd_->ego_modify_status_ && fd_->ego_exec_finished_
       && (fd_->odom_pos_ - fd_->ego_local_goal_).norm() < 0.1
       && map_->isInLocalMap(cur_viewpoint) && t_cur > 8.0) {
     INFO_MSG_RED("[EXPL-FSM] : ego modify status, delete this frontier and add it to blacklist, replan!");
     bad_frontier = true;
   }
 
+  // 建议E: 纯本地卡死判据(不依赖 ego 反馈, 打破 ego 断链时的死锁)
+  // 条件: 卡死超阈值 + 距 local_aim 近 + getLocalAim 连续失败 → 该 frontier 不可达
+  // 背景: ego_plan_result 断链时上面的判据全部失效, 需要纯本地信号兜底
+  if (t_cur > fp_->explore_local_stuck_duration_ &&
+      fd_->odom_vel_.norm() < fp_->explore_local_stuck_vel_thresh_ &&
+      dis_2_local_aim < expl_manager_->ep_->radius_close_ &&
+      fd_->local_aim_fail_count_ >= fp_->explore_local_aim_fail_max_) {
+    INFO_MSG_RED("[EXPL-FSM] : local stuck (no ego feedback), delete this frontier and add to blacklist!");
+    bad_frontier = true;
+  }
+
   // replan judgement
-  MISSION_FSM_STATE replan_target_state = 
+  MISSION_FSM_STATE replan_target_state =
         fd_->regular_explore_ ? MISSION_FSM_STATE::PLAN_EXPLORE : MISSION_FSM_STATE::LLM_PLAN_EXPLORE;
 
-  if (fd_->df_demo_mode_) 
+  if (fd_->df_demo_mode_)
     replan_target_state = MISSION_FSM_STATE::DF_DEMO;
 
   if (bad_frontier){
@@ -2175,7 +2291,12 @@ void FastExplorationFSM::approachRegularExplore() {
     expl_manager_->frontier_finder_->addFtrBlacklist(expl_manager_->ed_->frontier_to_explore_.average_);
     INFO_MSG_RED("Ftr [" << expl_manager_->ed_->frontier_to_explore_.id_ << "] pos : "<< expl_manager_->ed_->frontier_to_explore_.average_.transpose());
     expl_manager_->forceDeleteFrontier(expl_manager_->ed_->frontier_to_explore_);
+    // 建议E: 删 frontier 后重置 ego 反馈状态, 防止残留值下次误触发 bad_frontier 或 [6]
+    resetExploreEgoState();
+    resetExploreStuckState();
+    fd_->last_progress_time_ = ros::Time::now();   // 建议B: 重规划起点
     transitState(replan_target_state, "FSM");
+    return;   // 建议E: 显式 return, 避免继续走到下方分支
   }
 
   // ====== replan judgement (优先级从高到低) ======
@@ -2184,6 +2305,8 @@ void FastExplorationFSM::approachRegularExplore() {
   if (t_cur > fp_->replan_thresh2_ &&
       expl_manager_->frontier_finder_->isAnyFrontierCovered(fd_->odom_pos_)) {
     ROS_WARN("\n-------------> Replan: frontier covered <-------------\n");
+    resetExploreStuckState();
+    fd_->last_progress_time_ = ros::Time::now();
     transitState(replan_target_state, "frontier_covered");
     return;
   }
@@ -2192,6 +2315,8 @@ void FastExplorationFSM::approachRegularExplore() {
   if (fd_->frontier_changed_ && t_cur > fp_->replan_thresh2_) {
     ROS_WARN("\n-------------> Replan: frontiers changed <-------------\n");
     fd_->frontier_changed_ = false;
+    resetExploreStuckState();
+    fd_->last_progress_time_ = ros::Time::now();
     transitState(replan_target_state, "frontier_changed");
     return;
   }
@@ -2203,6 +2328,8 @@ void FastExplorationFSM::approachRegularExplore() {
       dis_2_aim_2d < expl_manager_->ep_->radius_close_ * 2.0 &&
       t_cur > fp_->replan_thresh2_) {
     ROS_WARN("\n-------------> Replan: pre-arrival (%.1fm to aim) <-------------\n", dis_2_aim_2d);
+    resetExploreStuckState();
+    fd_->last_progress_time_ = ros::Time::now();
     transitState(replan_target_state, "pre_arrival");
     return;
   }
@@ -2214,14 +2341,48 @@ void FastExplorationFSM::approachRegularExplore() {
     expl_manager_->frontier_finder_->incrementObservationAttempts(expl_manager_->ed_->frontier_to_explore_, fp_->max_observation_attempts_);
     ros::Duration(0.5).sleep();
     ROS_INFO_STREAM("t_cur: " << t_cur);
+    resetExploreStuckState();
+    fd_->last_progress_time_ = ros::Time::now();
     transitState(replan_target_state, "FSM");
     return;
   }
 
-  // [5] 兜底卡死恢复：长时间静止 → 强制重规划
+  // === 建议D: 探索路径 tier2 卡死强制推进 (复用自 goTargetObject, 插在 [5] 之前) ===
+  // tier1(清blocked+重规划)已由 [5] 整体重规划覆盖, 此处仅做 tier2: 逐点 path_inx++ 跳过不可见点
+  // 目的: 在 [5] 长时间卡死恢复之外, 增加"绕过当前 isVisible 失败的路径点"的细粒度恢复能力
+  // 安全性: path_inx++ 后 getAndPublishNextAim 内部仍用严格 isVisible(OCCUPIED+UNKNOWN 双阻断)找下一可见点,
+  //         不会绕过视线检查发布不可见目标点; 若下一点也不可见 → getLocalAim 返回 false → 走建议A失败计数
+  if (fp_->explore_stuck_force_advance_enable_ && detectExploreStuck()) {
+    double stuck_sec = (fd_->explore_stuck_begin_time_ >= 0.0)
+                       ? ros::Time::now().toSec() - fd_->explore_stuck_begin_time_
+                       : -1.0;
+    if (stuck_sec > fp_->explore_stuck_force_advance_duration_ &&
+        !fd_->explore_stuck_triggered_ &&
+        fd_->explore_stuck_advance_count_ < fp_->explore_stuck_force_advance_max_consecutive_) {
+
+      // Tier2: 逐点强制推进 path_inx (跳过当前 isVisible 失败的路径点)
+      if (fd_->path_inx_ < (int)fd_->path_res_.size() - 1) {
+        fd_->path_inx_++;
+        fd_->explore_stuck_advance_count_++;
+        fd_->explore_stuck_triggered_ = true;
+        fd_->explore_stuck_begin_time_ = -1.0;
+        bool ok = getAndPublishNextAim(fd_->path_res_, true);
+        fd_->last_progress_time_ = ros::Time::now();  // 建议B: 强制推进算一次"推进"刷新计时
+        ROS_WARN("[EXP-FSM] Stuck tier2: force advance path_inx=%d, count=%d, ok=%d",
+                 fd_->path_inx_, fd_->explore_stuck_advance_count_, ok ? 1 : 0);
+        return;
+      } else {
+        // 已是末点无法再推进 → 走 [5] 整体重规划
+        ROS_WARN("[EXP-FSM] Stuck at final waypoint, fallback to periodic replan");
+      }
+    }
+  }
+
+  // [5] 兜底卡死恢复：长时间静止 → 强制重规划 (t_cur 基于 last_progress_time_, 建议B)
   if (t_cur > fp_->replan_thresh3_ && fd_->odom_vel_.norm() <= 0.1) {
-    ROS_WARN("\n-------------> Replan: periodic stuck recovery <-------------\n");
-    ROS_WARN("t_cur: %f s", t_cur);
+    ROS_WARN("\n-------------> Replan: periodic stuck recovery (t_cur=%.1fs) <-------------\n", t_cur);
+    resetExploreStuckState();
+    fd_->last_progress_time_ = ros::Time::now();
     transitState(replan_target_state, "FSM");
     return;
   }
@@ -2236,21 +2397,48 @@ void FastExplorationFSM::approachRegularExplore() {
     pubLocalGoal(fd_->aim_pos_, fd_->aim_yaw_, false,
                  quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED);
     fd_->has_rotated_ = true;
+    fd_->last_progress_time_ = ros::Time::now();  // 建议B: 发布了新目标
     INFO_MSG_GREEN("[EXP-FSM] [Rotate Yaw] aim: " << fd_->aim_pos_.transpose() << ", local_aim: " << fd_->local_aim_pos_.transpose());
     return;
   }
 
-  // [7] Waypoint 推进（原逻辑不变）
+  // [7] Waypoint 推进
   if (fd_->path_res_.size() > 2 && dis_2_local_aim < 2.0){
+    // 建议C: 内部守卫解耦 ego 反馈 —— 增加"本地卡死+末点"的纯本地 fallback
+    // 旧守卫要求 ego_exec_finished_ && ego_modify_status_, ego 断链时永不触发
     if (fd_->path_inx_ >= fd_->path_res_.size() - 1 &&
-    fd_->ego_exec_finished_ && fd_->ego_modify_status_) {
+        ((fd_->ego_exec_finished_ && fd_->ego_modify_status_) ||     // 原条件(ego 反馈正常)
+         (t_cur > fp_->explore_local_stuck_duration_ &&              // 建议C: ego 断链时的纯本地 fallback
+          fd_->odom_vel_.norm() < fp_->explore_local_stuck_vel_thresh_))) {
       INFO_MSG_RED("\n[Approach EXPLORE] Force Replan, because local goal can't reach!\n");
+      resetExploreStuckState();
+      fd_->last_progress_time_ = ros::Time::now();
       transitState(MISSION_FSM_STATE::PLAN_EXPLORE, "can't reach local goal");
       return ;
     }
-    getAndPublishNextAim(fd_->path_res_, true);
-    fd_->last_pub_time_ = ros::Time::now();
-    INFO_MSG_GREEN("[EXP-FSM] [PubNxtLocalAim] aim: " << fd_->aim_pos_.transpose() << ", local_aim: " << fd_->local_aim_pos_.transpose());
+    // 建议A: 检查 getAndPublishNextAim 返回值, 失败时不刷新 last_progress_time_ 让 t_cur 累计
+    bool published = getAndPublishNextAim(fd_->path_res_, true);
+    if (published) {
+      // 真正发布了新 local_goal → 刷新计时器, 重置失败计数与卡死状态
+      fd_->last_progress_time_ = ros::Time::now();   // 建议B: 仅成功时刷新
+      fd_->local_aim_fail_count_ = 0;                // 建议A: 成功清零
+      resetExploreStuckState();
+      ROS_INFO_STREAM_THROTTLE(1.0, "[EXP-FSM] [PubNxtLocalAim] aim: " << fd_->aim_pos_.transpose()
+                              << ", local_aim: " << fd_->local_aim_pos_.transpose());
+    } else {
+      // 建议A: 发布失败 → 递增失败计数; 连续失败超阈值 → 强制重规划
+      fd_->local_aim_fail_count_++;
+      ROS_WARN("[EXP-FSM] getAndPublishNextAim FAILED (%d/%d), not refreshing timer",
+               fd_->local_aim_fail_count_, fp_->explore_local_aim_fail_max_);
+      if (fd_->local_aim_fail_count_ >= fp_->explore_local_aim_fail_max_) {
+        ROS_WARN("[EXP-FSM] local_aim_fail_count >= max, force replan (local aim unreachable)");
+        resetExploreStuckState();
+        // 建议B: 不刷新 last_progress_time_, 让 [5] 也能在下一帧兜底
+        transitState(replan_target_state, "local aim unreachable");
+        return;
+      }
+      // 失败但未超阈值: 不刷新 last_progress_time_, t_cur 继续累计, 让 [5]/tier2 接管
+    }
   }
 }
 
@@ -2684,8 +2872,9 @@ void FastExplorationFSM::handleYawChange() {
   transitState(stash_state_, "Yaw Handle Done");
 }
 
-void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) 
+void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e)
 {
+  auto perf_t0 = PERF_NOW();  // 性能日志：FSM 主循环计时起点
   // ROS_INFO_STREAM_THROTTLE(10.0, "** [EXP-FSM]: state: " << md_->state_str_[md_->mission_state_]);
   CALL_EVERY_N_TIMES(displayMissionState, 5);
 
@@ -2874,6 +3063,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e)
     }
 
   }
+
+  // 性能日志：记录 FSM 主循环总耗时和当前状态
+  // （提前 return 的状态如 INIT/WARM_UP 不记录，因为不涉及规划）
+  PERF_LOG_ELAPSED_EX("FSM_CB", perf_t0, "state=" + md_->state_str_[md_->mission_state_]);
 }
 
 void FastExplorationFSM::goTargetObject() {
@@ -3586,6 +3779,7 @@ void FastExplorationFSM::pubLocalGoal(const Eigen::Vector3d local_goal, const do
 // return aim_pose aim_vel, aim_yaw and path_res
 int FastExplorationFSM::callExplorationPlanner(Eigen::Vector3d& aim_pose, Eigen::Vector3d& aim_vel, double& aim_yaw, vector<Eigen::Vector3d>& path_res)
 {
+  auto perf_t0 = PERF_NOW();  // 性能日志：主规划入口计时起点
   // mode 1在TSP前同步消费累计雷达更新盒，完成新frontier生成。
   expl_manager_->updateFrontiersForPlanning(fd_->odom_pos_, fd_->odom_yaw_);
 
@@ -3596,6 +3790,20 @@ int FastExplorationFSM::callExplorationPlanner(Eigen::Vector3d& aim_pose, Eigen:
                                           aim_pose, aim_vel, aim_yaw, path_res);
 
   map_->Unlock();
+
+  // 性能日志：记录主规划总耗时、返回结果、路径点数和当前里程计位置
+  std::string res_str;
+  switch (res) {
+    case SUCCEED:     res_str = "SUCCEED"; break;
+    case NO_FRONTIER: res_str = "NO_FRONTIER"; break;
+    case FAIL:        res_str = "FAIL"; break;
+    default:          res_str = "UNKNOWN(" + std::to_string(res) + ")"; break;
+  }
+  PERF_LOG_ELAPSED_EX("CALL_PLAN", perf_t0,
+    "res=" + res_str + " path_size=" + std::to_string(path_res.size()) +
+    " odom=(" + std::to_string(fd_->odom_pos_.x()) + "," +
+                 std::to_string(fd_->odom_pos_.y()) + "," +
+                 std::to_string(fd_->odom_pos_.z()) + ")");
   return res;
 }
 
@@ -3988,6 +4196,9 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
     case quadrotor_msgs::Instruction::TURN_REGULAR_EXPLORATION:
       applyExplorationRegionFromInstruction(msg);
       fd_->regular_explore_ = true;
+      // 启动探索任务计时（在 publishExplorationResult 时结算）
+      exploration_start_time_ = ros::Time::now();
+      exploration_timer_active_ = true;
       if (msg->source_task_id == quadrotor_msgs::Instruction::SOURCE_TASK_COUNTING &&
           msg->task_session_id > 0) {
         counting_scene_graph_->startSession(msg->task_session_id, fd_->odom_pos_);
@@ -4107,6 +4318,47 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       INFO_MSG_RED("[InstructionCallback]: No Valid Instruction! please check, switch to WAIT_TRIGGER"); 
       break;
   }
+}
+
+// === 探索脱困通用 helper (建议 D/E) ===
+// 这三个 helper 抽取自 goTargetObject 的卡死检测逻辑, 供 approachRegularExplore 复用,
+// 消除探索路径与目标导航路径的卡死处理不对称问题.
+
+// 统一卡死检测: 速度+角速度均低于阈值 → 进入卡死计时; 有运动 → 重置计时与触发标记
+// 返回当前是否处于卡死状态(是否"可触发"由调用方结合 stuck_sec 判断)
+// 注意: 复用 fp_->stuck_force_advance_yaw_rate_thresh_ 作为 yaw_rate 阈值, 与 object nav 一致
+bool FastExplorationFSM::detectExploreStuck() {
+  double vel_norm = fd_->odom_vel_.norm();
+  double yaw_rate = fabs(fd_->odom_yaw_rate_);
+  bool is_stuck = (vel_norm < fp_->explore_local_stuck_vel_thresh_ &&
+                   yaw_rate < fp_->stuck_force_advance_yaw_rate_thresh_);
+  if (is_stuck) {
+    if (fd_->explore_stuck_begin_time_ < 0.0)
+      fd_->explore_stuck_begin_time_ = ros::Time::now().toSec();
+  } else {
+    fd_->explore_stuck_begin_time_ = -1.0;            // 有运动, 重置计时
+    fd_->explore_stuck_triggered_  = false;           // 脱离卡死, 允许下次再触发
+  }
+  return is_stuck;
+}
+
+// 重置探索卡死状态: 正常推进 path_inx 或整体重规划时调用
+// 包含失败计数清零(建议A), 保证新路径从头累计
+void FastExplorationFSM::resetExploreStuckState() {
+  fd_->explore_stuck_begin_time_    = -1.0;
+  fd_->explore_stuck_triggered_     = false;
+  fd_->explore_stuck_advance_count_ = 0;
+  fd_->local_aim_fail_count_        = 0;
+}
+
+// 重置 ego 反馈相关状态(建议E): 删 frontier 或重规划时调用
+// 防止 ego_plan_times_/ego_modify_status_ 等残留值下次误触发 bad_frontier 或 [6]
+void FastExplorationFSM::resetExploreEgoState() {
+  fd_->ego_plan_times_    = 0;
+  fd_->ego_modify_status_ = false;
+  fd_->ego_exec_finished_ = false;
+  fd_->ego_plan_status_   = false;
+  fd_->has_rotated_       = false;
 }
 
 void FastExplorationFSM::triggerObjectIdNavReplan(const std::string& reason) {

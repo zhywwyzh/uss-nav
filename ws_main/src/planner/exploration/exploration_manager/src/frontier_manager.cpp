@@ -33,7 +33,7 @@ FrontierManager::FrontierManager(ros::NodeHandle& nh, const MapInterface::Ptr& m
   ViewNode::sensor_range_ = frontier_finder_->percep_utils_->getSensorMaxDist();
 
   visualization_ = std::make_shared<PlanningVisualization>(nh);
-  vis_ptr_       = std::make_shared<visualization::Visualization>(nh);
+  vis_ptr_       = std::make_shared<visualization::Visualization>(nh); 
 
   nh.param("exploration/refine_local", ep_->refine_local_, true);
   nh.param("exploration/refined_num", ep_->refined_num_, -1);
@@ -712,20 +712,23 @@ void FrontierManager::findGlobalTour_SomeFtrs(std::vector<Frontier>& ftr_select,
     bool search_success    = false;
     auto& vp1 = f1.viewpoints_.front(); auto& vp2 = f2.viewpoints_.front();
 
+    // [perf-opt] 基于 topo_father_ 分层路径估算：
+    //   - topo_father_ 相同（同一局部连通区域）：栅格 A*，精细且池可覆盖
+    //   - topo_father_ 不同（跨区域）：直接走拓扑 A*，跳过栅格 A*
+    //     大地图下跨区域 frontier 距离常达 10-30m，远超栅格 A* 池物理范围（±5m），
+    //     原逻辑先调栅格 A*（必失败）再 fallback 拓扑 A*，浪费一次 A* 调用。
     if (f1.topo_father_ == nullptr || f2.topo_father_ == nullptr) {
       dis = 9999;
       path.push_back(vp1.pos_); path.push_back(vp2.pos_);
-    }else if (f1.topo_father_ == f2.topo_father_) {
+    } else if (f1.topo_father_ == f2.topo_father_) {
+      // 同拓扑节点：栅格 A*
       search_success = ViewNode::searchPath(vp1.pos_, vp2.pos_, path, dis);
       if (dis < 0.0f || !search_success) {
         path.push_back(vp1.pos_); path.push_back(vp2.pos_);
         dis = (vp1.pos_ - vp2.pos_).norm();
       }
-    }
-    if (dis < 0.0f && map_->isVisible(vp1.pos_, vp2.pos_, 0.0)) {
-      search_success = ViewNode::searchPath(vp1.pos_, vp2.pos_, path, dis);
-    }
-    if (dis < 0.0f || !search_success) {
+    } else {
+      // 不同拓扑节点：直接拓扑 A*，跳过栅格 A*
       frontier_finder_->getPathWithTopo(f1.topo_father_, vp1.pos_, f2.topo_father_, vp2.pos_, path, dis);
     }
     double path_cost = dis / ego_planner::ViewNode::vm_;
@@ -758,14 +761,20 @@ void FrontierManager::findGlobalTour_SomeFtrs(std::vector<Frontier>& ftr_select,
     double dis = -1.0f;
     std::vector<Eigen::Vector3d> path;
     auto vp = f.viewpoints_.front();
+    // [perf-opt] 基于 topo_father_ 分层路径估算（与 calCostBetween2Ftrs 对称）：
+    //   - topo_father_ == cur_poly（同局部连通区域）：栅格 A*
+    //   - topo_father_ != cur_poly（跨区域）：直接拓扑 A*，跳过栅格 A*
+    //     原逻辑用 isVisible 判断会引入长距离栅格 A*（必失败）。
     if (f.topo_father_ == nullptr || cur_poly == nullptr) return 9999.0f;
-    if (f.topo_father_ == cur_poly || map_->isVisible(vp.pos_, cur_pos, 0.0)) {
+    if (f.topo_father_ == cur_poly) {
+      // 同拓扑节点：栅格 A*
       if (!ViewNode::searchPath(cur_pos, vp.pos_, path, dis)) {
         path.clear();
         path.push_back(cur_pos), path.push_back(vp.pos_);
         dis = (cur_pos - vp.pos_).norm();
       }
-    }else {
+    } else {
+      // 不同拓扑节点：直接拓扑 A*，跳过栅格 A*
       frontier_finder_->getPathWithTopo(f.topo_father_, vp.pos_, cur_poly, cur_pos, path, dis);
     }
     if (dis > 0.0f) {

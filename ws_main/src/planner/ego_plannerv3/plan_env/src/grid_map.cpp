@@ -1,5 +1,8 @@
 #include "plan_env/grid_map.h"
 #include <ros/time.h>
+#include "plan_env/perf_logger.h"  // 性能日志插桩
+#include <sstream>
+#include <iomanip>
 
 void GridMap::initMap(ros::NodeHandle &nh)
 {
@@ -320,6 +323,19 @@ void GridMap::updateOccupancy(void *obj)
         printf("[%s]ESDF(ms): cur t = %lf, avg t = %lf, max t = %lf\n", map->mp_.name_.c_str(), (t6 - t5).toSec() * 1000,
                map->ts_.esdftime / map->ts_.updatetimes * 1000, map->ts_.max_esdftime * 1000);
       }
+    }
+
+    // 性能插桩：记录建图各阶段耗时（毫秒）
+    {
+      std::ostringstream perf_oss;
+      perf_oss << "map=" << map->mp_.name_
+               << " move=" << std::fixed << std::setprecision(3) << (t2 - t1).toSec() * 1000
+               << "ms project=" << (t3 - t2).toSec() * 1000
+               << "ms raycast=" << (t4 - t3).toSec() * 1000
+               << "ms inflate=" << (t5 - t4).toSec() * 1000
+               << "ms esdf=" << (t6 - t5).toSec() * 1000
+               << "ms total=" << (t6 - t1).toSec() * 1000 << "ms";
+      PERF_LOG("GRID_MAP", perf_oss.str());
     }
   }
 

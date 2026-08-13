@@ -1,0 +1,8 @@
+<launch>
+    <!-- 广播器节点：单条 TCP 双向连接收发（话题订阅打包上行 / EncodeMask 结果下行）
+         配置通过 <rosparam command="load"> 载入节点私有命名空间(~) -->
+    <arg name="config" default="$(find topic_broadcaster)/config/broadcast_sim.yaml"/>
+    <node pkg="topic_broadcaster" type="broadcaster_node" name="topic_broadcaster" output="screen">
+        <rosparam command="load" file="$(arg config)"/>
+    </node>
+</launch>
