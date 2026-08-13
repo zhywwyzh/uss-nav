@@ -21,7 +21,8 @@ ultralytics(YOLOE) / mobileclip / base64 / json / struct / socket / threading。
         magic     : 4 字节  b"TLBC"
         version   : 1 字节  1
         direction : 1 字节  0=上行(广播器->本服务), 1=下行(本服务->广播器)
-        topic_id  : 2 字节  uint16 大端: 1=rgb, 2=depth, 3=odom, 100=EncodeMask 结果
+        topic_id  : 2 字节  uint16 大端: 1=rgb, 2=depth, 3=odom,
+                   50=组合帧(rgb+depth+odom 打包), 100=EncodeMask 结果
         seq       : 8 字节  uint64 大端, 每话题独立递增
         stamp     : 8 字节  double 大端, 单位秒
         payload_len : 4 字节 uint32 大端
@@ -50,6 +51,7 @@ DIR_DOWN = 1                  # 下行：本服务 -> 广播器
 TOPIC_RGB = 1                 # 上行：rgb 压缩图（jpeg）
 TOPIC_DEPTH = 2               # 上行：depth 压缩图（png）
 TOPIC_ODOM = 3                # 上行：odom JSON
+TOPIC_PACKED = 50             # 上行：组合帧（rgb+depth+odom 打包，广播器已同步）
 TOPIC_RESULT = 100            # 下行：EncodeMask 结果 JSON
 HEADER_STRUCT = ">4sBBHQdI"   # 帧头打包格式：magic(4s) version(B) direction(B) topic(H) seq(Q) stamp(d) payload_len(I)
 HEADER_SIZE = struct.calcsize(HEADER_STRUCT)  # 28 字节
@@ -266,6 +268,50 @@ class YoloeRemoteService:
         """按 topic_id 分发上行帧数据。"""
         topic_id = frame["topic_id"]
 
+        if topic_id == TOPIC_PACKED:
+            # 组合帧：rgb/depth/odom 已由广播器同步打包，直接解包并触发推理
+            # payload 布局（全部大端）：u32 rgb_len + rgb(jpeg) + u32 depth_len
+            # + depth(png) + u32 odom_len + odom_json(UTF-8)
+            try:
+                off = 0
+                rgb_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                rgb_bytes = frame["payload"][off:off+rgb_len]; off += rgb_len
+                depth_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                depth_bytes = frame["payload"][off:off+depth_len]; off += depth_len
+                odom_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                odom_json_bytes = frame["payload"][off:off+odom_len]
+            except (struct.error, IndexError) as e:
+                # 长度字段越界 / 数据不完整属协议解析边界，必须捕获
+                print(f"[YoloeRemoteService][debug] 组合帧解析失败: {e}")
+                return
+            # rgb 解码（jpeg 压缩字节 -> BGR 图）
+            bgr = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
+            if bgr is None:
+                print("[YoloeRemoteService] rgb jpeg 解码失败，丢弃该帧")
+                return
+            # depth 解码（png 压缩字节 -> 仿真深度图 uchar/uint16）
+            depth = cv2.imdecode(np.frombuffer(depth_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
+            if depth is None:
+                print("[YoloeRemoteService] depth png 解码失败，丢弃该帧")
+                return
+            # odom 解析（UTF-8 JSON，字段缺省时回退默认值）
+            try:
+                odom = json.loads(odom_json_bytes.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as e:
+                print(f"[YoloeRemoteService] odom JSON 解析失败，丢弃该帧: {e}")
+                return
+            odom_arr = [float(odom.get(k, 0.0)) for k in ("x", "y", "z", "qx", "qy", "qz", "qw")]
+            odom_arr[6] = float(odom.get("qw", 1.0))  # qw 默认 1.0
+            # 更新三路缓存并触发推理（沿用现有 _latest_* 结构与 _try_infer）
+            stamp = frame["stamp"]
+            self._latest_rgb = {"stamp": stamp, "bgr": bgr, "payload": rgb_bytes}
+            self._latest_depth = {"stamp": stamp, "array": depth, "payload": depth_bytes}
+            self._latest_odom = {"stamp": stamp, "arr": odom_arr}
+            # 组合帧三路 stamp 相同（diff=0），_try_infer 的同步校验必然通过，
+            # 符合"广播器已同步好，server 无需再同步"的语义
+            self._try_infer(conn)
+            return
+
         if topic_id == TOPIC_RGB:
             # rgb：jpeg 压缩字节 -> cv2.imdecode 得到 BGR 图
             bgr = cv2.imdecode(np.frombuffer(frame["payload"], np.uint8), cv2.IMREAD_COLOR)
@@ -436,13 +482,26 @@ class YoloeRemoteService:
             except Exception as e:
                 print(f"[YoloeRemoteService] CLIP 编码异常: {e}")
 
-        # 6. 组装回发 JSON（rgb/depth 使用收到的原始压缩字节，不重编码）
+        # 6. 检测展示图：yolo plot（检测框+掩码+置信度+标签），RGB->BGR 后 JPEG 编码
+        #    生成失败不影响主结果：仅打印日志并省略该字段
+        vis_b64 = ""
+        try:
+            vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
+            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
+            ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if ok:
+                vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")
+        except Exception as e:
+            print(f"[YoloeRemoteService] 检测展示图生成失败: {e}")
+
+        # 7. 组装回发 JSON（rgb/depth 使用收到的原始压缩字节，不重编码）
         result_dict = {
             "stamp": stamp,
             "odom": [float(v) for v in odom],
             "rgb_b64": base64.b64encode(rgb_bytes).decode("utf-8"),
             "depth_b64": base64.b64encode(depth_bytes).decode("utf-8"),
             "objects": objects,
+            "vis_b64": vis_b64,
         }
         return result_dict
 

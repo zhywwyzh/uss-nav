@@ -29,10 +29,11 @@ public:
     static bool encodeEncodeMaskJson(const scene_graph::EncodeMask& in,
                                      std::string& json_str);
 
-private:
     // base64 解码：手写实现，非法字符跳过、'=' 与空白忽略，不抛异常。
+    // 供广播器节点复用（如解码下行 JSON 的 vis_b64 检测展示图）。
     static std::vector<uint8_t> base64Decode(const std::string& b64);
 
+private:
     // base64 编码：标准 RFC 4648 表，带 '=' 填充。
     static std::string base64Encode(const std::vector<uint8_t>& data);
 };
