@@ -136,13 +136,11 @@ struct Predict {
             continue;
           }
           if (stack_top == MAX_MEMORY) {
-            std::cout << "[prediction] out of memory!" << std::endl;
             logFailure("out_of_memory", target_p, target_v, curPtr, open_set.size());
             return false;
           }
           double t_cost = (ros::Time::now() - t_start).toSec();
           if (t_cost > max_time) {
-            std::cout << "[prediction] too slow!" << std::endl;
             logFailure("too_slow", target_p, target_v, curPtr, open_set.size());
             return false;
           }
@@ -158,7 +156,6 @@ struct Predict {
           // std::cout << "open set push: " << state.transpose() << std::endl;
         }
       if (open_set.empty()) {
-        std::cout << "[prediction] no way!" << std::endl;
         logFailure("no_way", target_p, target_v, curPtr, open_set.size());
         return false;
       }

@@ -26,7 +26,8 @@ void predict_state_callback(const ros::TimerEvent& event) {
   if (update_dt < 2.0) {
     ekfPtr_->predict();
   } else {
-    ROS_WARN("[ekf] too long time no update!");
+    // 每两秒打印一次
+    ROS_WARN_THROTTLE(2.0, "[ekf] too long time no update!");
     return;
   }
   // publish target odom

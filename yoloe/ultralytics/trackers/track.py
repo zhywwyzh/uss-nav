@@ -1,5 +1,6 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+import time
 from functools import partial
 from pathlib import Path
 
@@ -38,6 +39,7 @@ def on_predict_start(predictor: object, persist: bool = False) -> None:
         >>> predictor = SomePredictorClass()
         >>> on_predict_start(predictor, persist=True)
     """
+    t_start = time.perf_counter()
     if predictor.args.task == "classify":
         raise ValueError("❌ Classification doesn't support 'mode=track'")
 
@@ -86,6 +88,8 @@ def on_predict_start(predictor: object, persist: bool = False) -> None:
     if hasattr(tracker_cls, "setup_predictor"):
         tracker_cls.setup_predictor(predictor)
 
+    predictor._track_timing_on_predict_start_ms = (time.perf_counter() - t_start) * 1000.0
+
 
 def on_predict_postprocess_end(predictor: object, persist: bool = False) -> None:
     """Postprocess detected boxes and update with object tracking.
@@ -102,10 +106,14 @@ def on_predict_postprocess_end(predictor: object, persist: bool = False) -> None
     is_obb = predictor.args.task == "obb"
     is_stream = predictor.dataset.mode == "stream"
 
+    t_total = time.perf_counter()
+
     tracker_cls = type(predictor.trackers[0])
+    t0 = time.perf_counter()
     dets_del_list = (
         tracker_cls.compute_frame_extras(predictor) if hasattr(tracker_cls, "compute_frame_extras") else None
     )
+    predictor._track_timing_compute_extras_ms = (time.perf_counter() - t0) * 1000.0
 
     for i, result in enumerate(predictor.results):
         tracker = predictor.trackers[i if is_stream else 0]
@@ -114,18 +122,26 @@ def on_predict_postprocess_end(predictor: object, persist: bool = False) -> None
             tracker.reset()
             predictor.vid_path[i if is_stream else 0] = vid_path
 
+        t_det = time.perf_counter()
         det = (src := result.obb if is_obb else result.boxes).cpu().numpy()
+        predictor._track_timing_det_copy_ms = (time.perf_counter() - t_det) * 1000.0
         kwargs = {"feats": getattr(result, "feats", None)}
         if dets_del_list is not None:
             kwargs["dets_del"] = dets_del_list[i]
+        t_update = time.perf_counter()
         tracks = tracker.update(det, result.orig_img, **kwargs)
+        predictor._track_timing_tracker_update_ms = (time.perf_counter() - t_update) * 1000.0
         if len(tracks) == 0:
             continue
         idx = tracks[:, -1].astype(int)
         predictor.results[i] = result[idx]
 
+        t_resp = time.perf_counter()
         update_args = {"obb" if is_obb else "boxes": torch.as_tensor(tracks[:, :-1], device=src.data.device)}
         predictor.results[i].update(**update_args)
+        predictor._track_timing_response_update_ms = (time.perf_counter() - t_resp) * 1000.0
+
+    predictor._track_timing_on_predict_postprocess_end_ms = (time.perf_counter() - t_total) * 1000.0
 
 
 def register_tracker(model: object, persist: bool) -> None:

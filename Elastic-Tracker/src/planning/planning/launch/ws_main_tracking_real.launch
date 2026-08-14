@@ -2,7 +2,7 @@
   <arg name="drone_ns" default="drone0"/>
   <arg name="map_source" default="lidar"/>
   <arg name="ws_main_map_topic" default="/drone_0_ego_planner_node/grid_map/occupancy"/>
-  <arg name="lidar_cloud_topic" default="/laserMapping/cloud_registered"/>
+  <arg name="lidar_cloud_topic" default="/cloud_registered"/>
   <arg name="odom_topic" default="/ekf_quat/ekf_odom"/>
   <arg name="target_topic" default="/target_ekf_odom"/>
   <arg name="gridmap_inflate_topic" default="gridmap_inflate"/>
@@ -20,10 +20,10 @@
   <arg name="rhos_visibility" default="10000.0"/>
   <arg name="rho_tracking" default="1000.0"/>
   <arg name="plan_hz" default="20"/>
-  <arg name="hover_finish_hold_time" default="5.0"/>
-  <arg name="elastic_debug_search" default="true"/>
-  <arg name="elastic_debug_replan" default="true"/>
-  <arg name="elastic_debug_throttle" default="0.5"/>
+  <arg name="hover_finish_hold_time" default="60.0"/>
+  <arg name="elastic_debug_search" default="false"/>
+    <arg name="elastic_debug_replan" default="false"/>
+    <arg name="elastic_debug_throttle" default="2.0"/>
 
   <group ns="$(arg drone_ns)">
     <node pkg="nodelet" type="nodelet" name="manager" args="manager" output="screen">
@@ -125,7 +125,7 @@
       <param name="tracrance_d" value="0.3"/>
       <param name="toleking_dist" value="1.5"/>
       <param name="tolerance_d" value="0.3"/>
-      <param name="tracking_dist" value="2.5"/>
+      <param name="tracking_dist" value="0.2"/>
       <param name="tracking_dur" value="1.5"/>
       <param name="tracking_dt" value="0.2"/>
       <param name="yaw_lookahead_time" value="1.0"/>
