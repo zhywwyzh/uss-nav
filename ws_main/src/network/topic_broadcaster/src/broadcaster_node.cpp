@@ -226,6 +226,16 @@ void BroadcasterNode::loadParams(ros::NodeHandle& pnh) {
               std::string("/camera1/depth_sync/image/compressed"));
     pnh.param("sync_pack/odom_topic", sync_pack_.odom_topic,
               std::string("/unity_odom_sync"));
+    // rgb_codec/depth_codec：决定订阅 CompressedImage(raw) 还是 Image(image_raw)
+    // 二者必须一致（同相机驱动格式统一），否则启动报错退出
+    pnh.param("sync_pack/rgb_codec", sync_pack_.rgb_codec, std::string("raw"));
+    pnh.param("sync_pack/depth_codec", sync_pack_.depth_codec, std::string("raw"));
+    if (sync_pack_.enable && sync_pack_.rgb_codec != sync_pack_.depth_codec) {
+        ROS_FATAL("[Broadcaster] sync_pack rgb_codec(%s) != depth_codec(%s)，"
+                  "不支持混合类型（同相机驱动格式应统一）",
+                  sync_pack_.rgb_codec.c_str(), sync_pack_.depth_codec.c_str());
+        throw std::runtime_error("sync_pack rgb_codec != depth_codec");
+    }
     pnh.param("sync_pack/rgb_depth_slop", sync_pack_.rgb_depth_slop, 0.05);
     pnh.param("sync_pack/odom_slop", sync_pack_.odom_slop, 0.1);
     pnh.param("sync_pack/max_freq", sync_pack_.max_freq, 10.0);
@@ -235,10 +245,11 @@ void BroadcasterNode::loadParams(ros::NodeHandle& pnh) {
     sync_pack_.topic_id = (uint16_t)topic_id_int;
     if (sync_pack_.enable) {
         ROS_INFO("[Broadcaster] sync_pack 模式启用：rgb=%s depth=%s odom=%s "
-                 "slop=%.3fs/%.3fs max_freq=%.1fHz topic_id=%u",
+                 "codec=%s slop=%.3fs/%.3fs max_freq=%.1fHz topic_id=%u",
                  sync_pack_.rgb_topic.c_str(), sync_pack_.depth_topic.c_str(),
-                 sync_pack_.odom_topic.c_str(), sync_pack_.rgb_depth_slop,
-                 sync_pack_.odom_slop, sync_pack_.max_freq, sync_pack_.topic_id);
+                 sync_pack_.odom_topic.c_str(), sync_pack_.rgb_codec.c_str(),
+                 sync_pack_.rgb_depth_slop, sync_pack_.odom_slop,
+                 sync_pack_.max_freq, sync_pack_.topic_id);
     }
 
     // ---- 检测展示图发布（下行 vis_b64 解码后的 jpeg 图）----
@@ -360,6 +371,11 @@ void BroadcasterNode::setupSubscribers(ros::NodeHandle& nh) {
             // json 编解码：订阅 nav_msgs::Odometry
             subs_.push_back(nh.subscribe<nav_msgs::Odometry>(
                 cfg.topic, 1, boost::bind(&BroadcasterNode::onOdom, this, _1, i)));
+        } else if (cfg.codec == "image_raw") {
+            // image_raw 编解码：订阅原始 sensor_msgs::Image，
+            // 回调内经 cv_bridge + imencode 编码为 jpeg/png 后发送
+            subs_.push_back(nh.subscribe<sensor_msgs::Image>(
+                cfg.topic, 1, boost::bind(&BroadcasterNode::onImageRaw, this, _1, i)));
         } else {
             // raw 编解码：订阅 sensor_msgs::CompressedImage（默认分支）
             subs_.push_back(nh.subscribe<sensor_msgs::CompressedImage>(
@@ -409,6 +425,66 @@ void BroadcasterNode::onImage(const sensor_msgs::CompressedImageConstPtr& msg,
     }
 }
 
+void BroadcasterNode::onImageRaw(const sensor_msgs::ImageConstPtr& msg,
+                                 size_t idx) {
+    if (idx >= out_topics_.size()) {
+        return;
+    }
+    OutTopicCfg& cfg = out_topics_[idx];
+
+    // max_freq 节流：未到发送间隔则丢弃本帧
+    ros::Time now = ros::Time::now();
+    if (cfg.max_freq > 0.0) {
+        if (cfg.last_sent.isValid() &&
+            (now - cfg.last_sent).toSec() < 1.0 / cfg.max_freq) {
+            return;
+        }
+        cfg.last_sent = now;
+    }
+
+    // 按 topic_id 选择编码格式（与 sync_pack image_raw 路径完全一致）：
+    //   topic_id=2 (depth) -> passthrough + png（保留源 dtype，无损）
+    //   其它 (rgb 等)       -> bgr8 + jpeg（与 Python 端 imgmsg_to_cv2(rgb, "bgr8") 对称）
+    cv_bridge::CvImageConstPtr cv_ptr;
+    try {
+        if (cfg.topic_id == 2) {
+            cv_ptr = cv_bridge::toCvShare(msg, "passthrough");
+        } else {
+            cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
+        }
+    } catch (const cv_bridge::Exception& e) {
+        ROS_WARN_THROTTLE(2.0, "[Broadcaster] image_raw cv_bridge 转换失败(topic=%s): %s",
+                          cfg.topic.c_str(), e.what());
+        return;
+    }
+
+    std::vector<uint8_t> encoded;
+    bool ok = false;
+    if (cfg.topic_id == 2) {
+        static const std::vector<int> kPngParams = {cv::IMWRITE_PNG_COMPRESSION, 3};
+        ok = cv::imencode(".png", cv_ptr->image, encoded, kPngParams);
+    } else {
+        static const std::vector<int> kJpegParams = {cv::IMWRITE_JPEG_QUALITY, 85};
+        ok = cv::imencode(".jpg", cv_ptr->image, encoded, kJpegParams);
+    }
+    if (!ok) {
+        ROS_WARN_THROTTLE(2.0, "[Broadcaster] image_raw 编码失败(topic=%s)",
+                          cfg.topic.c_str());
+        return;
+    }
+
+    // 打包帧头 + 编码后字节流（与 onImage 的 TCP 字节流格式一致）
+    std::vector<uint8_t> frame;
+    if (!buildFrame(0, cfg.topic_id, cfg.seq++, msg->header.stamp.toSec(),
+                    encoded.data(), encoded.size(), frame)) {
+        return;
+    }
+    if (frame_queue_->push(std::move(frame))) {
+        ROS_WARN_THROTTLE(5.0, "[Broadcaster] 发送队列已满，丢弃最旧帧(topic=%s)",
+                          cfg.topic.c_str());
+    }
+}
+
 void BroadcasterNode::onOdom(const nav_msgs::OdometryConstPtr& msg, size_t idx) {
     if (idx >= out_topics_.size()) {
         return;
@@ -444,29 +520,52 @@ void BroadcasterNode::onOdom(const nav_msgs::OdometryConstPtr& msg, size_t idx) 
 void BroadcasterNode::setupSyncPack(ros::NodeHandle& nh) {
     // rgb/depth 通过 message_filters 近似时间同步强绑（slop 映射为
     // ApproximateTime 的 maxIntervalDuration，即两消息时间差上限）
-    sync_rgb_sub_ =
-        std::make_unique<message_filters::Subscriber<sensor_msgs::CompressedImage>>(
-            nh, sync_pack_.rgb_topic, 20, ros::TransportHints().tcpNoDelay());
-    sync_depth_sub_ =
-        std::make_unique<message_filters::Subscriber<sensor_msgs::CompressedImage>>(
-            nh, sync_pack_.depth_topic, 20, ros::TransportHints().tcpNoDelay());
+    // 按 codec 选择消息类型：raw=CompressedImage / image_raw=Image
+    if (sync_pack_.rgb_codec == "image_raw") {
+        // ---- Image 原始图版本：订阅 sensor_msgs::Image ----
+        sync_rgb_raw_sub_ =
+            std::make_unique<message_filters::Subscriber<sensor_msgs::Image>>(
+                nh, sync_pack_.rgb_topic, 20, ros::TransportHints().tcpNoDelay());
+        sync_depth_raw_sub_ =
+            std::make_unique<message_filters::Subscriber<sensor_msgs::Image>>(
+                nh, sync_pack_.depth_topic, 20, ros::TransportHints().tcpNoDelay());
 
-    typedef message_filters::sync_policies::ApproximateTime<
-        sensor_msgs::CompressedImage, sensor_msgs::CompressedImage>
-        SyncPackPolicy;
-    sync_sync_ = std::make_unique<message_filters::Synchronizer<SyncPackPolicy>>(
-        SyncPackPolicy(20), *sync_rgb_sub_, *sync_depth_sub_);
-    // ApproximateTime 无构造参数 slop，用 setMaxIntervalDuration 表达容差
-    sync_sync_->setMaxIntervalDuration(ros::Duration(sync_pack_.rgb_depth_slop));
-    sync_sync_->registerCallback(
-        boost::bind(&BroadcasterNode::onSyncRgbDepth, this, _1, _2));
+        typedef message_filters::sync_policies::ApproximateTime<
+            sensor_msgs::Image, sensor_msgs::Image> SyncPackRawPolicy;
+        sync_raw_sync_ =
+            std::make_unique<message_filters::Synchronizer<SyncPackRawPolicy>>(
+                SyncPackRawPolicy(20), *sync_rgb_raw_sub_, *sync_depth_raw_sub_);
+        sync_raw_sync_->setMaxIntervalDuration(
+            ros::Duration(sync_pack_.rgb_depth_slop));
+        sync_raw_sync_->registerCallback(
+            boost::bind(&BroadcasterNode::onSyncRgbDepthRaw, this, _1, _2));
+    } else {
+        // ---- CompressedImage 版本（默认）：订阅 sensor_msgs::CompressedImage ----
+        sync_rgb_sub_ =
+            std::make_unique<message_filters::Subscriber<sensor_msgs::CompressedImage>>(
+                nh, sync_pack_.rgb_topic, 20, ros::TransportHints().tcpNoDelay());
+        sync_depth_sub_ =
+            std::make_unique<message_filters::Subscriber<sensor_msgs::CompressedImage>>(
+                nh, sync_pack_.depth_topic, 20, ros::TransportHints().tcpNoDelay());
+
+        typedef message_filters::sync_policies::ApproximateTime<
+            sensor_msgs::CompressedImage, sensor_msgs::CompressedImage>
+            SyncPackPolicy;
+        sync_sync_ = std::make_unique<message_filters::Synchronizer<SyncPackPolicy>>(
+            SyncPackPolicy(20), *sync_rgb_sub_, *sync_depth_sub_);
+        // ApproximateTime 无构造参数 slop，用 setMaxIntervalDuration 表达容差
+        sync_sync_->setMaxIntervalDuration(ros::Duration(sync_pack_.rgb_depth_slop));
+        sync_sync_->registerCallback(
+            boost::bind(&BroadcasterNode::onSyncRgbDepth, this, _1, _2));
+    }
 
     // odom 独立订阅：仅缓存最近值（JSON），供组合帧取用，不参与时间同步
     extra_subs_.push_back(nh.subscribe<nav_msgs::Odometry>(
         sync_pack_.odom_topic, 1,
         boost::bind(&BroadcasterNode::onSyncOdom, this, _1)));
-    ROS_INFO("[Broadcaster] sync_pack 订阅建立：rgb/depth 同步(queue=20, slop=%.3fs)，odom=%s",
-             sync_pack_.rgb_depth_slop, sync_pack_.odom_topic.c_str());
+    ROS_INFO("[Broadcaster] sync_pack 订阅建立：rgb/depth 同步(queue=20, slop=%.3fs, codec=%s)，odom=%s",
+             sync_pack_.rgb_depth_slop, sync_pack_.rgb_codec.c_str(),
+             sync_pack_.odom_topic.c_str());
 }
 
 void BroadcasterNode::onSyncOdom(const nav_msgs::OdometryConstPtr& msg) {
@@ -505,6 +604,89 @@ bool BroadcasterNode::buildSyncPackFrame(
     const sensor_msgs::CompressedImageConstPtr& rgb,
     const sensor_msgs::CompressedImageConstPtr& depth, double stamp,
     std::vector<uint8_t>& frame) {
+    // raw 版本：CompressedImage.data 已是 jpeg/png 字节，直接透传给公共组装函数
+    return buildSyncPackFrameFromBytes(rgb->data.data(), rgb->data.size(),
+                                       depth->data.data(), depth->data.size(),
+                                       stamp, frame);
+}
+
+void BroadcasterNode::onSyncRgbDepthRaw(
+    const sensor_msgs::ImageConstPtr& rgb,
+    const sensor_msgs::ImageConstPtr& depth) {
+    // max_freq 节流：与 CompressedImage 版本共享 sync_pack_last_sent_ 计时
+    ros::Time now = ros::Time::now();
+    if (sync_pack_.max_freq > 0.0) {
+        if (sync_pack_last_sent_.isValid() &&
+            (now - sync_pack_last_sent_).toSec() < 1.0 / sync_pack_.max_freq) {
+            return;
+        }
+        sync_pack_last_sent_ = now;
+    }
+
+    // 组装组合帧（stamp 用 rgb 的时间戳），打包失败（如 odom 尚未到达）则丢帧
+    std::vector<uint8_t> frame;
+    if (!buildSyncPackFrameRaw(rgb, depth, rgb->header.stamp.toSec(), frame)) {
+        return;
+    }
+    if (frame_queue_->push(std::move(frame))) {
+        ROS_WARN_THROTTLE(5.0, "[Broadcaster] 发送队列已满，丢弃最旧帧(sync_pack topic=%u)",
+                          sync_pack_.topic_id);
+    }
+}
+
+bool BroadcasterNode::buildSyncPackFrameRaw(
+    const sensor_msgs::ImageConstPtr& rgb,
+    const sensor_msgs::ImageConstPtr& depth, double stamp,
+    std::vector<uint8_t>& frame) {
+    // ---- rgb: sensor_msgs::Image -> BGR -> jpeg ----
+    // 与 Python 端 cv_bridge.imgmsg_to_cv2(rgb_msg, "bgr8") 对称，
+    // 编码后字节流与 raw 版本（源 CompressedImage 已是 jpeg）完全一致
+    cv_bridge::CvImageConstPtr rgb_cv;
+    try {
+        rgb_cv = cv_bridge::toCvShare(rgb, "bgr8");
+    } catch (const cv_bridge::Exception& e) {
+        ROS_WARN_THROTTLE(2.0,
+                          "[Broadcaster] sync_pack image_raw rgb cv_bridge 转换失败: %s",
+                          e.what());
+        return false;
+    }
+    std::vector<uint8_t> rgb_bytes;
+    static const std::vector<int> kJpegParams = {cv::IMWRITE_JPEG_QUALITY, 85};
+    if (!cv::imencode(".jpg", rgb_cv->image, rgb_bytes, kJpegParams)) {
+        ROS_WARN_THROTTLE(2.0, "[Broadcaster] sync_pack image_raw rgb jpeg 编码失败");
+        return false;
+    }
+
+    // ---- depth: sensor_msgs::Image -> passthrough -> png ----
+    // passthrough 保留源 dtype（16UC1/mono16/mono8 等），png 无损保留，
+    // 与 Python 端 cv_bridge.imgmsg_to_cv2(depth_msg, "passthrough") +
+    // cv2_to_compressed_imgmsg(cv_depth, dst_format='png') 对称
+    cv_bridge::CvImageConstPtr depth_cv;
+    try {
+        depth_cv = cv_bridge::toCvShare(depth, "passthrough");
+    } catch (const cv_bridge::Exception& e) {
+        ROS_WARN_THROTTLE(2.0,
+                          "[Broadcaster] sync_pack image_raw depth cv_bridge 转换失败: %s",
+                          e.what());
+        return false;
+    }
+    std::vector<uint8_t> depth_bytes;
+    static const std::vector<int> kPngParams = {cv::IMWRITE_PNG_COMPRESSION, 3};
+    if (!cv::imencode(".png", depth_cv->image, depth_bytes, kPngParams)) {
+        ROS_WARN_THROTTLE(2.0, "[Broadcaster] sync_pack image_raw depth png 编码失败");
+        return false;
+    }
+
+    // ---- 组装组合帧（复用公共函数，与 raw 版本共用 payload 布局）----
+    return buildSyncPackFrameFromBytes(rgb_bytes.data(), rgb_bytes.size(),
+                                       depth_bytes.data(), depth_bytes.size(),
+                                       stamp, frame);
+}
+
+bool BroadcasterNode::buildSyncPackFrameFromBytes(
+    const uint8_t* rgb_data, size_t rgb_size,
+    const uint8_t* depth_data, size_t depth_size,
+    double stamp, std::vector<uint8_t>& frame) {
     // 取最近 odom（同步打包允许 odom 相对 rgb/depth 有一定延迟）
     std::string odom_json;
     ros::Time odom_stamp;
@@ -529,8 +711,7 @@ bool BroadcasterNode::buildSyncPackFrame(
     // 结构：u32 rgb_len + rgb_bytes + u32 depth_len + depth_bytes +
     //       u32 odom_len + odom_json(UTF-8)
     // Python 端用 struct.unpack(">III", ...) 依次解三个长度再切分
-    size_t payload_len = 4 + rgb->data.size() + 4 + depth->data.size() + 4 +
-                         odom_json.size();
+    size_t payload_len = 4 + rgb_size + 4 + depth_size + 4 + odom_json.size();
     std::vector<uint8_t> payload;
     payload.reserve(payload_len);
 
@@ -543,8 +724,8 @@ bool BroadcasterNode::buildSyncPackFrame(
             payload.insert(payload.end(), data, data + len);
         }
     };
-    append_segment(rgb->data.data(), rgb->data.size());
-    append_segment(depth->data.data(), depth->data.size());
+    append_segment(rgb_data, rgb_size);
+    append_segment(depth_data, depth_size);
     append_segment(reinterpret_cast<const uint8_t*>(odom_json.data()),
                    odom_json.size());
 
