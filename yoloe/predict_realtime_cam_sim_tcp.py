@@ -477,20 +477,19 @@ class YoloeSimTcpService:
         返回:
             结果 dict；若模型无检测结果返回 None（不回发）
         """
-        # 1. BGR -> RGB（与原实现一致），并缩放至指定宽度保持宽高比
-        cv_rgb = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2RGB)
-        h, w, _ = cv_rgb.shape
+        # 1. 缩放至指定宽度保持宽高比（ultralytics 的 predict 对 numpy 按 BGR 处理，无需转换）
+        h, w, _ = rgb_bgr.shape
         if w != self.resize_width:
-            cv_rgb_resized = cv2.resize(cv_rgb, (self.resize_width, int(h * self.resize_width / w)))
+            resized = cv2.resize(rgb_bgr, (self.resize_width, int(h * self.resize_width / w)))
         else:
-            cv_rgb_resized = cv_rgb
+            resized = rgb_bgr
 
         # 2. YOLOE 推理
         t1 = time.perf_counter()
         with torch.no_grad():
             results = self.model.predict(
-                cv_rgb_resized, conf=self.conf, device=self.device,
-                verbose=False, save=False
+                resized, conf=self.conf, device=self.device,
+                imgsz=640, verbose=False, save=False
             )
         if self.debug:
             print(f"[YoloeSimTcpService][debug] Predict time: {((time.perf_counter() - t1) * 1e3):.2f}ms")
@@ -511,8 +510,8 @@ class YoloeSimTcpService:
                 objects.append({
                     "label": str(cls_name),
                     "conf": float(cls_conf),
-                    "mask_b64": None,
-                    "word_vector": None,
+                    "mask_b64": "",  # 空字符串而非 None，避免 C++ 端 value() 抛 type_error
+                    "word_vector": [],  # 空列表而非 None
                 })
 
         # 模型无任何检测结果：返回 None，不回发
@@ -550,12 +549,12 @@ class YoloeSimTcpService:
             except Exception as e:
                 print(f"[YoloeSimTcpService] CLIP 编码异常: {e}")
 
-        # 6. 检测展示图：yolo plot（检测框+掩码+置信度+标签），RGB->BGR 后 JPEG 编码
+        # 6. 检测展示图：yolo plot（检测框+掩码+置信度+标签）
+        #    result.plot() 返回 RGB，JPEG 标准色彩空间也是 RGB，直接编码即可
         #    生成失败不影响主结果：仅打印日志并省略该字段
         vis_b64 = ""
         try:
             vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
             ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if ok:
                 vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")

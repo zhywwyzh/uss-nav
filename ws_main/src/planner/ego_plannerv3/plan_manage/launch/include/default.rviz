@@ -16,6 +16,7 @@ Panels:
         - /drone01/Skeleton&Obj1/SkeletonCluster1/Namespaces1
         - /drone01/Skeleton&Obj1/SkeletonEdgeWeights1/Namespaces1
         - /drone01/Skeleton&Obj1/SceneGraph1/Namespaces1
+        - /yoloe1
       Splitter Ratio: 0.5503355860710144
     Tree Height: 819
   - Class: rviz/Selection
@@ -217,7 +218,7 @@ Visualization Manager:
               Autocompute Intensity Bounds: true
               Autocompute Value Bounds:
                 Max Value: 1.9249999523162842
-                Min Value: -1.375
+                Min Value: -2.9149999618530273
                 Value: true
               Axis: Z
               Channel Name: intensity
@@ -881,7 +882,7 @@ Visualization Manager:
               Marker Topic: /scene_graph/traj_with_vel
               Name: Traj_Vel
               Namespaces:
-                {}
+                trajectory: true
               Queue Size: 100
               Value: true
           Enabled: true
@@ -901,7 +902,9 @@ Visualization Manager:
               Marker Topic: /drone_0_ego_planner_node/skeleton_vis
               Name: skeletonInfo
               Namespaces:
-                {}
+                edges: true
+                force_edge: true
+                poly_belongs_to_area: true
               Queue Size: 100
               Value: true
             - Class: rviz/MarkerArray
@@ -909,7 +912,10 @@ Visualization Manager:
               Marker Topic: /object_all_vis
               Name: ObjectAllVis
               Namespaces:
-                {}
+                obb_corners: true
+                obj_edge_all: true
+                obj_label: true
+                obj_position: true
               Queue Size: 100
               Value: true
             - Class: rviz/MarkerArray
@@ -981,7 +987,8 @@ Visualization Manager:
               Marker Topic: /skeleton/cluster_vis
               Name: SkeletonCluster
               Namespaces:
-                {}
+                clusters_box: true
+                clusters_sphere: true
               Queue Size: 100
               Value: true
             - Class: rviz/MarkerArray
@@ -1194,7 +1201,7 @@ Visualization Manager:
       Name: yoloe
       Normalize Range: true
       Queue Size: 2
-      Transport Hint: raw
+      Transport Hint: compressed
       Unreliable: false
       Value: true
   Enabled: true

@@ -20,7 +20,6 @@
   <build_depend>scene_graph</build_depend>
   <build_depend>message_filters</build_depend>
   <build_depend>message_runtime</build_depend>
-  <build_depend>cv_bridge</build_depend>
 
   <build_export_depend>roscpp</build_export_depend>
   <build_export_depend>std_msgs</build_export_depend>
@@ -29,7 +28,6 @@
   <build_export_depend>scene_graph</build_export_depend>
   <build_export_depend>message_filters</build_export_depend>
   <build_export_depend>message_runtime</build_export_depend>
-  <build_export_depend>cv_bridge</build_export_depend>
 
   <exec_depend>roscpp</exec_depend>
   <exec_depend>std_msgs</exec_depend>
@@ -38,5 +36,4 @@
   <exec_depend>scene_graph</exec_depend>
   <exec_depend>message_filters</exec_depend>
   <exec_depend>message_runtime</exec_depend>
-  <exec_depend>cv_bridge</exec_depend>
 </package>

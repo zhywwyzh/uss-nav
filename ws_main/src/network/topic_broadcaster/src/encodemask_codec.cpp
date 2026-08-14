@@ -99,6 +99,30 @@ std::string EncodeMaskCodec::base64Encode(const std::vector<uint8_t>& data) {
     return out;
 }
 
+namespace {
+
+// null 安全的字段取值：nlohmann 的 value() 仅在 key 缺失时返回默认值，
+// key 存在但值为 null 时会抛 type_error.302（Python 端 None 即序列化为 null）。
+// 这里显式判类型，任何非期望类型都退回默认值，保证解析不抛异常。
+std::string jsonStringOr(const nlohmann::json& j, const char* key,
+                         const std::string& fallback = std::string()) {
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_string()) {
+        return fallback;
+    }
+    return it->get<std::string>();
+}
+
+double jsonNumberOr(const nlohmann::json& j, const char* key, double fallback) {
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_number()) {
+        return fallback;
+    }
+    return it->get<double>();
+}
+
+}  // namespace
+
 bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
                                            scene_graph::EncodeMask& out) {
     // 非抛异常模式解析：解析失败时返回空 json()（null），随后用 is_object 判断，
@@ -110,7 +134,7 @@ bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
     }
 
     // ---- stamp：秒转 ros::Time ----
-    double stamp = j.value("stamp", 0.0);
+    double stamp = jsonNumberOr(j, "stamp", 0.0);
     ros::Time t(stamp);
     out.header.stamp = t;
     out.header.frame_id = "world";
@@ -133,8 +157,7 @@ bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
     out.current_rgb.header.frame_id = "world";
     out.current_rgb.format = "jpeg";
     {
-        std::vector<uint8_t> rgb_data =
-            base64Decode(j.value("rgb_b64", std::string("")));
+        std::vector<uint8_t> rgb_data = base64Decode(jsonStringOr(j, "rgb_b64"));
         out.current_rgb.data.assign(rgb_data.begin(), rgb_data.end());
     }
 
@@ -143,8 +166,7 @@ bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
     out.current_depth.header.frame_id = "world";
     out.current_depth.format = "png";
     {
-        std::vector<uint8_t> depth_data =
-            base64Decode(j.value("depth_b64", std::string("")));
+        std::vector<uint8_t> depth_data = base64Decode(jsonStringOr(j, "depth_b64"));
         out.current_depth.data.assign(depth_data.begin(), depth_data.end());
     }
 
@@ -154,8 +176,8 @@ bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
             if (!obj.is_object()) {
                 continue;  // 单个对象格式非法则跳过
             }
-            out.labels.push_back(obj.value("label", std::string("")));
-            out.confs.push_back(obj.value("conf", 0.0));
+            out.labels.push_back(jsonStringOr(obj, "label"));
+            out.confs.push_back(jsonNumberOr(obj, "conf", 0.0));
 
             // mask：png 压缩图
             sensor_msgs::CompressedImage mask;
@@ -163,8 +185,23 @@ bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
             mask.header.frame_id = "world";
             mask.format = "png";
             {
-                std::vector<uint8_t> mask_data =
-                    base64Decode(obj.value("mask_b64", std::string("")));
+                std::vector<uint8_t> mask_data = base64Decode(jsonStringOr(obj, "mask_b64"));
+                // 防御：mask_b64 为空时填充 1×1 单像素占位图（全零灰度 PNG），避免下游 imdecode 崩溃
+                if (mask_data.empty()) {
+                    // cv2.imencode 生成的最小合法 1×1 灰度 PNG（70 字节）
+                    static const uint8_t kPlaceholder[] = {
+                        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                        0x08, 0x00, 0x00, 0x00, 0x00, 0x3A, 0x7E, 0x9B,
+                        0x55, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+                        0x54, 0x08, 0x1D, 0x01, 0x02, 0x00, 0xFD, 0xFF,
+                        0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xCD, 0xE3,
+                        0xD1, 0x2B, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+                        0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+                    };
+                    mask_data.assign(kPlaceholder, kPlaceholder + sizeof(kPlaceholder));
+                }
                 mask.data.assign(mask_data.begin(), mask_data.end());
             }
             out.masks.push_back(mask);

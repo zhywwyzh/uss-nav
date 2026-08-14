@@ -16,12 +16,11 @@ find_package(catkin REQUIRED COMPONENTS
   scene_graph
   message_filters
   message_runtime
-  cv_bridge
 )
 
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS roscpp std_msgs sensor_msgs nav_msgs scene_graph message_filters message_runtime cv_bridge
+  CATKIN_DEPENDS roscpp std_msgs sensor_msgs nav_msgs scene_graph message_filters message_runtime
 )
 
 include_directories(
