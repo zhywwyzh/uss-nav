@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <boost/bind.hpp>
 #include <netinet/in.h>
+#include <nlohmann/json.hpp>
 
 // ---------------------------------------------------------------------------
 // 帧协议工具函数（与外部 Python 服务共享的二进制协议，全部大端序）：
@@ -178,6 +179,11 @@ BroadcasterNode::BroadcasterNode(ros::NodeHandle& nh) : nh_(nh) {
     loadParams(pnh);
     setupSubscribers(nh_);
     setupPublishers(nh_);
+    // 同步打包：enable 时建立 rgb/depth 同步订阅 + odom 独立订阅，
+    // 此时 setupSubscribers 已跳过 out_topics 的独立订阅，避免双发
+    if (sync_pack_.enable) {
+        setupSyncPack(nh_);
+    }
 
     // 有界发送队列：容量来自配置，队满时丢最旧帧
     frame_queue_ =
@@ -211,6 +217,40 @@ void BroadcasterNode::loadParams(ros::NodeHandle& pnh) {
              server_ip_.c_str(), server_port_, reconnect_min_sec_,
              reconnect_max_sec_, send_timeout_ms_, queue_size_);
 
+    // ---- 同步打包（sync_pack）----
+    // 参数需在 out_topics 解析之前读取，便于 enable 时跳过独立话题的发送配置
+    pnh.param("sync_pack/enable", sync_pack_.enable, false);
+    pnh.param("sync_pack/rgb_topic", sync_pack_.rgb_topic,
+              std::string("/camera1/color_sync/image/compressed"));
+    pnh.param("sync_pack/depth_topic", sync_pack_.depth_topic,
+              std::string("/camera1/depth_sync/image/compressed"));
+    pnh.param("sync_pack/odom_topic", sync_pack_.odom_topic,
+              std::string("/unity_odom_sync"));
+    pnh.param("sync_pack/rgb_depth_slop", sync_pack_.rgb_depth_slop, 0.05);
+    pnh.param("sync_pack/odom_slop", sync_pack_.odom_slop, 0.1);
+    pnh.param("sync_pack/max_freq", sync_pack_.max_freq, 10.0);
+    // topic_id 用 int 中转（uint16_t 无 XmlRpcValue 直接转换），再收窄到 uint16_t
+    int topic_id_int = 50;
+    pnh.param("sync_pack/topic_id", topic_id_int, 50);
+    sync_pack_.topic_id = (uint16_t)topic_id_int;
+    if (sync_pack_.enable) {
+        ROS_INFO("[Broadcaster] sync_pack 模式启用：rgb=%s depth=%s odom=%s "
+                 "slop=%.3fs/%.3fs max_freq=%.1fHz topic_id=%u",
+                 sync_pack_.rgb_topic.c_str(), sync_pack_.depth_topic.c_str(),
+                 sync_pack_.odom_topic.c_str(), sync_pack_.rgb_depth_slop,
+                 sync_pack_.odom_slop, sync_pack_.max_freq, sync_pack_.topic_id);
+    }
+
+    // ---- 检测展示图发布（下行 vis_b64 解码后的 jpeg 图）----
+    // 双话题同发一份 jpeg 压缩图：/yoloe/plot 常规话题 +
+    // /yoloe/plot/compressed（供 RViz Image display 选 compressed transport）。
+    // 发布前按各话题订阅者数检查，无订阅者则跳过，省 CPU/带宽。
+    pnh.param("plot_topic", plot_topic_, std::string("/yoloe/plot"));
+    pnh.param("plot_compressed_topic", plot_compressed_topic_,
+              std::string("/yoloe/plot/compressed"));
+    ROS_INFO("[Broadcaster] 检测展示图双话题发布：%s 与 %s（按订阅者数检查后发布）",
+             plot_topic_.c_str(), plot_compressed_topic_.c_str());
+
     // ---- 上行话题（broadcast_topics/out）----
     uint16_t auto_raw_id = 10;  // 未识别关键词的 raw 话题从 10 起自动编号
     if (pnh.hasParam("broadcast_topics/out")) {
@@ -226,17 +266,46 @@ void BroadcasterNode::loadParams(ros::NodeHandle& pnh) {
                     continue;
                 }
 
+                // sync_pack 模式下只发送组合帧，跳过 out_topics 中独立的
+                // rgb/depth/odom 三条，避免同一数据双发
+                if (sync_pack_.enable) {
+                    ROS_INFO("[Broadcaster] sync_pack 模式，跳过独立话题发送: %s (codec=%s)",
+                             ((std::string)item["topic"]).c_str(),
+                             ((std::string)item["codec"]).c_str());
+                    continue;
+                }
+
                 OutTopicCfg cfg;
                 cfg.topic = (std::string)item["topic"];
                 cfg.codec = (std::string)item["codec"];
-                cfg.max_freq =
-                    item.hasMember("max_freq") ? (double)item["max_freq"] : 0.0;
+                // 类型安全读取 max_freq：YAML 中整数会存为 XmlRpcValue::TypeInt，
+                // 直接 (double) 转换会抛 XmlRpcException，需要按类型分支处理
+                if (item.hasMember("max_freq")) {
+                    XmlRpc::XmlRpcValue& mf = item["max_freq"];
+                    if (mf.getType() == XmlRpc::XmlRpcValue::TypeInt) {
+                        cfg.max_freq = (double)(int)mf;
+                    } else if (mf.getType() == XmlRpc::XmlRpcValue::TypeDouble) {
+                        cfg.max_freq = (double)mf;
+                    } else {
+                        cfg.max_freq = 0.0;
+                    }
+                } else {
+                    cfg.max_freq = 0.0;
+                }
                 cfg.last_sent = ros::Time(0);
                 cfg.seq = 0;
 
                 // topic_id 确定：优先取显式配置，否则按 codec/话题名自动推导
+                // （YAML 整数存为 TypeInt，(int) 转换前先判断类型避免 XmlRpcException）
                 if (item.hasMember("topic_id")) {
-                    cfg.topic_id = (uint16_t)(int)item["topic_id"];
+                    XmlRpc::XmlRpcValue& tid = item["topic_id"];
+                    if (tid.getType() == XmlRpc::XmlRpcValue::TypeInt) {
+                        cfg.topic_id = (uint16_t)(int)tid;
+                    } else if (tid.getType() == XmlRpc::XmlRpcValue::TypeDouble) {
+                        cfg.topic_id = (uint16_t)(int)(double)tid;
+                    } else {
+                        cfg.topic_id = auto_raw_id++;
+                    }
                 } else if (cfg.codec == "json") {
                     cfg.topic_id = 3;  // odom 固定为 3
                 } else {
@@ -303,6 +372,10 @@ void BroadcasterNode::setupPublishers(ros::NodeHandle& nh) {
     for (const InTopicCfg& cfg : in_topics_) {
         result_pubs_.push_back(nh.advertise<scene_graph::EncodeMask>(cfg.topic, 1));
     }
+    // 检测展示图发布器：下行 vis_b64 解码后的 jpeg 压缩图，双话题各一个
+    plot_pub_ = nh.advertise<sensor_msgs::CompressedImage>(plot_topic_, 2);
+    plot_compressed_pub_ =
+        nh.advertise<sensor_msgs::CompressedImage>(plot_compressed_topic_, 2);
 }
 
 // ---- 上行回调 ----
@@ -366,12 +439,137 @@ void BroadcasterNode::onOdom(const nav_msgs::OdometryConstPtr& msg, size_t idx) 
     }
 }
 
+// ---- 同步打包（sync_pack）----
+
+void BroadcasterNode::setupSyncPack(ros::NodeHandle& nh) {
+    // rgb/depth 通过 message_filters 近似时间同步强绑（slop 映射为
+    // ApproximateTime 的 maxIntervalDuration，即两消息时间差上限）
+    sync_rgb_sub_ =
+        std::make_unique<message_filters::Subscriber<sensor_msgs::CompressedImage>>(
+            nh, sync_pack_.rgb_topic, 20, ros::TransportHints().tcpNoDelay());
+    sync_depth_sub_ =
+        std::make_unique<message_filters::Subscriber<sensor_msgs::CompressedImage>>(
+            nh, sync_pack_.depth_topic, 20, ros::TransportHints().tcpNoDelay());
+
+    typedef message_filters::sync_policies::ApproximateTime<
+        sensor_msgs::CompressedImage, sensor_msgs::CompressedImage>
+        SyncPackPolicy;
+    sync_sync_ = std::make_unique<message_filters::Synchronizer<SyncPackPolicy>>(
+        SyncPackPolicy(20), *sync_rgb_sub_, *sync_depth_sub_);
+    // ApproximateTime 无构造参数 slop，用 setMaxIntervalDuration 表达容差
+    sync_sync_->setMaxIntervalDuration(ros::Duration(sync_pack_.rgb_depth_slop));
+    sync_sync_->registerCallback(
+        boost::bind(&BroadcasterNode::onSyncRgbDepth, this, _1, _2));
+
+    // odom 独立订阅：仅缓存最近值（JSON），供组合帧取用，不参与时间同步
+    extra_subs_.push_back(nh.subscribe<nav_msgs::Odometry>(
+        sync_pack_.odom_topic, 1,
+        boost::bind(&BroadcasterNode::onSyncOdom, this, _1)));
+    ROS_INFO("[Broadcaster] sync_pack 订阅建立：rgb/depth 同步(queue=20, slop=%.3fs)，odom=%s",
+             sync_pack_.rgb_depth_slop, sync_pack_.odom_topic.c_str());
+}
+
+void BroadcasterNode::onSyncOdom(const nav_msgs::OdometryConstPtr& msg) {
+    // 序列化并缓存最近 odom（组合帧在 buildSyncPackFrame 中取用）
+    std::string json_str = encodeOdomJson(msg);
+    std::lock_guard<std::mutex> lock(odom_mutex_);
+    latest_odom_json_ = std::move(json_str);
+    latest_odom_stamp_ = msg->header.stamp;
+}
+
+void BroadcasterNode::onSyncRgbDepth(
+    const sensor_msgs::CompressedImageConstPtr& rgb,
+    const sensor_msgs::CompressedImageConstPtr& depth) {
+    // max_freq 节流：未到发送间隔则丢弃本帧（用 sync_pack 自己的 last_sent 记录）
+    ros::Time now = ros::Time::now();
+    if (sync_pack_.max_freq > 0.0) {
+        if (sync_pack_last_sent_.isValid() &&
+            (now - sync_pack_last_sent_).toSec() < 1.0 / sync_pack_.max_freq) {
+            return;
+        }
+        sync_pack_last_sent_ = now;
+    }
+
+    // 组装组合帧（stamp 用 rgb 的时间戳），打包失败（如 odom 尚未到达）则丢帧
+    std::vector<uint8_t> frame;
+    if (!buildSyncPackFrame(rgb, depth, rgb->header.stamp.toSec(), frame)) {
+        return;
+    }
+    if (frame_queue_->push(std::move(frame))) {
+        ROS_WARN_THROTTLE(5.0, "[Broadcaster] 发送队列已满，丢弃最旧帧(sync_pack topic=%u)",
+                          sync_pack_.topic_id);
+    }
+}
+
+bool BroadcasterNode::buildSyncPackFrame(
+    const sensor_msgs::CompressedImageConstPtr& rgb,
+    const sensor_msgs::CompressedImageConstPtr& depth, double stamp,
+    std::vector<uint8_t>& frame) {
+    // 取最近 odom（同步打包允许 odom 相对 rgb/depth 有一定延迟）
+    std::string odom_json;
+    ros::Time odom_stamp;
+    {
+        std::lock_guard<std::mutex> lock(odom_mutex_);
+        if (latest_odom_json_.empty()) {
+            // odom 尚未到达：放弃本帧，等待 odom 先到
+            return false;
+        }
+        odom_json = latest_odom_json_;
+        odom_stamp = latest_odom_stamp_;
+    }
+    // odom 过期告警（仅提示，仍取最近值打包，符合"允许延迟取最近值"的语义）
+    double odom_delay = stamp - odom_stamp.toSec();
+    if (odom_delay > sync_pack_.odom_slop) {
+        ROS_WARN_THROTTLE(2.0,
+                          "[Broadcaster] sync_pack odom 延迟 %.3fs 超过阈值 %.3fs，仍使用最近值",
+                          odom_delay, sync_pack_.odom_slop);
+    }
+
+    // ---- 组装 payload（全部大端）----
+    // 结构：u32 rgb_len + rgb_bytes + u32 depth_len + depth_bytes +
+    //       u32 odom_len + odom_json(UTF-8)
+    // Python 端用 struct.unpack(">III", ...) 依次解三个长度再切分
+    size_t payload_len = 4 + rgb->data.size() + 4 + depth->data.size() + 4 +
+                         odom_json.size();
+    std::vector<uint8_t> payload;
+    payload.reserve(payload_len);
+
+    // 局部 lambda：追加一段 [长度(4B 大端) + 数据] 的字节
+    auto append_segment = [&payload](const uint8_t* data, size_t len) {
+        uint32_t len_be = htonl((uint32_t)len);
+        payload.insert(payload.end(), reinterpret_cast<const uint8_t*>(&len_be),
+                       reinterpret_cast<const uint8_t*>(&len_be) + 4);
+        if (len > 0) {
+            payload.insert(payload.end(), data, data + len);
+        }
+    };
+    append_segment(rgb->data.data(), rgb->data.size());
+    append_segment(depth->data.data(), depth->data.size());
+    append_segment(reinterpret_cast<const uint8_t*>(odom_json.data()),
+                   odom_json.size());
+
+    // 打包：direction=0 上行，topic_id=50 组合帧，stamp=rgb 时间戳
+    return buildFrame(0, sync_pack_.topic_id, sync_pack_seq_++, stamp,
+                      payload.data(), payload.size(), frame);
+}
+
 // ---- 下行处理 ----
 
 void BroadcasterNode::handleEncodeMask(const std::vector<uint8_t>& payload,
                                        double /*stamp*/) {
     // 帧头 stamp 与 JSON 内 stamp 通常一致；以 JSON 内为准（codec 负责解析）
     std::string json_str(payload.begin(), payload.end());
+
+    // ---- 可选字段 vis_b64：检测展示图（jpeg base64）----
+    // 非抛异常模式先解析一次 JSON 取 vis_b64；解析失败或字段缺失则
+    // 跳过展示图处理，不影响下方 encodemask 主流程。
+    // （decodeEncodeMaskJson 会再解析一次 JSON，为保持最小改动不合并两处解析）
+    nlohmann::json j = nlohmann::json::parse(json_str, nullptr, false);
+    if (!j.is_discarded() && j.is_object() && j.contains("vis_b64") &&
+        j["vis_b64"].is_string() && !j["vis_b64"].get<std::string>().empty()) {
+        publishPlotImage(j["vis_b64"].get<std::string>());
+    }
+
     scene_graph::EncodeMask msg;
     if (!EncodeMaskCodec::decodeEncodeMaskJson(json_str, msg)) {
         return;
@@ -380,6 +578,41 @@ void BroadcasterNode::handleEncodeMask(const std::vector<uint8_t>& payload,
     for (ros::Publisher& pub : result_pubs_) {
         pub.publish(msg);
     }
+}
+
+void BroadcasterNode::publishPlotImage(const std::string& vis_b64) {
+    // 复用 EncodeMaskCodec::base64Decode（宽松容错，非法字符跳过，不抛异常）
+    std::vector<uint8_t> decoded = EncodeMaskCodec::base64Decode(vis_b64);
+    if (decoded.empty()) {
+        ROS_WARN_THROTTLE(5.0,
+                          "[Broadcaster] vis_b64 base64 解码结果为空，跳过展示图发布");
+        return;
+    }
+
+    // 组装 jpeg 压缩图消息（双话题共享同一份数据）
+    sensor_msgs::CompressedImage msg;
+    msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = "world";
+    msg.format = "jpeg";
+    msg.data.assign(decoded.begin(), decoded.end());
+
+    // 订阅者检查后分别发布：对应话题无订阅者则不发布，省 CPU/带宽
+    int plot_subs = plot_pub_.getNumSubscribers();
+    int plot_compressed_subs = plot_compressed_pub_.getNumSubscribers();
+    if (plot_subs == 0 && plot_compressed_subs == 0) {
+        ROS_DEBUG_THROTTLE(2.0, "[Broadcaster] %s 与 %s 均无订阅者，跳过展示图发布",
+                           plot_topic_.c_str(), plot_compressed_topic_.c_str());
+        return;
+    }
+    if (plot_subs > 0) {
+        plot_pub_.publish(msg);  // 发布到 /yoloe/plot
+    }
+    if (plot_compressed_subs > 0) {
+        plot_compressed_pub_.publish(msg);  // 发布到 /yoloe/plot/compressed
+    }
+    ROS_DEBUG_THROTTLE(2.0, "[Broadcaster] 已发布检测展示图(%zu 字节)：%s=%d 订阅者, %s=%d 订阅者",
+                       decoded.size(), plot_topic_.c_str(), plot_subs,
+                       plot_compressed_topic_.c_str(), plot_compressed_subs);
 }
 
 // ---- 发送线程 ----

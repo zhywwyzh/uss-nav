@@ -9,11 +9,26 @@ connection:
   send_timeout_ms: 100       # 单帧发送超时(毫秒)，超时即放弃该帧
   queue_size: 8              # 上行发送队列容量(帧)，队满丢最旧
 
+# 同步打包发送（sync_pack）：实机话题版本。
+# 启用后 rgb/depth 用 message_filters 近似时间同步强绑，odom 取最近缓存值，
+# 三者合成一个组合帧(topic_id=50)上行；此时 out_topics 中的独立三条会被跳过。
+sync_pack:
+  enable: true
+  rgb_topic: "/camera/color/image/compressed"   # 实机 RGB 压缩图（可改）
+  depth_topic: "/camera/depth/image/compressed" # 实机 Depth 压缩图（可改）
+  odom_topic: "/ekf_quat/ekf_odom"              # 实机 odom（可改）
+  rgb_depth_slop: 0.05        # rgb/depth 强同步容差(秒)
+  odom_slop: 0.1              # odom 允许的延迟(秒)，取最近值即可
+  max_freq: 20                # 组合帧节流上限(Hz)：应 >= 源话题频率，避免节流压制实际发射率
+  topic_id: 50                # 组合帧的帧协议话题号
+
+# 注意：sync_pack 启用后，下方 broadcast_topics/out 中独立的 rgb/depth/odom 三条会被
+# 广播器跳过（不生效），仅保留此处作为参考配置；实际上行只发 sync_pack 组合帧。
 broadcast_topics:
   out:
     - topic: /camera/color/image/compressed   # 实机 RGB 压缩图（可改）
       codec: raw             # raw=CompressedImage 原字节直传（不解码不重编码）
-      max_freq: 10           # 节流上限(Hz)，0 表示不限制
+      max_freq: 10           # 节流上限(Hz)，0 表示不限制（sync_pack 启用后不生效）
     - topic: /camera/depth/image/compressed   # 实机 Depth 压缩图（可改）
       codec: raw
       max_freq: 10

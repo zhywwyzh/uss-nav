@@ -26,7 +26,8 @@ yoloe_remote_service.py 完全一致）：
         magic     : 4 字节  b"TLBC"
         version   : 1 字节  1
         direction : 1 字节  0=上行(广播器->本服务), 1=下行(本服务->广播器)
-        topic_id  : 2 字节  uint16 大端: 1=rgb, 2=depth, 3=odom, 100=EncodeMask 结果
+        topic_id  : 2 字节  uint16 大端: 1=rgb, 2=depth, 3=odom,
+                   50=组合帧(rgb+depth+odom 打包), 100=EncodeMask 结果
         seq       : 8 字节  uint64 大端, 每话题独立递增
         stamp     : 8 字节  double 大端, 单位秒
         payload_len : 4 字节 uint32 大端
@@ -46,8 +47,7 @@ from collections import deque
 import cv2
 import numpy as np
 import torch
-import mobileclip
-from ultralytics import YOLO
+from ultralytics import YOLO, YOLOE
 
 # ------------------------------ 帧协议常量 ------------------------------ #
 MAGIC = b"TLBC"               # 帧魔数，用于识别帧起始
@@ -57,6 +57,7 @@ DIR_DOWN = 1                  # 下行：本服务 -> 广播器
 TOPIC_RGB = 1                 # 上行：rgb 压缩图（jpeg）
 TOPIC_DEPTH = 2               # 上行：depth 压缩图（png）
 TOPIC_ODOM = 3                # 上行：odom JSON
+TOPIC_PACKED = 50             # 上行：组合帧（rgb+depth+odom 打包，广播器已同步）
 TOPIC_RESULT = 100            # 下行：EncodeMask 结果 JSON
 HEADER_STRUCT = ">4sBBHQdI"   # 帧头打包格式：magic(4s) version(B) direction(B) topic(H) seq(Q) stamp(d) payload_len(I)
 HEADER_SIZE = struct.calcsize(HEADER_STRUCT)  # 28 字节
@@ -326,9 +327,16 @@ class YoloRealTcpService:
                 print("[YoloRealTcpService] ********** USE TENSOR-RT **********")
                 self.model = YOLO(self.prompt_model_path)
             else:
+                # 自动分发加载：文件名含 "yoloe" 时 YOLO() 返回 YOLOE 类实例，
+                # 纯 YOLO26（如 yolo26n-seg.pt）返回标准 YOLO 类实例。
                 self.model = YOLO(self.prompt_model_path).cuda()
-                # YOLO 实机版使用 text_pe 直接设置类别，不走 YOLOE 的 set_vocab
-                self.model.set_classes(self.names, self.model.get_text_pe(self.names))
+                if isinstance(self.model, YOLOE):
+                    # YOLOE（含 yoloe-26）开放词汇：使用 text_pe 设置类别
+                    self.model.set_classes(self.names, self.model.get_text_pe(self.names))
+                else:
+                    # 纯 YOLO26（闭集）：跳过开放词汇注入，使用模型自带类别
+                    print("[YoloRealTcpService] 检测到纯 YOLO26 模型，跳过开放词汇注入"
+                          "（使用模型自带类别，prompt 文件不生效）")
         else:
             self.model = YOLO(self.prompt_model_path).cuda()
 
@@ -345,7 +353,9 @@ class YoloRealTcpService:
             print(f"[YoloRealTcpService] Exported model path: {export_model}")
 
         # MobileCLIP 文本编码器（生成 512 维 word_vector）
+        # 惰性 import：仅启用 use_clip 时加载 mobileclip，纯 YOLO26 闭集测试可跳过
         if self.use_clip:
+            import mobileclip
             self.clip_model, _, self.clip_preprocess = \
                 mobileclip.create_model_and_transforms(self.clip_model_type,
                                                        pretrained=self.clip_model_path)
@@ -433,6 +443,53 @@ class YoloRealTcpService:
         """按 topic_id 分发上行帧数据。"""
         topic_id = frame["topic_id"]
 
+        if topic_id == TOPIC_PACKED:
+            # 组合帧：rgb/depth/odom 已由广播器同步打包，直接解包并触发推理
+            # payload 布局（全部大端）：u32 rgb_len + rgb(jpeg) + u32 depth_len
+            # + depth(png) + u32 odom_len + odom_json(UTF-8)
+            try:
+                off = 0
+                rgb_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                rgb_bytes = frame["payload"][off:off+rgb_len]; off += rgb_len
+                depth_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                depth_bytes = frame["payload"][off:off+depth_len]; off += depth_len
+                odom_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                odom_json_bytes = frame["payload"][off:off+odom_len]
+            except (struct.error, IndexError) as e:
+                # 长度字段越界 / 数据不完整属协议解析边界，必须捕获
+                print(f"[YoloRealTcpService][debug] 组合帧解析失败: {e}")
+                return
+            # rgb 解码（jpeg 压缩字节 -> BGR 图）
+            bgr = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
+            if bgr is None:
+                print("[YoloRealTcpService] rgb jpeg 解码失败，丢弃该帧")
+                return
+            # depth 解码（与独立 depth 帧一致：兼容 compressedDepth 12 字节配置头）
+            depth_payload = depth_bytes
+            if len(depth_payload) > 12 and depth_payload[:12] == COMPRESSED_DEPTH_HEADER:
+                if self.debug:
+                    print("[YoloRealTcpService][debug] 组合帧 depth 检测到 compressedDepth 12 字节头，跳过")
+                depth_payload = depth_payload[12:]
+            depth = cv2.imdecode(np.frombuffer(depth_payload, np.uint8), cv2.IMREAD_UNCHANGED)
+            if depth is None:
+                print("[YoloRealTcpService] depth png 解码失败，丢弃该帧")
+                return
+            # odom 解析（UTF-8 JSON，字段缺省时回退默认值）
+            try:
+                odom = json.loads(odom_json_bytes.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as e:
+                print(f"[YoloRealTcpService] odom JSON 解析失败，丢弃该帧: {e}")
+                return
+            odom_arr = [float(odom.get(k, 0.0)) for k in ("x", "y", "z", "qx", "qy", "qz", "qw")]
+            odom_arr[6] = float(odom.get("qw", 1.0))  # qw 默认 1.0
+            # 更新 rgb / depth 缓存并直接触发推理（组合帧已同步好，无需再同步）
+            stamp = frame["stamp"]
+            self._latest_rgb = {"stamp": stamp, "bgr": bgr, "payload": rgb_bytes}
+            self._latest_depth = {"stamp": stamp, "array": depth, "payload": depth_bytes}
+            # 组合帧内 odom 为广播器取到的同步值，直接用帧内值，不走 odom_buffer 插值
+            self._trigger_infer_packed(conn, odom_arr)
+            return
+
         if topic_id == TOPIC_RGB:
             # rgb：jpeg 压缩字节 -> cv2.imdecode 得到 BGR 图
             bgr = cv2.imdecode(np.frombuffer(frame["payload"], np.uint8), cv2.IMREAD_COLOR)
@@ -487,6 +544,24 @@ class YoloRealTcpService:
     # ------------------------------------------------------------------ #
     # 推理触发与执行
     # ------------------------------------------------------------------ #
+    def _trigger_infer_packed(self, conn, odom_arr):
+        """组合帧触发：rgb/depth/odom 已由广播器同步打包（stamp 相同），
+        直接使用帧内 odom，跳过 RGB-D 同步校验与 odom_buffer 插值。
+
+        与 _try_infer 的区别：不校验时间同步（组合帧必然满足）、不插值 odom
+        （直接用广播器同步好的值）；其余（推理锁、异步线程、回发）完全一致。
+        """
+        # 同一时刻只允许一个推理线程：上一帧推理未结束时跳过当前触发帧
+        if not self._infer_lock.acquire(blocking=False):
+            if self.debug:
+                print("[YoloRealTcpService][debug] 上一帧推理仍在进行，跳过当前组合帧")
+            return
+
+        rgb = self._latest_rgb
+        depth = self._latest_depth
+        # 异步推理：避免阻塞收帧循环（daemon 线程）
+        threading.Thread(target=self._run_infer, args=(conn, rgb, depth, odom_arr), daemon=True).start()
+
     def _try_infer(self, conn):
         """rgb 触发帧处理：RGB-D 同步 + odom 插值后，异步启动推理线程。"""
         if self._latest_rgb is None or self._latest_depth is None:
@@ -651,13 +726,27 @@ class YoloRealTcpService:
             except Exception as e:
                 print(f"[YoloRealTcpService] CLIP 编码异常: {e}")
 
-        # 7. 组装回发 JSON（rgb/depth 使用收到的原始压缩字节，不重编码）
+        # 7. 检测展示图：yolo plot（检测框+掩码+置信度+标签），RGB->BGR 后 JPEG 编码
+        #    生成失败不影响主结果：仅打印日志并省略该字段
+        #    （与上方 self.visualize 的本地三图拼接互不影响，该字段始终随结果回发）
+        vis_b64 = ""
+        try:
+            vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
+            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
+            ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if ok:
+                vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")
+        except Exception as e:
+            print(f"[YoloRealTcpService] 检测展示图生成失败: {e}")
+
+        # 8. 组装回发 JSON（rgb/depth 使用收到的原始压缩字节，不重编码）
         result_dict = {
             "stamp": stamp,
             "odom": [float(v) for v in odom],
             "rgb_b64": base64.b64encode(rgb_bytes).decode("utf-8"),
             "depth_b64": base64.b64encode(depth_bytes).decode("utf-8"),
             "objects": objects,
+            "vis_b64": vis_b64,
         }
         return result_dict
 
@@ -715,9 +804,9 @@ if __name__ == '__main__':
                         help="推理 / 导出固定输入宽（默认 640）")
     parser.add_argument("--conf", type=float, default=0.4,
                         help="model.predict 置信度阈值（默认 0.4）")
-    parser.add_argument("--time_slop", type=float, default=0.005,
+    parser.add_argument("--time_slop", type=float, default=0.2,
                         help="RGB-D 时间同步容差，秒（默认 0.005）")
-    parser.add_argument("--odom_sync_slop", type=float, default=0.005,
+    parser.add_argument("--odom_sync_slop", type=float, default=0.2,
                         help="odom 插值最大允许时间差，秒（默认 0.005）")
     parser.add_argument("--visualize", action="store_true", default=False,
                         help="显示可视化窗口（默认关闭，可用 --no_visualize 关闭）")

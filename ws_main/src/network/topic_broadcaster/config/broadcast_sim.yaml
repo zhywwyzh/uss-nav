@@ -9,15 +9,31 @@ connection:
   send_timeout_ms: 100       # 单帧发送超时(毫秒)，超时即放弃该帧
   queue_size: 8              # 上行发送队列容量(帧)，队满丢最旧
 
+# 同步打包发送（sync_pack）：
+# 启用后 rgb/depth 用 message_filters 近似时间同步强绑（容差 rgb_depth_slop），
+# odom 取最近缓存值（允许 odom_slop 延迟），三者合成一个组合帧(topic_id=50)上行，
+# 下游 server 收到组合帧直接推理；此时 out_topics 中独立的 rgb/depth/odom 三条会被跳过。
+sync_pack:
+  enable: true
+  rgb_topic: "/camera1/color_sync/image/compressed"
+  depth_topic: "/camera1/depth_sync/image/compressed"
+  odom_topic: "/unity_odom_sync"
+  rgb_depth_slop: 0.05        # rgb/depth 强同步容差(秒)
+  odom_slop: 0.1              # odom 允许的延迟(秒)，取最近值即可
+  max_freq: 20                # 组合帧节流上限(Hz)：应 >= 源话题频率，避免节流压制实际发射率
+  topic_id: 50                # 组合帧的帧协议话题号
+
+# 注意：sync_pack 启用后，下方 broadcast_topics/out 中独立的 rgb/depth/odom 三条会被
+# 广播器跳过（不生效），仅保留此处作为参考配置；实际上行只发 sync_pack 组合帧。
 broadcast_topics:
   out:
-    - topic: /camera/color/image/compressed
+    - topic: /camera1/color_sync/image/compressed
       codec: raw             # raw=CompressedImage 原字节直传（不解码不重编码）
-      max_freq: 10           # 节流上限(Hz)，0 表示不限制
-    - topic: /camera/depth/image/compressed
+      max_freq: 10           # 节流上限(Hz)，0 表示不限制（sync_pack 启用后不生效）
+    - topic: /camera1/depth_sync/image/compressed
       codec: raw
       max_freq: 10
-    - topic: visual_slam/odom
+    - topic: /unity_odom_sync
       codec: json            # json=Odometry 序列化为 JSON
       max_freq: 30
   in:
