@@ -15,9 +15,9 @@ connection:
 # 下游 server 收到组合帧直接推理；此时 out_topics 中独立的 rgb/depth/odom 三条会被跳过。
 sync_pack:
   enable: true
-  rgb_topic: "/camera1/color_sync/image/compressed"
-  depth_topic: "/camera1/depth_sync/image/compressed"
-  odom_topic: "/unity_odom_sync"
+  rgb_topic: /camera0_gsplat/image/rgb/compressed
+  depth_topic: /camera0_gsplat/image/depth/compressed
+  odom_topic: /drone_0_visual_slam/odom_throttled
   rgb_depth_slop: 0.1        # rgb/depth 强同步容差(秒)
   odom_slop: 0.1              # odom 允许的延迟(秒)，取最近值即可
   max_freq: 20                # 组合帧节流上限(Hz)：应 >= 源话题频率，避免节流压制实际发射率

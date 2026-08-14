@@ -21,8 +21,17 @@
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
 
         <!-- MANUAL_TARGET  = 1, // Set aim in rviz
-             EXPLORE_TARGET = 2, // Get aim from Exploration 
+             EXPLORE_TARGET = 2, // Get aim from Exploration
              PRESET_TARGET  = 3, // Get preset aim from launch file -->
         <arg name="flight_type" value="2"/>
     </include>
+
+    <!-- 消息广播器：将相机/odom 帧经 TCP 广播给机载外部服务(yoloe_remote_service)，并接收其回传的检测结果。
+         外部服务未启动时广播器自动退避重连，不影响本 launch 其它节点。 -->
+    <arg name="enable_broadcaster" default="true"/>
+    <group if="$(arg enable_broadcaster)">
+        <include file="$(find topic_broadcaster)/launch/broadcaster.launch">
+            <arg name="config" value="$(find topic_broadcaster)/config/broadcast_sim.yaml"/>
+        </include>
+    </group>
 </launch>
