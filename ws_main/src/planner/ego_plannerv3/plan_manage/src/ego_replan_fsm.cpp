@@ -1215,6 +1215,7 @@ namespace ego_planner
     std::cout << "[Ego]: <<<<<<<<<<<<<<<<<< New Goal <<<<<<<<<<<<<<<<<< " << std::endl;
     initEgoPlanResult();
     target_pos_ = Eigen::Vector3d(msg->goal[0], msg->goal[1], msg->goal[2]);
+    visualization_->displayGoalPoint(target_pos_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
     double yaw = msg->yaw;
     if (msg->yaw_path_mode == quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST)
     {
