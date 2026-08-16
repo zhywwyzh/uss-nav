@@ -17,6 +17,9 @@
 #include <ros/ros.h>
 #include <scene_graph/EncodeMask.h>
 #include <sensor_msgs/CompressedImage.h>
+#include <sensor_msgs/Image.h>
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/imgcodecs.hpp>
 
 #include "topic_broadcaster/encodemask_codec.h"
 #include "topic_broadcaster/frame_queue.h"
@@ -39,7 +42,11 @@ private:
     // 上行话题配置（broadcast_topics/out 数组项）
     struct OutTopicCfg {
         std::string topic;      // 订阅话题名
-        std::string codec;      // "raw"=CompressedImage 直传 ; "json"=Odometry
+        // "raw"=CompressedImage.data 直传(不解码不重编码)
+        // "image_raw"=订阅原始 sensor_msgs::Image，经 cv_bridge 转 BGR/passthrough 后
+        //             用 imencode 编码为 jpeg(rgb)/png(depth)，TCP 字节流与 raw 一致
+        // "json"=Odometry 序列化为 JSON
+        std::string codec;
         double max_freq = 0.0;  // 节流上限(Hz)，0 表示不限制
         uint16_t topic_id = 0;  // 帧协议话题号：1=rgb 2=depth 3=odom
         uint64_t seq = 0;       // 该话题独立递增的帧序号
@@ -55,11 +62,17 @@ private:
     // rgb/depth 用 message_filters 近似时间同步强绑（容差 rgb_depth_slop），
     // odom 取最近缓存值（允许 odom_slop 延迟），三者合成一个组合帧(topic_id=50)
     // 上行，替代 out_topics 中 rgb/depth/odom 三条的独立发送，保证下游时间戳同步。
+    // rgb_codec/depth_codec 决定订阅消息类型：
+    //   "raw"      -> sensor_msgs::CompressedImage，data 字节直传
+    //   "image_raw"-> sensor_msgs::Image，cv_bridge + imencode 转 jpeg/png 后发送
+    // 二者必须一致（同相机驱动格式统一），TCP 字节流格式与 Python 端解码完全一致。
     struct SyncPackCfg {
         bool enable = false;                 // 是否启用同步打包
-        std::string rgb_topic;               // rgb 压缩图话题
-        std::string depth_topic;             // depth 压缩图话题
+        std::string rgb_topic;               // rgb 话题（类型由 rgb_codec 决定）
+        std::string depth_topic;             // depth 话题（类型由 depth_codec 决定）
         std::string odom_topic;              // odom 话题
+        std::string rgb_codec = "raw";       // "raw"=CompressedImage / "image_raw"=Image
+        std::string depth_codec = "raw";     // 同上，必须与 rgb_codec 一致
         double rgb_depth_slop = 0.05;        // rgb/depth 强同步容差(秒)
         double odom_slop = 0.1;              // odom 允许的延迟(秒)，取最近值即可
         double max_freq = 10.0;              // 组合帧节流上限(Hz)
@@ -73,17 +86,28 @@ private:
     void recvLoop();                                // 接收线程主循环
 
     // 上行回调（idx 为 out_topics_ 下标）
-    void onImage(const sensor_msgs::CompressedImageConstPtr& msg, size_t idx);
+    void onImage(const sensor_msgs::CompressedImageConstPtr& msg, size_t idx);  // codec=raw
+    void onImageRaw(const sensor_msgs::ImageConstPtr& msg, size_t idx);         // codec=image_raw
     void onOdom(const nav_msgs::OdometryConstPtr& msg, size_t idx);
 
     // ---- 同步打包（sync_pack）----
-    void setupSyncPack(ros::NodeHandle& nh);   // 创建同步订阅（rgb+depth 同步 + odom 独立）
+    void setupSyncPack(ros::NodeHandle& nh);   // 创建同步订阅（按 codec 选择消息类型 + odom 独立）
     void onSyncRgbDepth(const sensor_msgs::CompressedImageConstPtr& rgb,
-                        const sensor_msgs::CompressedImageConstPtr& depth);  // 同步回调→打包入队
+                        const sensor_msgs::CompressedImageConstPtr& depth);  // raw 版本同步回调
+    void onSyncRgbDepthRaw(const sensor_msgs::ImageConstPtr& rgb,
+                           const sensor_msgs::ImageConstPtr& depth);         // image_raw 版本同步回调
     void onSyncOdom(const nav_msgs::OdometryConstPtr& msg);                  // odom 独立回调→缓存 JSON
     bool buildSyncPackFrame(const sensor_msgs::CompressedImageConstPtr& rgb,
                             const sensor_msgs::CompressedImageConstPtr& depth,
-                            double stamp, std::vector<uint8_t>& frame);      // 组装 topic_id=50 组合帧
+                            double stamp, std::vector<uint8_t>& frame);      // raw 版本组装 topic_id=50
+    bool buildSyncPackFrameRaw(const sensor_msgs::ImageConstPtr& rgb,
+                               const sensor_msgs::ImageConstPtr& depth,
+                               double stamp, std::vector<uint8_t>& frame);  // image_raw 版本组装
+    // 公共组装：从已编码的 rgb/depth 字节流 + 最近 odom 组装 topic_id=50 组合帧
+    // （raw 与 image_raw 两路最终都汇聚到此，保证 TCP 字节流格式一致）
+    bool buildSyncPackFrameFromBytes(const uint8_t* rgb_data, size_t rgb_size,
+                                     const uint8_t* depth_data, size_t depth_size,
+                                     double stamp, std::vector<uint8_t>& frame);
 
     // 下行处理：把 topic_id=100 的载荷(JSON)解码并发布
     void handleEncodeMask(const std::vector<uint8_t>& payload, double stamp);
@@ -116,12 +140,20 @@ private:
     ros::Time latest_odom_stamp_;      // 最近 odom 的接收时间戳（odom_mutex_ 保护）
     std::mutex odom_mutex_;            // 保护 latest_odom_* 的互斥锁
     // message_filters 同步订阅（rgb+depth，近似时间同步）
+    // CompressedImage 版本（codec=raw）
     std::unique_ptr<message_filters::Subscriber<sensor_msgs::CompressedImage>>
         sync_rgb_sub_, sync_depth_sub_;
     std::unique_ptr<message_filters::Synchronizer<
         message_filters::sync_policies::ApproximateTime<
             sensor_msgs::CompressedImage, sensor_msgs::CompressedImage>>>
         sync_sync_;
+    // Image 原始图版本（codec=image_raw）
+    std::unique_ptr<message_filters::Subscriber<sensor_msgs::Image>>
+        sync_rgb_raw_sub_, sync_depth_raw_sub_;
+    std::unique_ptr<message_filters::Synchronizer<
+        message_filters::sync_policies::ApproximateTime<
+            sensor_msgs::Image, sensor_msgs::Image>>>
+        sync_raw_sync_;
     std::vector<ros::Subscriber> extra_subs_;  // odom 独立订阅存放处
 
     // ---- ROS 句柄/订阅/发布 ----
