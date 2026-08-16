@@ -300,9 +300,59 @@ class YoloeSimTcpService:
         """按 topic_id 分发上行帧数据。"""
         topic_id = frame["topic_id"]
 
+        if topic_id == TOPIC_PACKED:
+            # 组合帧：rgb/depth/odom 已由广播器同步打包，直接解包并触发推理
+            # payload 布局（全部大端）：u32 rgb_len + rgb(jpeg) + u32 depth_len
+            # + depth(png) + u32 odom_len + odom_json(UTF-8)
+            try:
+                off = 0
+                rgb_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                rgb_bytes = frame["payload"][off:off+rgb_len]; off += rgb_len
+                depth_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                depth_bytes = frame["payload"][off:off+depth_len]; off += depth_len
+                odom_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
+                odom_json_bytes = frame["payload"][off:off+odom_len]
+            except (struct.error, IndexError) as e:
+                # 长度字段越界 / 数据不完整属协议解析边界，必须捕获
+                print(f"[YoloeSimTcpService][debug] 组合帧解析失败: {e}")
+                return
+            # rgb 解码（jpeg 压缩字节 -> BGR 图）
+            _t_dec = time.perf_counter()
+            bgr = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
+            rgb_decode_ms = (time.perf_counter() - _t_dec) * 1e3
+            if bgr is None:
+                print("[YoloeSimTcpService] rgb jpeg 解码失败，丢弃该帧")
+                return
+            # depth 解码（png 压缩字节 -> 仿真深度图 uchar/uint16）
+            _t_dec = time.perf_counter()
+            depth = cv2.imdecode(np.frombuffer(depth_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
+            depth_decode_ms = (time.perf_counter() - _t_dec) * 1e3
+            if depth is None:
+                print("[YoloeSimTcpService] depth png 解码失败，丢弃该帧")
+                return
+            # odom 解析（UTF-8 JSON，字段缺省时回退默认值）
+            try:
+                odom = json.loads(odom_json_bytes.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as e:
+                print(f"[YoloeSimTcpService] odom JSON 解析失败，丢弃该帧: {e}")
+                return
+            odom_arr = [float(odom.get(k, 0.0)) for k in ("x", "y", "z", "qx", "qy", "qz", "qw")]
+            odom_arr[6] = float(odom.get("qw", 1.0))  # qw 默认 1.0
+            # 更新三路缓存（组合帧已由广播器同步打包，三路 stamp 相同）
+            stamp = frame["stamp"]
+            self._latest_rgb = {"stamp": stamp, "bgr": bgr, "payload": rgb_bytes}
+            self._latest_depth = {"stamp": stamp, "array": depth, "payload": depth_bytes}
+            self._latest_odom = {"stamp": stamp, "arr": odom_arr}
+            print(f"[Timing][sim][frame={stamp:.3f}] 图像读取: rgb_decode={rgb_decode_ms:.2f}ms depth_decode={depth_decode_ms:.2f}ms")
+            # 组合帧已同步好：直接触发推理，无需再做三路时间同步校验
+            self._trigger_infer_packed(conn)
+            return
+
         if topic_id == TOPIC_RGB:
             # rgb：jpeg 压缩字节 -> cv2.imdecode 得到 BGR 图
+            _t_dec = time.perf_counter()
             bgr = cv2.imdecode(np.frombuffer(frame["payload"], np.uint8), cv2.IMREAD_COLOR)
+            rgb_decode_ms = (time.perf_counter() - _t_dec) * 1e3
             if bgr is None:
                 print("[YoloeSimTcpService] rgb jpeg 解码失败，丢弃该帧")
                 return
@@ -311,13 +361,16 @@ class YoloeSimTcpService:
                 "bgr": bgr,
                 "payload": frame["payload"],   # 保留原始压缩字节用于回发
             }
+            print(f"[Timing][sim][frame={frame['stamp']:.3f}] 图像读取: rgb_decode={rgb_decode_ms:.2f}ms")
             # rgb 是触发帧：收到后尝试一次推理
             self._try_infer(conn)
 
         elif topic_id == TOPIC_DEPTH:
             # depth：png 压缩字节 -> cv2.imdecode(IMREAD_UNCHANGED)，
             # 得到仿真深度图（uchar 或 uint16）
+            _t_dec = time.perf_counter()
             depth = cv2.imdecode(np.frombuffer(frame["payload"], np.uint8), cv2.IMREAD_UNCHANGED)
+            depth_decode_ms = (time.perf_counter() - _t_dec) * 1e3
             if depth is None:
                 print("[YoloeSimTcpService] depth png 解码失败，丢弃该帧")
                 return
@@ -326,6 +379,7 @@ class YoloeSimTcpService:
                 "array": depth,
                 "payload": frame["payload"],   # 保留原始压缩字节用于回发
             }
+            print(f"[Timing][sim][frame={frame['stamp']:.3f}] 图像读取: depth_decode={depth_decode_ms:.2f}ms")
 
         elif topic_id == TOPIC_ODOM:
             # odom：UTF-8 JSON {"x":..,"y":..,"z":..,"qx":..,"qy":..,"qz":..,"qw":..}
@@ -403,12 +457,14 @@ class YoloeSimTcpService:
             结果 dict；若模型无检测结果返回 None（不回发）
         """
         # 1. BGR -> RGB（与原实现一致），并缩放至指定宽度保持宽高比
+        _t_pre = time.perf_counter()
         cv_rgb = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2RGB)
         h, w, _ = cv_rgb.shape
         if w != self.resize_width:
             cv_rgb_resized = cv2.resize(cv_rgb, (self.resize_width, int(h * self.resize_width / w)))
         else:
             cv_rgb_resized = cv_rgb
+        preprocess_ms = (time.perf_counter() - _t_pre) * 1e3
 
         # 2. YOLOE 推理
         t1 = time.perf_counter()
@@ -417,11 +473,16 @@ class YoloeSimTcpService:
                 cv_rgb_resized, conf=self.conf, device=self.device,
                 verbose=False, save=False
             )
+        infer_ms = (time.perf_counter() - t1) * 1e3
         if self.debug:
-            print(f"[YoloeSimTcpService][debug] Predict time: {((time.perf_counter() - t1) * 1e3):.2f}ms")
+            print(f"[YoloeSimTcpService][debug] Predict time: {infer_ms:.2f}ms")
         if not results or len(results) == 0:
+            print(f"[Timing][sim][frame={stamp:.3f}] 预处理={preprocess_ms:.2f}ms 模型推理={infer_ms:.2f}ms")
             return None
         result = results[0]
+
+        # 后处理计时起点
+        _t_pp = time.perf_counter()
 
         # 3. 提取标签 / 置信度
         objects = []
@@ -442,6 +503,8 @@ class YoloeSimTcpService:
 
         # 模型无任何检测结果：返回 None，不回发
         if len(labels) == 0:
+            postprocess_ms = (time.perf_counter() - _t_pp) * 1e3
+            print(f"[Timing][sim][frame={stamp:.3f}] 预处理={preprocess_ms:.2f}ms 模型推理={infer_ms:.2f}ms 后处理={postprocess_ms:.2f}ms (无检测)")
             return None
 
         # 4. 掩码提取：masks.data -> 二值图 -> PNG 压缩
@@ -483,6 +546,8 @@ class YoloeSimTcpService:
             "depth_b64": base64.b64encode(depth_bytes).decode("utf-8"),
             "objects": objects,
         }
+        postprocess_ms = (time.perf_counter() - _t_pp) * 1e3
+        print(f"[Timing][sim][frame={stamp:.3f}] 预处理={preprocess_ms:.2f}ms 模型推理={infer_ms:.2f}ms 后处理={postprocess_ms:.2f}ms")
         return result_dict
 
     def _send_result(self, conn, result_dict):
@@ -494,12 +559,15 @@ class YoloeSimTcpService:
             self._result_seq, result_dict["stamp"], len(payload)
         )
         # 发送加锁，防止多线程推理时帧交错
+        _t_send = time.perf_counter()
         with self._send_lock:
             try:
                 conn.sendall(header + payload)
             except OSError as e:
                 # socket 断开是必须处理的异常边界
                 print(f"[YoloeSimTcpService] 发送结果失败: {e}")
+        send_ms = (time.perf_counter() - _t_send) * 1e3
+        print(f"[Timing][sim][frame={result_dict['stamp']:.3f}] 传回: {send_ms:.2f}ms (payload={len(payload)}B)")
 
 
 if __name__ == '__main__':

@@ -510,7 +510,6 @@ class Env {
       logSearchFailure("findVisiblePath", curPtr == nullptr ? "start_memory_exhausted" : "start_invalid",
                        start_idx, end_idx, curPtr, open_set.size(), 0.0);
       visited_nodes_.clear();
-      std::cout << "start postition invalid!" << std::endl;
       return false;
     }
     curPtr->parent = nullptr;
@@ -519,9 +518,6 @@ class Env {
     curPtr->state = CLOSE;
 
     double t_cost = (ros::Time::now() - t_start_).toSec();
-    if (t_cost > MAX_DURATION) {
-      std::cout << "[env] search costs more than " << MAX_DURATION << "s!" << std::endl;
-    }
     while (visited_nodes_.size() < MAX_MEMORY && t_cost <= MAX_DURATION) {
       for (const auto& neighbor : neighbors) {
         auto neighbor_idx = curPtr->idx + neighbor.first;
@@ -554,14 +550,11 @@ class Env {
         }
       }  // for each neighbor
       if (search_memory_exhausted_) {
-        std::cout << "[env] out of memory!" << std::endl;
         logSearchFailure("findVisiblePath", "out_of_memory", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - t_start_).toSec());
         break;
       }
       if (open_set.empty()) {
-        // std::cout << "start postition invalid!" << std::endl;
-        std::cout << "[env] no way!" << std::endl;
         logSearchFailure("findVisiblePath", "no_way", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - t_start_).toSec());
         break;
@@ -574,7 +567,6 @@ class Env {
         break;
       }
       if (visited_nodes_.size() == MAX_MEMORY) {
-        std::cout << "[env] out of memory!" << std::endl;
         logSearchFailure("findVisiblePath", "out_of_memory", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - t_start_).toSec());
       }
@@ -655,7 +647,6 @@ class Env {
       logSearchFailure("astar", curPtr == nullptr ? "start_memory_exhausted" : "start_invalid",
                        start_idx, end_idx, curPtr, open_set.size(), 0.0);
       visited_nodes_.clear();
-      std::cout << "start postition invalid!" << std::endl;
       return false;
     }
     curPtr->parent = nullptr;
@@ -695,14 +686,11 @@ class Env {
         }
       }  // for each neighbor
       if (search_memory_exhausted_) {
-        std::cout << "[astar search] out of memory!" << std::endl;
         logSearchFailure("astar", "out_of_memory", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - search_start).toSec());
         break;
       }
       if (open_set.empty()) {
-        // std::cout << "start postition invalid!" << std::endl;
-        std::cout << "[astar search] no way!" << std::endl;
         logSearchFailure("astar", "no_way", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - search_start).toSec());
         break;
@@ -715,7 +703,6 @@ class Env {
         break;
       }
       if (visited_nodes_.size() == MAX_MEMORY) {
-        std::cout << "[astar search] out of memory!" << std::endl;
         logSearchFailure("astar", "out_of_memory", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - search_start).toSec());
       }
@@ -860,7 +847,6 @@ class Env {
       logSearchFailure("short_astar", curPtr == nullptr ? "start_memory_exhausted" : "start_invalid",
                        start_idx, end_idx, curPtr, open_set.size(), 0.0);
       visited_nodes_.clear();
-      std::cout << "[short astar]start postition invalid!" << std::endl;
       return false;
     }
     curPtr->parent = nullptr;
@@ -900,14 +886,11 @@ class Env {
         }
       }  // for each neighbor
       if (search_memory_exhausted_) {
-        std::cout << "[short astar] out of memory!" << std::endl;
         logSearchFailure("short_astar", "out_of_memory", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - search_start).toSec());
         break;
       }
       if (open_set.empty()) {
-        // std::cout << "start postition invalid!" << std::endl;
-        std::cout << "[short astar] no way!" << std::endl;
         logSearchFailure("short_astar", "no_way", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - search_start).toSec());
         break;
@@ -920,7 +903,6 @@ class Env {
         break;
       }
       if (visited_nodes_.size() == MAX_MEMORY) {
-        std::cout << "[short astar] out of memory!" << std::endl;
         logSearchFailure("short_astar", "out_of_memory", start_idx, end_idx, curPtr,
                          open_set.size(), (ros::Time::now() - search_start).toSec());
       }

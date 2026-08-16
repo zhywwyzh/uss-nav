@@ -19,19 +19,19 @@ services:
 
 topics:
 # --------- Swarm Info ---------- #
-- topic_name: /drone_0_ego_planner_node/grid_map/occupancy_inflate
-  msg_type: sensor_msgs/PointCloud2
-  cloudCompress: true
-  cloudDownsample: -1.0
-  cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
-  srcIP:
-    - drone1
-  srcPort: 3001
-  max_freq: 5
-  dstIP:
-    - groundStation0
-  prefix: true
-  same_prefix: true
+# - topic_name: /drone_0_ego_planner_node/grid_map/occupancy_inflate
+#   msg_type: sensor_msgs/PointCloud2
+#   cloudCompress: true
+#   cloudDownsample: -1.0
+#   cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
+#   srcIP:
+#     - drone1
+#   srcPort: 3001
+#   max_freq: 5
+#   dstIP:
+#     - groundStation0
+#   prefix: true
+#   same_prefix: true
 
 - topic_name: /ekf_quat/ekf_odom
   msg_type: nav_msgs/Odometry
@@ -67,19 +67,19 @@ topics:
   prefix: false
   same_prefix: false
 
-- topic_name: /drone_0_ego_planner_node/grid_map/occupancy
-  msg_type: sensor_msgs/PointCloud2
-  cloudCompress: true
-  cloudDownsample: -1.0
-  cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
-  srcIP:
-    - drone1
-  srcPort: 3006
-  max_freq: 5
-  dstIP:
-    - groundStation0
-  prefix: true
-  same_prefix: true
+# - topic_name: /drone_0_ego_planner_node/grid_map/occupancy
+#   msg_type: sensor_msgs/PointCloud2
+#   cloudCompress: true
+#   cloudDownsample: -1.0
+#   cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
+#   srcIP:
+#     - drone1
+#   srcPort: 3006
+#   max_freq: 5
+#   dstIP:
+#     - groundStation0
+#   prefix: true
+#   same_prefix: true
 
 
 

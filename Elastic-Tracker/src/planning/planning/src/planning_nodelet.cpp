@@ -300,7 +300,7 @@ class Nodelet : public nodelet::Nodelet {
           pub_hover_p(odom_p, ros::Time::now());
           wait_hover_ = true;
         }
-        ROS_WARN("[planner] HOVERING...");
+        ROS_WARN_THROTTLE(2.0, "[planner] HOVERING...");
         return;
       }
       // TODO get the orientation fo target and calculate the pose of landing point
@@ -321,7 +321,7 @@ class Nodelet : public nodelet::Nodelet {
           pub_hover_p(odom_p, ros::Time::now());
           wait_hover_ = true;
         }
-        ROS_WARN("[planner] HOVERING...");
+        ROS_WARN_THROTTLE(2.0, "[planner] HOVERING...");
         replanStateMsg_.state = -1;
         replanState_pub_.publish(replanStateMsg_);
         update_hover_finish_state();
@@ -543,7 +543,7 @@ class Nodelet : public nodelet::Nodelet {
     }
     if (valid) {
       force_hover_ = false;
-      ROS_WARN("[planner] REPLAN SUCCESS");
+      ROS_WARN_THROTTLE(2.0, "[planner] REPLAN SUCCESS");
       replanStateMsg_.state = 0;
       replanState_pub_.publish(replanStateMsg_);
       // 利用预测轨迹消除 yaw 滞后：取 lookahead_time 后的预测目标位置计算期望偏航
@@ -636,10 +636,10 @@ class Nodelet : public nodelet::Nodelet {
       bool new_goal = (local_goal - traj_poly_.getPos(traj_poly_.getTotalDuration())).norm() > tracking_dist_;
       if (!new_goal) {
         if (last_traj_t_rest < 1.0) {
-          ROS_WARN("[planner] NEAR GOAL...");
+          ROS_WARN_THROTTLE(2.0, "[planner] NEAR GOAL...");
           no_need_replan = true;
         } else if (validcheck(traj_poly_, replan_stamp_, last_traj_t_rest)) {
-          ROS_WARN("[planner] NO NEED REPLAN...");
+          ROS_WARN_THROTTLE(2.0, "[planner] NO NEED REPLAN...");
           double t_delta = traj_poly_.getTotalDuration() < 1.0 ? traj_poly_.getTotalDuration() : 1.0;
           double t_yaw = (ros::Time::now() - replan_stamp_).toSec() + t_delta;
           Eigen::Vector3d un_known_p = traj_poly_.getPos(t_yaw);
@@ -657,7 +657,7 @@ class Nodelet : public nodelet::Nodelet {
         pub_hover_p(odom_p, ros::Time::now());
         wait_hover_ = true;
       }
-      ROS_WARN("[planner] HOVERING...");
+      ROS_WARN_THROTTLE(2.0, "[planner] HOVERING...");
       replanStateMsg_.state = -1;
       replanState_pub_.publish(replanStateMsg_);
       update_hover_finish_state();
@@ -744,7 +744,7 @@ class Nodelet : public nodelet::Nodelet {
     }
     if (valid) {
       force_hover_ = false;
-      ROS_WARN("[planner] REPLAN SUCCESS");
+      ROS_WARN_THROTTLE(2.0, "[planner] REPLAN SUCCESS");
       replanStateMsg_.state = 0;
       replanState_pub_.publish(replanStateMsg_);
       // NOTE : if the trajectory is known, watch that direction

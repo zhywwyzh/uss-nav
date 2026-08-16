@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -99,29 +100,136 @@ std::string EncodeMaskCodec::base64Encode(const std::vector<uint8_t>& data) {
     return out;
 }
 
-namespace {
+bool EncodeMaskCodec::decodeEncodeMaskBinary(const std::vector<uint8_t>& payload,
+                                             scene_graph::EncodeMask& out,
+                                             std::string& out_vis_b64) {
+    // 新协议：二进制头部 + objects JSON。
+    // payload 布局（全部大端）：
+    //   8B stamp_double + u32 rgb_len + rgb_bytes +
+    //   u32 depth_len + depth_bytes + 56B odom_7floats +
+    //   u32 objects_json_len + objects_json_bytes
+    // objects_json 内含 {"objects": [...], "vis_b64": "..."} 两个字段。
+    out_vis_b64.clear();
 
-// null 安全的字段取值：nlohmann 的 value() 仅在 key 缺失时返回默认值，
-// key 存在但值为 null 时会抛 type_error.302（Python 端 None 即序列化为 null）。
-// 这里显式判类型，任何非期望类型都退回默认值，保证解析不抛异常。
-std::string jsonStringOr(const nlohmann::json& j, const char* key,
-                         const std::string& fallback = std::string()) {
-    auto it = j.find(key);
-    if (it == j.end() || !it->is_string()) {
-        return fallback;
+    const size_t kOdomBytes = 56;
+    const size_t kHeaderMin = 8 + 4;  // stamp + rgb_len
+    if (payload.size() < kHeaderMin) {
+        ROS_ERROR("[Broadcaster] EncodeMask 二进制 payload 过短(%zu字节)", payload.size());
+        return false;
     }
-    return it->get<std::string>();
-}
 
-double jsonNumberOr(const nlohmann::json& j, const char* key, double fallback) {
-    auto it = j.find(key);
-    if (it == j.end() || !it->is_number()) {
-        return fallback;
+    size_t off = 0;
+    const uint8_t* p = payload.data();
+
+    // stamp (8B double 大端)
+    uint64_t stamp_be = 0;
+    for (int i = 0; i < 8; ++i) stamp_be = (stamp_be << 8) | p[off + i];
+    off += 8;
+    double stamp;
+    std::memcpy(&stamp, &stamp_be, sizeof(double));
+    ros::Time t(stamp);
+    out.header.stamp = t;
+    out.header.frame_id = "world";
+
+    // 读取 u32 长度字段的 lambda
+    auto read_u32 = [&](size_t pos, uint32_t& val) -> bool {
+        if (pos + 4 > payload.size()) return false;
+        val = ((uint32_t)p[pos] << 24) | ((uint32_t)p[pos + 1] << 16) |
+              ((uint32_t)p[pos + 2] << 8) | (uint32_t)p[pos + 3];
+        return true;
+    };
+
+    // rgb
+    uint32_t rgb_len = 0;
+    if (!read_u32(off, rgb_len)) return false;
+    off += 4;
+    if (off + rgb_len > payload.size()) return false;
+    out.current_rgb.header.stamp = t;
+    out.current_rgb.header.frame_id = "world";
+    out.current_rgb.format = "jpeg";
+    out.current_rgb.data.assign(p + off, p + off + rgb_len);
+    off += rgb_len;
+
+    // depth
+    uint32_t depth_len = 0;
+    if (!read_u32(off, depth_len)) return false;
+    off += 4;
+    if (off + depth_len > payload.size()) return false;
+    out.current_depth.header.stamp = t;
+    out.current_depth.header.frame_id = "world";
+    // 广播器 onSyncRgbDepth 打包前已剥掉 12B compressedDepth 头，
+    // 此处 depth_bytes 是纯 PNG，format 写 "png" 即可。
+    // object_factory::decodeRealsenseCompressedDepth 看到 format="png" 不会跳头，直接解码。
+    out.current_depth.format = "png";
+    out.current_depth.data.assign(p + off, p + off + depth_len);
+    off += depth_len;
+
+    // odom 56B 定长（7 个 double 大端）
+    if (off + kOdomBytes > payload.size()) return false;
+    out.current_odom.header.stamp = t;
+    out.current_odom.header.frame_id = "world";
+    {
+        double vals[7];
+        for (int i = 0; i < 7; ++i) {
+            uint64_t v_be = 0;
+            for (int k = 0; k < 8; ++k) v_be = (v_be << 8) | p[off + i * 8 + k];
+            std::memcpy(&vals[i], &v_be, sizeof(double));
+        }
+        off += kOdomBytes;
+        out.current_odom.pose.pose.position.x = vals[0];
+        out.current_odom.pose.pose.position.y = vals[1];
+        out.current_odom.pose.pose.position.z = vals[2];
+        out.current_odom.pose.pose.orientation.x = vals[3];
+        out.current_odom.pose.pose.orientation.y = vals[4];
+        out.current_odom.pose.pose.orientation.z = vals[5];
+        out.current_odom.pose.pose.orientation.w = vals[6];
     }
-    return it->get<double>();
-}
 
-}  // namespace
+    // objects_json
+    uint32_t objs_json_len = 0;
+    if (!read_u32(off, objs_json_len)) return false;
+    off += 4;
+    if (off + objs_json_len > payload.size()) return false;
+    std::string objs_json_str(p + off, p + off + objs_json_len);
+
+    nlohmann::json j = nlohmann::json::parse(objs_json_str, nullptr, false);
+    if (!j.is_object()) {
+        ROS_ERROR("[Broadcaster] EncodeMask objects JSON 解析失败");
+        return false;
+    }
+    // vis_b64
+    if (j.contains("vis_b64") && j["vis_b64"].is_string()) {
+        out_vis_b64 = j["vis_b64"].get<std::string>();
+    }
+    // objects：labels / confs / masks / word_vectors
+    if (j.contains("objects") && j["objects"].is_array()) {
+        for (const nlohmann::json& obj : j["objects"]) {
+            if (!obj.is_object()) continue;
+            out.labels.push_back(obj.value("label", std::string("")));
+            out.confs.push_back(obj.value("conf", 0.0));
+            sensor_msgs::CompressedImage mask;
+            mask.header.stamp = t;
+            mask.header.frame_id = "world";
+            // mask：检测端已改为 PNG 压缩后再 base64，format="png" 告知
+            // object_factory 走 cv_bridge PNG 解码分支还原为 480x640 单通道 Mat。
+            // （object_factory 中 format=="raw" 直构分支已不再命中新检测器）
+            mask.format = "png";
+            std::vector<uint8_t> mask_data =
+                base64Decode(obj.value("mask_b64", std::string("")));
+            mask.data.assign(mask_data.begin(), mask_data.end());
+            out.masks.push_back(mask);
+            scene_graph::WordVector wv;
+            if (obj.contains("word_vector") && obj["word_vector"].is_array()) {
+                size_t n = std::min((size_t)512, obj["word_vector"].size());
+                for (size_t k = 0; k < n; ++k) {
+                    wv.word_vector[k] = jsonArrayAt(obj["word_vector"], k, 0.0);
+                }
+            }
+            out.word_vectors.push_back(wv);
+        }
+    }
+    return true;
+}
 
 bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
                                            scene_graph::EncodeMask& out) {
@@ -179,11 +287,12 @@ bool EncodeMaskCodec::decodeEncodeMaskJson(const std::string& json_str,
             out.labels.push_back(jsonStringOr(obj, "label"));
             out.confs.push_back(jsonNumberOr(obj, "conf", 0.0));
 
-            // mask：png 压缩图
+            // mask：raw 字节（640x480 单通道 0/255，检测器不再做 PNG 编码）。
+            // format 置 "raw" 告知消费方直构 Mat；旧 PNG 兼容由消费方按 format 分发。
             sensor_msgs::CompressedImage mask;
             mask.header.stamp = t;
             mask.header.frame_id = "world";
-            mask.format = "png";
+            mask.format = "raw";
             {
                 std::vector<uint8_t> mask_data = base64Decode(jsonStringOr(obj, "mask_b64"));
                 // 防御：mask_b64 为空时填充 1×1 单像素占位图（全零灰度 PNG），避免下游 imdecode 崩溃

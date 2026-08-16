@@ -71,6 +71,7 @@ ironing board
 kettle
 keyboard
 lamp
+laptop
 laundry basket
 light
 locker
@@ -88,6 +89,7 @@ office desk
 oven
 paper towel
 pen
+person
 phone
 photograph
 pillow

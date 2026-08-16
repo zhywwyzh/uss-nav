@@ -6,10 +6,10 @@
 # Docs: https://docs.ultralytics.com/modes/track
 
 tracker_type: fasttrack # (str) Tracker backend: fasttrack
-track_high_thresh: 0.25 # (float) First-stage match threshold
+track_high_thresh: 0.1 # (float) First-stage match threshold
 track_low_thresh: 0.1 # (float) Second-stage threshold for low-score matches
-new_track_thresh: 0.25 # (float) Start a new track if no match ≥ this
-track_buffer: 30 # (int) Frames to keep lost tracks alive
+new_track_thresh: 0.1 # (float) Start a new track if no match ≥ this
+track_buffer: 25 # (int) Frames to keep lost tracks alive
 match_thresh: 0.8 # (float) First-stage association similarity threshold
 fuse_score: True # (bool) Fuse detection score with IoU when matching
 

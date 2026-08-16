@@ -309,7 +309,8 @@ ObjectNode::Ptr ObjectFactory::processSingleObject(const ProcessedCLoudInput &in
 
         // 提取点云
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud = extractCloud(input.depth_img, input.rgb_img, mask_fixed, input.pt_color);
-        if (cloud->empty()) return result;
+        // extractCloud 尺寸不匹配或 depth 解码失败时返回 nullptr，跳过该 mask
+        if (!cloud || cloud->empty()) return result;
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr filtered_cloud = filteringCloud(cloud);
         if (filtered_cloud->size() <= _obj_cloud_num_thresh) return result;
         pcl::transformPointCloud(*filtered_cloud, *result->cloud, input.tf);
@@ -321,7 +322,6 @@ ObjectNode::Ptr ObjectFactory::processSingleObject(const ProcessedCLoudInput &in
         pcl::PointXYZ center_pos;
         pcl::computeCentroid(*result->cloud, center_pos);
         result->pos = Eigen::Vector3d(center_pos.x, center_pos.y, center_pos.z);
-        mergeObjectIntoMap(result);
     } catch (const std::exception& e) {
         INFO_MSG_RED("*** [ObjFactory] Error in mask process thread : " << e.what());
     }
@@ -364,6 +364,8 @@ void ObjectFactory::doSemanticProcessingOnce() {
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr pt_cloud =
             extractCloud(cur_data_.cur_depth_, cur_data_.cur_rgb_,
                         cv::Mat(cur_data_.cur_rgb_.size(), CV_8UC1), Eigen::Vector3d(255,255,255));
+        // extractCloud 返回 nullptr 时跳过本次可视化发布，避免 shared_ptr 空指针断言
+        if (!pt_cloud || pt_cloud->empty()) return;
         sensor_msgs::PointCloud2 pt_cloud_msg;
         pcl::PointCloud<pcl::PointXYZRGB> output;
         pcl::transformPointCloud(*pt_cloud, output, cur_data_.cur_tf_);
@@ -385,10 +387,29 @@ void ObjectFactory::doSemanticProcessingOnce() {
         active_threads++;
         lock.unlock();
 
-        // mask处理
-        cv_bridge::CvImagePtr mask_ptr = cv_bridge::toCvCopy(cur_data_.cur_semantic_recv_msg_->masks[i],
-                                                             sensor_msgs::image_encodings::MONO8);
-        cv::Mat mask = mask_ptr->image;
+        // mask处理：raw 字节直构 Mat（640x480 单通道 0/255，无 PNG 解码 ~1.2ms/目标）
+        // 按 format 分发：format=="raw" 直接构造，否则回退 cv_bridge 兼容旧 PNG 生产者
+        const auto& mask_msg = cur_data_.cur_semantic_recv_msg_->masks[i];
+        cv::Mat mask;
+        if (mask_msg.format == "raw" && mask_msg.data.size() == static_cast<size_t>(640 * 480)) {
+            mask = cv::Mat(480, 640, CV_8UC1,
+                           const_cast<uint8_t*>(mask_msg.data.data()));
+        } else {
+            // 旧 PNG 兼容：解码失败只跳过该 mask，绝不向调用方抛异常（防进程 abort）
+            try {
+                cv_bridge::CvImagePtr mask_ptr = cv_bridge::toCvCopy(
+                    mask_msg, sensor_msgs::image_encodings::MONO8);
+                mask = mask_ptr->image;
+            } catch (const cv_bridge::Exception& e) {
+                ROS_ERROR_STREAM_THROTTLE(1.0,
+                    "[ObjFactory] mask decode failed, skip this mask: " << e.what());
+                lock.lock();
+                active_threads--;
+                lock.unlock();
+                cv.notify_one();
+                continue;
+            }
+        }
         cv::Mat mask_fixed;
         if (mask.size() == cv::Size(640, 640)) {
             cv::Rect roi(0, 80, 640, 480);
@@ -434,9 +455,10 @@ void ObjectFactory::doSemanticProcessingOnce() {
         try {
             ObjectNode::Ptr obj = future.get();
             cur_observe_results_.push_back(obj);
-            // if (obj->cloud->size() > _obj_cloud_num_thresh) {
-            //     mergeObjectIntoMap(obj);
-            // }
+            // 主线程串行执行物体匹配与合并（避免多线程竞态导致重复创建ID）
+            if (obj->cloud->size() > _obj_cloud_num_thresh) {
+                mergeObjectIntoMap(obj);
+            }
         } catch (const std::exception& e) {
             ROS_ERROR_STREAM("[ObjFactory] Error getting result from thread: " << e.what());
         }
@@ -547,29 +569,26 @@ void ObjectFactory::mergeObjAIntoB(ObjectNode::Ptr &obj_src, ObjectNode::Ptr &ob
         return std::abs(pitch_angle);
     };
 
-    update_existing_objects_.emplace_back(obj_target->pos, obj_target);
-    cur_update_objs_.push_back(obj_target);
-    cur_update_all_.push_back(obj_target);
-    cur_update_ids_.push_back(obj_target->id);
+    // 记录合并前的旧位置用于KD树删除
+    Eigen::Vector3d old_pos = obj_target->pos;
 
     // point cloud merge
     obj_src->id = obj_target->id;
-    if (calculateSemanticSimilarity(obj_src, obj_target) > 0.75){
-        // 對多維向量加權平均
-        double weight_src = obj_src->cloud->size() / (obj_src->cloud->size() + obj_target->cloud->size());
-        obj_src->label_feature = (obj_src->label_feature * weight_src + obj_target->label_feature * (1 - weight_src)) / 2.0f;
-
-    }else if (obj_src->conf > obj_target->conf + 0.1) {
-        if (obj_src->label == obj_target->label)
-            obj_target->conf = obj_src->conf;
-        else if (obj_src->label != obj_target->label ) {
-            INFO_MSG_YELLOW("* [ObjFactory] Label changed from [" << obj_target->label << "] to [" << obj_src->label << "]");
-            INFO_MSG_YELLOW("* [ObjFactory] Confidence changed from [" << obj_target->conf << "] to [" << obj_src->conf << "]");
-            INFO_MSG_YELLOW("* Obj pos: " << obj_target->pos.transpose());
-            obj_target->label = obj_src->label;
-            obj_target->label_feature = obj_src->label_feature;
-            obj_target->conf = obj_src->conf;
-        }
+    if (obj_src->label == obj_target->label) {
+        double weight_src = static_cast<double>(obj_src->cloud->size()) / 
+                           static_cast<double>(obj_src->cloud->size() + obj_target->cloud->size());
+        Eigen::VectorXd merged_feature = obj_target->label_feature * (1.0 - weight_src) + 
+                                         obj_src->label_feature * weight_src;
+        merged_feature.normalize();
+        obj_target->label_feature = merged_feature;
+        obj_target->conf = std::max(obj_target->conf, obj_src->conf);
+    } else if (obj_src->conf > obj_target->conf + 0.1) {
+        INFO_MSG_YELLOW("* [ObjFactory] Label changed from [" << obj_target->label << "] to [" << obj_src->label << "]");
+        INFO_MSG_YELLOW("* [ObjFactory] Confidence changed from [" << obj_target->conf << "] to [" << obj_src->conf << "]");
+        INFO_MSG_YELLOW("* Obj pos: " << obj_target->pos.transpose());
+        obj_target->label = obj_src->label;
+        obj_target->label_feature = obj_src->label_feature;
+        obj_target->conf = obj_src->conf;
     }
 
     if (obj_target->detection_count < std::numeric_limits<unsigned int>::max())
@@ -600,110 +619,99 @@ void ObjectFactory::mergeObjAIntoB(ObjectNode::Ptr &obj_src, ObjectNode::Ptr &ob
             }
         }
     }
+
+    // pos更新完成后，记录旧位置用于KD树更新
+    update_existing_objects_.emplace_back(old_pos, obj_target);
+    cur_update_objs_.push_back(obj_target);
+    cur_update_all_.push_back(obj_target);
+    cur_update_ids_.push_back(obj_target->id);
 }
 
 void ObjectFactory::mergeObjectIntoMap(ObjectNode::Ptr &cur_obj) {
-    //  =========↓↓ merge obj into existing object ↓↓=========
-        auto nbr_cmp = [this](const std::pair<double, ObjectNode::Ptr>& a,
-                              const std::pair<double, ObjectNode::Ptr>& b) {
-            if (a.first > b.first) return true;
-            else return false;
-        };
-        int matched_id = -1;
-        double overlap = 0.0;
-        ObjectKDTreeNodeVector nodes_in_range;
-        std::map<int, ObjectNode::Ptr> node_candidate;
-        std::vector<std::pair<double, ObjectNode::Ptr>> nbrs_candidate1, nbrs_candidate2, nbrs_highly_overlap;
-        std::vector<std::pair<int, double>> overlaps;
-        std::map<int, double> semantic_sims;
-        if (getObjectsInRange(cur_obj->pos, 1.0, nodes_in_range)) {
-            for (const auto& node : nodes_in_range) node_candidate[node.obj_->id] = node.obj_;
-            // step1 计算候选对象与当前对象之间的overlap
-            for (const auto& nbr : node_candidate) {
-                PointCloudOverlapCalculator overlap_calculator;
-                overlap = overlap_calculator.calculateOverlapBInA(nbr.second->cloud, cur_obj->cloud, _voxel_size);
-                overlaps.emplace_back(nbr.second->id, overlap);
-                if (overlap > 0.1 && nbr.second != nullptr) {
-                    nbrs_candidate1.emplace_back(overlap, nbr.second);
+    std::unique_lock<std::mutex> lock(mutex_);
+
+    auto nbr_cmp = [this](const std::pair<double, ObjectNode::Ptr>& a,
+                          const std::pair<double, ObjectNode::Ptr>& b) {
+        if (a.first > b.first) return true;
+        else return false;
+    };
+    int matched_id = -1;
+    const double kSameLabelCenterDist = 0.3;    // 同标签质心距离阈值：30cm
+    const double kOverlapDistThresh = 0.05;     // 点云重叠距离阈值：5cm（适应深度噪声）
+    const double kOverlapRatioMin = 0.05;        // 最小重叠比例：5%
+    const double kHighOverlapRatio = 0.3;        // 高重叠比例：30%
+    const double kSemanticSimThresh = 0.6;       // 语义相似度阈值：0.6
+    double best_score = -1.0;
+    ObjectNode::Ptr best_match = nullptr;
+    ObjectKDTreeNodeVector nodes_in_range;
+
+    if (getObjectsInRange(cur_obj->pos, 1.5, nodes_in_range)) {
+        for (const auto& node : nodes_in_range) {
+            const auto& nbr = node.obj_;
+            if (nbr == nullptr) continue;
+
+            double center_dist = (nbr->pos - cur_obj->pos).norm();
+            bool same_label = (nbr->label == cur_obj->label);
+
+            // 快速匹配1：同标签且质心非常近 → 直接匹配（置信度最高）
+            if (same_label && center_dist < kSameLabelCenterDist) {
+                double score = 100.0 - center_dist;
+                if (score > best_score) {
+                    best_score = score;
+                    best_match = nbr;
                 }
-                if (overlap > 0.5 && nbr.second != nullptr) {
-                    nbrs_highly_overlap.emplace_back(overlap, nbr.second);
-                }
-            }
-            sort(nbrs_candidate1.begin(), nbrs_candidate1.end(), nbr_cmp);
-            // step2 计算候选对象与当前对象之间的semantic similarity
-            for (const auto& nbr : nbrs_candidate1) {
-                double semantic_sim = calculateSemanticSimilarity(cur_obj, nbr.second);
-                semantic_sims[nbr.second->id] = semantic_sim;
-                if (semantic_sim > 0.75 && nbr.second != nullptr)
-                    nbrs_candidate2.emplace_back(semantic_sim, nbr.second);
+                continue;
             }
 
-            sort(nbrs_candidate2.begin(), nbrs_candidate2.end(), nbr_cmp);
-            //step3 merge obj into existing object
-            if (!nbrs_candidate2.empty())
-                matched_id = nbrs_candidate2.front().second->id;
-            else {
-                if (!nbrs_highly_overlap.empty()) {
-                    PointCloudOverlapCalculator overlap_calculator;
-                    if (overlap_calculator.calculateOverlapBInA(cur_obj->cloud, nbrs_highly_overlap.front().second->cloud, _voxel_size) > 0.5)
-                        matched_id = nbrs_highly_overlap.front().second->id;
+            // 计算点云重叠（放宽距离阈值到5cm）
+            PointCloudOverlapCalculator overlap_calculator;
+            double overlap = overlap_calculator.calculateOverlapBInA(
+                nbr->cloud, cur_obj->cloud, kOverlapDistThresh);
+
+            // 快速匹配2：同标签+有点重叠 → 直接匹配
+            if (same_label && overlap > kOverlapRatioMin) {
+                double score = 50.0 + overlap * 10.0 - center_dist;
+                if (score > best_score) {
+                    best_score = score;
+                    best_match = nbr;
+                }
+                continue;
+            }
+
+            // 高重叠兜底：即使标签不同，点云高度重叠也应该匹配（标签可能飘移）
+            if (overlap > kHighOverlapRatio) {
+                double score = 20.0 + overlap * 10.0;
+                if (score > best_score) {
+                    best_score = score;
+                    best_match = nbr;
+                }
+                continue;
+            }
+
+            // 语义相似度+重叠组合匹配
+            if (overlap > kOverlapRatioMin) {
+                double semantic_sim = calculateSemanticSimilarity(cur_obj, nbr);
+                if (semantic_sim > kSemanticSimThresh) {
+                    double score = semantic_sim * 10.0 + overlap * 5.0 - center_dist * 0.5;
+                    if (score > best_score) {
+                        best_score = score;
+                        best_match = nbr;
+                    }
                 }
             }
         }
-        //  =========↑↑ merge obj into existing object ↑↑=========
-        if (matched_id == -1) {
-            std::unique_lock<std::mutex> lock(mutex_);
-            addNewObject(cur_obj);
-            // try {
-            //     INFO_MSG("   ----- Print Add Info ------");
-            //     INFO_MSG("   Label: " << cur_obj->label);
-            //     INFO_MSG("   Pos: " << cur_obj->pos.transpose());
-            //     INFO_MSG("   Conf: " << cur_obj->conf);
-            //     INFO_MSG("   KD Tree nodes num : " << object_kd_tree_->validnum());
-            //     INFO_MSG("   All Overlaps: ");
-            //     for (const auto & i : overlaps) {
-            //         // 查询map中是否有该对象
-            //         if (semantic_sims.find(i.first) != semantic_sims.end())
-            //             INFO_MSG("      [" << object_map_[i.first]->label << "] Overlap: " << i.second << "Semantic Sim: " << semantic_sims[i.first]);
-            //         else
-            //             INFO_MSG("      [" << object_map_[i.first]->label << "] Overlap: " << i.second);
-            //     }
-            //
-            //     INFO_MSG("   Candidated1 Nbrs: (" << nbrs_candidate1.size() << ")");
-            //     for (const auto& nbr : nbrs_candidate1)
-            //         INFO_MSG("      Label: " << nbr.second->label << " Overlap: " << nbr.first);
-            //     INFO_MSG("   Candidated2 Nbrs: (" << nbrs_candidate2.size() << ")");
-            //     for (const auto& nbr : nbrs_candidate2)
-            //         INFO_MSG("      Label: " << nbr.second->label << " Semantic Sim: " << nbr.first);
-            //     INFO_MSG("   Highly Overlap Nbrs: (" << nbrs_highly_overlap.size() << ")");
-            //     for (const auto& nbr : nbrs_highly_overlap)
-            //         INFO_MSG("      Label: " << nbr.second->label << " Overlap: " << nbr.first);
-            //
-            //     if (cur_obj->edge.polyhedron_father != nullptr)
-            //         INFO_MSG("   Attach To skeleton(Pos): " << cur_obj->edge.polyhedron_father->center_.transpose());
-            //     else
-            //         INFO_MSG_RED("   * Attach To skeleton(Pos): None");
-            // }catch (std::exception& e) {
-            //     ROS_ERROR_STREAM("[ObjFactory]: ** MergeObj Failed to print info, id: " << cur_obj->id << " " << e.what());
-            // }
-            lock.unlock();
-        }else {
-            std::unique_lock<std::mutex> lock(mutex_);
-            auto update_obj = object_map_[matched_id];
-            mergeObjAIntoB(cur_obj, update_obj);
-            lock.unlock();
-
-            // if (deleteObjectInTree(update_obj)) {
-            //     mergeObjAIntoB(cur_obj, update_obj);
-            //     cur_update_objs_.push_back(update_obj);
-            //     cur_update_all_.push_back(update_obj);
-            //     cur_update_ids_.push_back(matched_id);
-            //     updateObjectInTree(update_obj);
-            // }else {
-            //     INFO_MSG_RED("[ObjFactory]: ** MergeObj Failed to delete object in tree, id: " << update_obj->id);
-            // }
+        if (best_match != nullptr) {
+            matched_id = best_match->id;
         }
+    }
+    //  =========↑↑ merge obj into existing object ↑↑=========
+    if (matched_id == -1) {
+        addNewObject(cur_obj);
+        lock.unlock();
+    }else {
+        mergeObjAIntoB(cur_obj, best_match);
+        lock.unlock();
+    }
 }
 
 /**
@@ -982,6 +990,7 @@ void ObjectFactory::addNewObject(ObjectNode::Ptr &obj_node) {
 void ObjectFactory::updateExistingObjectInKdtree(const std::vector<std::pair<Eigen::Vector3d, ObjectNode::Ptr>> & update_existing_objects) {
     ObjectKDTreeNodeVector delete_pts;
     ObjectKDTreeNodeVector add_pts;
+    std::unique_lock<std::mutex> lock(mutex_);
     for (const auto & exist_obj : update_existing_objects) {
         ObjectKDTreeNodeVector nodes_nearest_n;
         if (getObjectsNearestN(exist_obj.first, 1, nodes_nearest_n)) {
@@ -993,7 +1002,6 @@ void ObjectFactory::updateExistingObjectInKdtree(const std::vector<std::pair<Eig
             add_pts.emplace_back(nodes_nearest_n.front().obj_);
         }
     }
-    std::unique_lock<std::mutex> lock(mutex_);
     object_kd_tree_->Delete_Points(delete_pts);
     object_kd_tree_->Add_Points(add_pts, false);
     lock.unlock();
@@ -1009,6 +1017,7 @@ void ObjectFactory::updateObjectInTree(const ObjectNode::Ptr &obj_node) {
 
 bool ObjectFactory::deleteObjectInTree(const ObjectNode::Ptr &obj_node) {
     ObjectKDTreeNodeVector nodes_nearest_n;
+    // 注意：调用方需已持有 mutex_，此处不再重复加锁（std::mutex不可重入）
     if (getObjectsNearestN(obj_node->pos, 1, nodes_nearest_n)) {
         ObjectKDTreeNodeVector delete_pts;
         if ((Eigen::Vector3d(nodes_nearest_n.front().x, nodes_nearest_n.front().y, nodes_nearest_n.front().z) - obj_node->pos).norm() > 0.1)
@@ -1022,6 +1031,7 @@ bool ObjectFactory::deleteObjectInTree(const ObjectNode::Ptr &obj_node) {
 
 bool ObjectFactory::deleteObjectInTree(const std::vector<ObjectNode::Ptr> &obj_nodes) {
     ObjectKDTreeNodeVector delete_pts;
+    // 注意：调用方需已持有 mutex_，此处不再重复加锁（std::mutex不可重入）
     for (const auto & obj_node : obj_nodes) {
         ObjectKDTreeNodeVector nodes_nearest_n;
         if (getObjectsNearestN(obj_node->pos, 1, nodes_nearest_n)) {
@@ -1040,7 +1050,6 @@ bool ObjectFactory::deleteObjectInTree(const std::vector<ObjectNode::Ptr> &obj_n
 bool ObjectFactory::getObjectsInRange(const Eigen::Vector3d &center, double radius,
                                       ObjectKDTreeNodeVector &objects_in_range) {
     if (object_kdtree_initialized_) {
-        std::lock_guard<std::mutex> lock(mutex_);
         auto sort_cmp = [center](const skeleton_gen::ikdTree_ObjectDataType & p1,
                                  const skeleton_gen::ikdTree_ObjectDataType & p2 ){
             return (p1.obj_->pos - center).norm() < (p2.obj_->pos - center).norm();
@@ -1104,34 +1113,32 @@ visualization_msgs::Marker ObjectFactory::visualizeRefresh(const std::string ns,
 }
 
 cv::Mat ObjectFactory::decodeRealsenseCompressedDepth(const sensor_msgs::CompressedImage &msg) {
-    // 1. 校验格式 (通常是 "16UC1; compressedDepth")
-    // 虽然不是必须，但用于调试是个好习惯
-    // ROS compressedDepth 的标准头部长度是 12 字节
-    const size_t header_size = 12;
+    // 根据 format 字段判断是否跳 12B 头：
+    //   - "compressedDepth"（如 /compressedDepth 话题）：12B 头 + PNG
+    //   - "compressed"（如 /compressed 话题）：纯 PNG，无 12B 头
+    // 与 predict_realtime_cam_real.py 的 if 'compressedDepth' in compress_fmt 对齐，
+    // 避免把纯 PNG 的前 12 字节切掉导致解码失败。
+    const std::string& fmt = msg.format;
+    bool has_12b_header = fmt.find("compressedDepth") != std::string::npos;
+    const size_t header_size = has_12b_header ? 12 : 0;
 
     if (msg.data.size() <= header_size) {
-        ROS_ERROR("Compressed depth data is too short!");
+        ROS_ERROR("Compressed depth data is too short! (size=%zu, fmt=%s)",
+                  msg.data.size(), fmt.c_str());
         return cv::Mat();
     }
 
-    // 2. 解析头部参数 (如果你需要处理非 PNG 压缩的深度，比如有损压缩，需要用到这些)
-    // 头部结构: [0-3: config/enum], [4-7: depth_max], [8-11: depth_quantization]
-    // 这里的解析是为了展示完整的协议，如果只是解压 PNG，这部分其实可以跳过
-    float depth_quant_a, depth_quant_b;
-    memcpy(&depth_quant_a, &msg.data[4], sizeof(float));
-    memcpy(&depth_quant_b, &msg.data[8], sizeof(float));
-
-    // 3. 核心步骤：跳过 12 字节头部，提取纯图像数据
-    // 我们构建一个指向 raw data + 12 的数据引用
+    // 跳过头部（若 format 是 compressedDepth 则跳 12B，否则不跳），提取纯图像数据
     const std::vector<uint8_t> imageData(msg.data.begin() + header_size, msg.data.end());
 
-    // 4. 使用 OpenCV 解码
+    // 使用 OpenCV 解码
     // 关键 flag: cv::IMREAD_UNCHANGED (或 -1)。
     // 只有这个 flag 才能保证解码出 16位 (CV_16U) 的原始深度，否则会被转成 8位 BGR。
     cv::Mat decoded_img = cv::imdecode(imageData, cv::IMREAD_UNCHANGED);
 
     if (decoded_img.empty()) {
-        ROS_ERROR("Failed to decode compressed depth image");
+        ROS_ERROR("Failed to decode compressed depth image (fmt=%s, size=%zu)",
+                  fmt.c_str(), msg.data.size());
         return cv::Mat();
     }
     return decoded_img;

@@ -1,6 +1,7 @@
 #ifndef TOPIC_BROADCASTER_BROADCASTER_NODE_H
 #define TOPIC_BROADCASTER_BROADCASTER_NODE_H
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -107,7 +108,11 @@ private:
     SyncPackCfg sync_pack_;            // 同步打包配置
     ros::Time sync_pack_last_sent_;    // 组合帧节流：上次发送时间
     uint64_t sync_pack_seq_ = 0;       // 组合帧独立递增的帧序号
-    std::string latest_odom_json_;     // 最近 odom 的 JSON（odom_mutex_ 保护）
+    // 最近 odom 的 7 个 double 大端字节（x,y,z,qx,qy,qz,qw），odom_mutex_ 保护。
+    // 改为定长 56 字节直传，省掉上行 JSON 序列化与 Python 端 json.loads 解析。
+    static constexpr size_t kOdomBytes = 56;
+    std::array<uint8_t, kOdomBytes> latest_odom_bytes_{};
+    bool latest_odom_valid_ = false;  // odom 是否已到达（避免全零字节被误用）
     ros::Time latest_odom_stamp_;      // 最近 odom 的接收时间戳（odom_mutex_ 保护）
     std::mutex odom_mutex_;            // 保护 latest_odom_* 的互斥锁
     // message_filters 同步订阅（rgb+depth，近似时间同步）
