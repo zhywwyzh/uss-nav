@@ -257,7 +257,7 @@ class YoloRealTcpService:
                  resize_width=640, imgsz_h=480, imgsz_w=640,
                  conf=0.4, time_slop=0.005, odom_sync_slop=0.005,
                  visualize=False, visualize_scale=0.5,
-                 device="cuda:0", debug=False):
+                 vis_b64=False, device="cuda:0", debug=False):
         # ---- 网络与推理参数 ----
         self.host = host
         self.port = port
@@ -270,6 +270,7 @@ class YoloRealTcpService:
         self.device = device
         self.visualize = visualize          # 是否显示可视化窗口
         self.visualize_scale = visualize_scale  # 可视化缩放比例
+        self.vis_b64 = vis_b64              # 是否生成并回传 vis_b64 检测展示图(默认关)
         self.debug = debug
 
         # ---- 模型路径与开关（默认值与 ROS 实机版一致） ----
@@ -291,12 +292,31 @@ class YoloRealTcpService:
         # ---- 最近一帧的 rgb / depth 缓存 ----
         self._latest_rgb = None    # {"stamp", "bgr", "payload"}
         self._latest_depth = None  # {"stamp", "array", "payload"}
+        self._latest_odom_arr = None  # 非组合帧路径：最近一次插值得到的 odom
 
         # ---- 并发控制 ----
-        self._infer_lock = threading.Lock()   # 保证同一时刻只有一个推理线程
+        # 异步流水线：收帧线程 -> infer_queue -> _infer_worker（推理）
+        #                                  -> postprocess_queue -> _postprocess_worker
+        # _infer_lock 仅覆盖 model.predict 本身，释放后下一帧可立即进入推理，
+        # 后处理（mask base64 / CLIP / JSON / _send_result）在独立线程异步完成。
+        self._infer_lock = threading.Lock()   # 仅覆盖 model.predict 本身
         self._send_lock = threading.Lock()    # 下行发送加锁，防止多线程交错写 socket
         self._result_seq = 0                  # 下行 EncodeMask 帧的 seq（独立自增）
         self._conn = None                     # 当前连接句柄（单连接模式）
+
+        # 流水线队列与同步原语
+        self._queue_max = 4                    # infer/postprocess 队列容量
+        self._infer_queue = []                 # 推理任务队列（收帧线程 -> 推理线程）
+        self._postprocess_queue = []           # 后处理任务队列（推理线程 -> 后处理线程）
+        self._queue_lock = threading.Lock()    # 保护两个队列
+        self._queue_cond = threading.Condition(self._queue_lock)  # 通知等待方
+        self._stopping = False                 # 优雅停机标志（暂未使用）
+
+        # 启动 daemon 工作线程（推理与后处理异步流水线）
+        threading.Thread(target=self._infer_worker, daemon=True,
+                         name="yoloe-infer-worker").start()
+        threading.Thread(target=self._postprocess_worker, daemon=True,
+                         name="yoloe-postprocess-worker").start()
 
         # 模型加载：失败则打印清晰错误并退出（无模型时服务无意义）
         try:
@@ -444,55 +464,42 @@ class YoloRealTcpService:
         topic_id = frame["topic_id"]
 
         if topic_id == TOPIC_PACKED:
-            # 组合帧：rgb/depth/odom 已由广播器同步打包，直接解包并触发推理
+            # 组合帧：rgb/depth/odom 已由广播器同步打包。主路径只解析 rgb，
+            # depth/odom 字段保留 memoryview 零拷贝引用，推迟到后处理线程解析，
+            # 避免主收帧路径被 PNG 解码、float 解包占用 GIL。
             # payload 布局（全部大端）：u32 rgb_len + rgb(jpeg) + u32 depth_len
-            # + depth(png) + u32 odom_len + odom_json(UTF-8)
+            # + depth(png) + 56B odom_7floats（7 个 double，无长度前缀）
             try:
-                off = 0
-                rgb_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
-                rgb_bytes = frame["payload"][off:off+rgb_len]; off += rgb_len
-                depth_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
-                depth_bytes = frame["payload"][off:off+depth_len]; off += depth_len
-                odom_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
-                odom_json_bytes = frame["payload"][off:off+odom_len]
+                mv = memoryview(frame["payload"])           # zero-copy 视图
+                rgb_len = struct.unpack_from(">I", mv, 0)[0]
+                rgb_mv = mv[4:4+rgb_len]                    # zero-copy 切片
+                # depth/odom 的长度与位置在后处理线程按需解出，这里只记录整段
+                tail_mv = mv[4+rgb_len:]
             except (struct.error, IndexError) as e:
-                # 长度字段越界 / 数据不完整属协议解析边界，必须捕获
                 print(f"[YoloRealTcpService][debug] 组合帧解析失败: {e}")
                 return
-            # rgb 解码（jpeg 压缩字节 -> BGR 图）
-            bgr = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
+            # rgb 解码（jpeg 压缩字节 -> BGR 图）：np.frombuffer 不拷贝，cv2.imdecode 返回新 ndarray
+            _t_dec = time.perf_counter()
+            bgr = cv2.imdecode(np.frombuffer(rgb_mv, np.uint8), cv2.IMREAD_COLOR)
+            rgb_decode_ms = (time.perf_counter() - _t_dec) * 1e3
             if bgr is None:
                 print("[YoloRealTcpService] rgb jpeg 解码失败，丢弃该帧")
                 return
-            # depth 解码（与独立 depth 帧一致：兼容 compressedDepth 12 字节配置头）
-            depth_payload = depth_bytes
-            if len(depth_payload) > 12 and depth_payload[:12] == COMPRESSED_DEPTH_HEADER:
-                if self.debug:
-                    print("[YoloRealTcpService][debug] 组合帧 depth 检测到 compressedDepth 12 字节头，跳过")
-                depth_payload = depth_payload[12:]
-            depth = cv2.imdecode(np.frombuffer(depth_payload, np.uint8), cv2.IMREAD_UNCHANGED)
-            if depth is None:
-                print("[YoloRealTcpService] depth png 解码失败，丢弃该帧")
-                return
-            # odom 解析（UTF-8 JSON，字段缺省时回退默认值）
-            try:
-                odom = json.loads(odom_json_bytes.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError) as e:
-                print(f"[YoloRealTcpService] odom JSON 解析失败，丢弃该帧: {e}")
-                return
-            odom_arr = [float(odom.get(k, 0.0)) for k in ("x", "y", "z", "qx", "qy", "qz", "qw")]
-            odom_arr[6] = float(odom.get("qw", 1.0))  # qw 默认 1.0
-            # 更新 rgb / depth 缓存并直接触发推理（组合帧已同步好，无需再同步）
             stamp = frame["stamp"]
-            self._latest_rgb = {"stamp": stamp, "bgr": bgr, "payload": rgb_bytes}
-            self._latest_depth = {"stamp": stamp, "array": depth, "payload": depth_bytes}
-            # 组合帧内 odom 为广播器取到的同步值，直接用帧内值，不走 odom_buffer 插值
-            self._trigger_infer_packed(conn, odom_arr)
+            # print(f"[Timing][real][frame={stamp:.3f}] 图像读取: rgb_decode={rgb_decode_ms:.2f}ms")
+            # 更新 rgb / depth 缓存：缓存 BGR 与整段 tail_mv（含 depth+odom 长度字段与字节）
+            # 后处理线程通过 _decode_tail 一次性解出 depth_bytes / odom_json_bytes
+            self._latest_rgb = {"stamp": stamp, "bgr": bgr, "payload": rgb_mv}
+            self._latest_depth = {"stamp": stamp, "array": None, "payload": tail_mv, "packed": True}
+            # 组合帧内 odom 已同步，直接推入推理队列；odom 解析在后处理线程完成
+            self._enqueue_infer(conn, packed=True)
             return
 
         if topic_id == TOPIC_RGB:
             # rgb：jpeg 压缩字节 -> cv2.imdecode 得到 BGR 图
+            _t_dec = time.perf_counter()
             bgr = cv2.imdecode(np.frombuffer(frame["payload"], np.uint8), cv2.IMREAD_COLOR)
+            rgb_decode_ms = (time.perf_counter() - _t_dec) * 1e3
             if bgr is None:
                 print("[YoloRealTcpService] rgb jpeg 解码失败，丢弃该帧")
                 return
@@ -501,6 +508,7 @@ class YoloRealTcpService:
                 "bgr": bgr,
                 "payload": frame["payload"],   # 保留原始压缩字节用于回发
             }
+            # print(f"[Timing][real][frame={frame['stamp']:.3f}] 图像读取: rgb_decode={rgb_decode_ms:.2f}ms")
             # rgb 是触发帧：收到后尝试一次推理
             self._try_infer(conn)
 
@@ -513,7 +521,9 @@ class YoloRealTcpService:
                 if self.debug:
                     print("[YoloRealTcpService][debug] 检测到 compressedDepth 12 字节头，跳过")
                 depth_payload = depth_payload[12:]
+            _t_dec = time.perf_counter()
             depth = cv2.imdecode(np.frombuffer(depth_payload, np.uint8), cv2.IMREAD_UNCHANGED)
+            depth_decode_ms = (time.perf_counter() - _t_dec) * 1e3
             if depth is None:
                 print("[YoloRealTcpService] depth png 解码失败，丢弃该帧")
                 return
@@ -522,6 +532,7 @@ class YoloRealTcpService:
                 "array": depth,
                 "payload": frame["payload"],   # 保留原始压缩字节（含头部）用于回发
             }
+            # print(f"[Timing][real][frame={frame['stamp']:.3f}] 图像读取: depth_decode={depth_decode_ms:.2f}ms")
 
         elif topic_id == TOPIC_ODOM:
             # odom：UTF-8 JSON {"x":..,"y":..,"z":..,"qx":..,"qy":..,"qz":..,"qw":..}
@@ -542,229 +553,330 @@ class YoloRealTcpService:
             print(f"[YoloRealTcpService] 未知 topic_id={topic_id}，丢弃该帧")
 
     # ------------------------------------------------------------------ #
-    # 推理触发与执行
+    # 推理触发与执行（异步流水线：收帧线程 -> infer_queue -> 推理线程
+    #                                          -> postprocess_queue -> 后处理线程）
     # ------------------------------------------------------------------ #
-    def _trigger_infer_packed(self, conn, odom_arr):
-        """组合帧触发：rgb/depth/odom 已由广播器同步打包（stamp 相同），
-        直接使用帧内 odom，跳过 RGB-D 同步校验与 odom_buffer 插值。
+    def _enqueue_infer(self, conn, packed=False):
+        """收帧线程调用：将当前 rgb/depth 快照推入推理队列。
 
-        与 _try_infer 的区别：不校验时间同步（组合帧必然满足）、不插值 odom
-        （直接用广播器同步好的值）；其余（推理锁、异步线程、回发）完全一致。
+        - packed=True：组合帧路径，rgb/depth/odom 已同步打包，odom 由后处理
+          线程从 tail_mv 解出，这里只传 conn 与上下文。
+        - packed=False：非组合帧路径，由调用方先完成 RGB-D 同步 + odom 插值，
+          odom_arr 通过 _latest_rgb/depth 之外的缓存传入；本路径在 _try_infer
+          里完成同步后调用本函数。
         """
-        # 同一时刻只允许一个推理线程：上一帧推理未结束时跳过当前触发帧
-        if not self._infer_lock.acquire(blocking=False):
-            if self.debug:
-                print("[YoloRealTcpService][debug] 上一帧推理仍在进行，跳过当前组合帧")
-            return
-
         rgb = self._latest_rgb
         depth = self._latest_depth
-        # 异步推理：避免阻塞收帧循环（daemon 线程）
-        threading.Thread(target=self._run_infer, args=(conn, rgb, depth, odom_arr), daemon=True).start()
-
-    def _try_infer(self, conn):
-        """rgb 触发帧处理：RGB-D 同步 + odom 插值后，异步启动推理线程。"""
-        if self._latest_rgb is None or self._latest_depth is None:
-            # rgb / depth 尚未齐备，等待后续帧
+        if rgb is None or depth is None:
             return
 
+        if packed:
+            # 组合帧：odom 待后处理线程从 tail_mv 解出；此处不阻塞
+            item = {"conn": conn, "stamp": rgb["stamp"], "rgb_bgr": rgb["bgr"],
+                    "rgb_mv": rgb["payload"], "depth_mv": depth["payload"],
+                    "depth_array": None, "odom_arr": None, "packed": True}
+        else:
+            # 非组合帧路径：调用方已完成同步与插值，odom_arr 在 _latest_odom_arr
+            item = {"conn": conn, "stamp": rgb["stamp"], "rgb_bgr": rgb["bgr"],
+                    "rgb_mv": rgb["payload"], "depth_mv": depth["payload"],
+                    "depth_array": depth["array"], "odom_arr": self._latest_odom_arr,
+                    "packed": False}
+        # 推入有界队列：队满丢最旧帧，保证最新帧优先
+        self._push_queue(self._infer_queue, item, "infer")
+
+    def _try_infer(self, conn):
+        """rgb 触发帧处理：RGB-D 同步 + odom 插值后，推入推理队列。"""
+        if self._latest_rgb is None or self._latest_depth is None:
+            return
         rgb_stamp = self._latest_rgb["stamp"]
-        # RGB-D 时间同步校验：depth 与 rgb 的 stamp 差需在 time_slop 内
         if abs(self._latest_depth["stamp"] - rgb_stamp) > self.time_slop:
             if self.debug:
                 print(f"[YoloRealTcpService][debug] 等待 RGB-D 同步: "
                       f"rgb={rgb_stamp:.3f} depth={self._latest_depth['stamp']:.3f}")
             return
-
-        # 以 rgb 时间戳为基准，从缓冲中插值取同步 odom；
-        # 缓冲不足或超出容差则跳过该帧（保证数据质量）
         odom = self.odom_buffer.get_interpolated(rgb_stamp)
         if odom is None:
             if self.debug:
                 print(f"[YoloRealTcpService][debug] Odom 插值失败 for time {rgb_stamp:.3f}，"
                       f"缓冲不足或 laggy，跳过该帧")
             return
+        self._latest_odom_arr = odom
+        self._enqueue_infer(conn, packed=False)
 
-        # 同一时刻只允许一个推理线程：上一帧推理未结束时跳过当前触发帧
-        if not self._infer_lock.acquire(blocking=False):
-            if self.debug:
-                print("[YoloRealTcpService][debug] 上一帧推理仍在进行，跳过当前触发帧")
-            return
+    def _push_queue(self, queue, item, name):
+        """有界队列推入：队满时丢最旧帧并打印 debug（保证最新帧优先）。"""
+        with self._queue_lock:
+            if len(queue) >= self._queue_max:
+                queue.pop(0)
+                if self.debug:
+                    print(f"[YoloRealTcpService][debug] {name}_queue 满，丢最旧帧")
+            queue.append(item)
+            self._queue_cond.notify()
 
-        rgb = self._latest_rgb
-        depth = self._latest_depth
-        # 异步推理：避免阻塞收帧循环（daemon 线程）
-        threading.Thread(target=self._run_infer, args=(conn, rgb, depth, odom), daemon=True).start()
+    def _decode_tail(self, tail_mv):
+        """从组合帧的 tail（depth_len + depth + 56B odom_7floats）一次解出
+        depth_bytes 与 odom_arr。仅在后处理线程调用，避免占用主收帧路径 GIL。
 
-    def _run_infer(self, conn, rgb, depth, odom):
-        """推理线程入口：执行推理并在有结果时回发，最后释放推理锁。"""
-        try:
-            result = self._infer(rgb["bgr"], depth["array"], odom, rgb["stamp"],
-                                 rgb["payload"], depth["payload"])
-            if result is not None:
-                self._send_result(conn, result)
-        except Exception as e:
-            # 推理线程内的兜底异常打印，避免线程静默死亡
-            print(f"[YoloRealTcpService] 推理线程异常: {e}")
-        finally:
-            self._infer_lock.release()
+        广播器侧 odom 改为定长 56 字节（7 个 double 大端），省掉 odom_len 字段
+        和 JSON 解析，Python 端用 struct.unpack(">7d", ...) 一次解包。
 
-    def _infer(self, rgb_bgr, depth, odom, stamp, rgb_bytes, depth_bytes):
-        """核心推理（逻辑照搬 ROS 实机版 processing_loop 的推理部分）。
-
-        参数:
-            rgb_bgr: BGR 图像（由 jpeg 解码得到）
-            depth  : 深度图数组（用于可视化；uint16 时先做距离截断再归一化）
-            odom   : [x, y, z, qx, qy, qz, qw]（已按 rgb 时间戳插值）
-            stamp  : rgb 帧的时间戳（作为结果基准时间戳）
-            rgb_bytes / depth_bytes: 收到的原始压缩字节，base64 后回发给广播器
-        返回:
-            结果 dict；若模型无检测结果返回 None（不回发）
+        返回: (depth_bytes, odom_arr) 或 (None, None)（解析失败）
         """
-        # 1. BGR -> RGB（与原实现一致），并缩放至指定宽度保持宽高比
-        cv_rgb = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2RGB)
-        h, w, _ = cv_rgb.shape
-        if w != self.resize_width:
-            cv_rgb_resized = cv2.resize(cv_rgb, (self.resize_width, int(h * self.resize_width / w)))
-        else:
-            cv_rgb_resized = cv_rgb
-
-        # 2. YOLO 推理（固定 imgsz，与导出的 engine 一致）
-        t1 = time.perf_counter()
-        with torch.no_grad():
-            results = self.model.predict(
-                cv_rgb_resized, conf=self.conf, imgsz=(self.imgsz_h, self.imgsz_w),
-                device=self.device, verbose=False, save=False
-            )
-        if self.debug:
-            print(f"[YoloRealTcpService][debug] YOLO time: {((time.perf_counter() - t1) * 1e3):.2f}ms")
-        if not results or len(results) == 0:
-            return None
-        result = results[0]
-
-        # 3. 可视化（可选）：YOLO plot + rgb + 深度伪彩色三图拼接
-        if self.visualize:
-            try:
-                yolo_plot_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-                vis_yolo = cv2.cvtColor(yolo_plot_img, cv2.COLOR_RGB2BGR)
-                vis_rgb = cv2.cvtColor(cv_rgb, cv2.COLOR_RGB2BGR)
-                vis_depth_temp = depth.copy()
-                vis_depth_temp[vis_depth_temp > 10000] = 10000   # 距离截断
-                vis_depth_norm = cv2.normalize(vis_depth_temp, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-                vis_depth = cv2.applyColorMap(vis_depth_norm, cv2.COLORMAP_JET)
-
-                target_h, target_w = vis_yolo.shape[:2]
-                if vis_rgb.shape[:2] != (target_h, target_w):
-                    vis_rgb = cv2.resize(vis_rgb, (target_w, target_h))
-                if vis_depth.shape[:2] != (target_h, target_w):
-                    vis_depth = cv2.resize(vis_depth, (target_w, target_h))
-
-                combined_img = np.hstack((vis_yolo, vis_rgb, vis_depth))
-                if self.visualize_scale != 1.0:
-                    new_w = int(combined_img.shape[1] * self.visualize_scale)
-                    new_h = int(combined_img.shape[0] * self.visualize_scale)
-                    combined_img = cv2.resize(combined_img, (new_w, new_h))
-                cv2.imshow("YOLO Real-Time Detection", combined_img)
-                cv2.waitKey(1)
-            except Exception as e:
-                print(f"[YoloRealTcpService] 可视化异常: {e}")
-
-        # 4. 提取标签 / 置信度
-        objects = []
-        labels = []
-        if hasattr(result, 'boxes') and result.boxes is not None:
-            class_ids = result.boxes.cls.cpu().numpy().astype(int)
-            confidences = result.boxes.conf.cpu().numpy()
-            class_names = [result.names[cls_id] for cls_id in class_ids] if \
-                hasattr(result, 'names') else [f"class_{cls_id}" for cls_id in class_ids]
-            labels = list(class_names)
-            for cls_name, cls_conf in zip(class_names, confidences):
-                objects.append({
-                    "label": str(cls_name),
-                    "conf": float(cls_conf),
-                    "mask_b64": None,
-                    "word_vector": None,
-                })
-
-        # 模型无任何检测结果：返回 None，不回发
-        if len(labels) == 0:
-            return None
-
-        # 5. 掩码提取：masks.data -> 二值图 -> PNG 压缩
-        #    （与原实现一致：binary_mask=(m*255).astype(uint8)，PNG 压缩级别 0）
-        if hasattr(result, 'masks') and result.masks is not None:
-            mask_arrays = result.masks.data.cpu().numpy()
-            for i in range(len(mask_arrays)):
-                single_mask = mask_arrays[i]
-                binary_mask = (single_mask * 255).astype(np.uint8)
-                try:
-                    ok, buf = cv2.imencode(".png", binary_mask,
-                                           [cv2.IMWRITE_PNG_COMPRESSION, 0])
-                    if ok:
-                        objects[i]["mask_b64"] = base64.b64encode(buf.tobytes()).decode("utf-8")
-                    else:
-                        print(f"[YoloRealTcpService] 掩码 {i} PNG 编码失败")
-                except Exception as e:
-                    # 个别掩码转换失败不应中断整帧处理
-                    print(f"[YoloRealTcpService] 掩码 {i} 编码异常: {e}")
-
-        # 6. MobileCLIP 文本编码（带 label 缓存，只对未见过的词编码）
-        if self.use_clip:
-            try:
-                unknown_words = list(set([label for label in labels if label not in self.clip_cache]))
-                if len(unknown_words) > 0:
-                    text_input = self.clip_tokenizer(unknown_words).to(self.device)
-                    with torch.no_grad():
-                        new_features = self.clip_model.encode_text(text_input)
-                        new_features /= new_features.norm(dim=-1, keepdim=True)
-                        new_features = new_features.cpu().numpy()
-                    for idx, word in enumerate(unknown_words):
-                        self.clip_cache[word] = new_features[idx]
-                for i, label in enumerate(labels):
-                    if label in self.clip_cache:
-                        objects[i]["word_vector"] = self.clip_cache[label].astype(np.float64).tolist()
-            except Exception as e:
-                print(f"[YoloRealTcpService] CLIP 编码异常: {e}")
-
-        # 7. 检测展示图：yolo plot（检测框+掩码+置信度+标签），RGB->BGR 后 JPEG 编码
-        #    生成失败不影响主结果：仅打印日志并省略该字段
-        #    （与上方 self.visualize 的本地三图拼接互不影响，该字段始终随结果回发）
-        vis_b64 = ""
         try:
-            vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
-            ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            if ok:
-                vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")
-        except Exception as e:
-            print(f"[YoloRealTcpService] 检测展示图生成失败: {e}")
+            depth_len = struct.unpack_from(">I", tail_mv, 0)[0]
+            depth_bytes = bytes(tail_mv[4:4+depth_len])
+            off = 4 + depth_len
+            # odom：56 字节定长（7 个 double 大端），与 C++ 侧 kOdomBytes 对齐
+            odom_arr = list(struct.unpack_from(">7d", tail_mv, off))
+            return depth_bytes, odom_arr
+        except (struct.error, IndexError) as e:
+            print(f"[YoloRealTcpService] 组合帧 tail 解析失败: {e}")
+            return None, None
 
-        # 8. 组装回发 JSON（rgb/depth 使用收到的原始压缩字节，不重编码）
-        result_dict = {
-            "stamp": stamp,
-            "odom": [float(v) for v in odom],
-            "rgb_b64": base64.b64encode(rgb_bytes).decode("utf-8"),
-            "depth_b64": base64.b64encode(depth_bytes).decode("utf-8"),
-            "objects": objects,
-            "vis_b64": vis_b64,
-        }
-        return result_dict
+    def _infer_worker(self):
+        """推理线程：从 infer_queue 取帧 -> model.predict -> 提取 boxes/masks
+        的 CPU numpy -> 推入 postprocess_queue。_infer_lock 仅覆盖推理本身，
+        model.predict 返回后立即释放，下一帧可马上进入推理。
+        """
+        while True:
+            item = self._pop_queue(self._infer_queue)
+            if item is None:
+                continue
+            try:
+                t1 = time.perf_counter()
+                with self._infer_lock, torch.no_grad():
+                    results = self.model.predict(
+                        item["rgb_bgr"], conf=self.conf,
+                        imgsz=(self.imgsz_h, self.imgsz_w),
+                        device=self.device, verbose=False, save=False
+                    )
+                predict_ms = (time.perf_counter() - t1) * 1e3
+                # ultralytics 内部耗时拆分（preprocess/inference/postprocess，单位 ms）
+                speed = {}
+                if results and hasattr(results[0], "speed") and results[0].speed:
+                    speed = results[0].speed
+                if self.debug:
+                    print(f"[YoloRealTcpService][debug] YOLO time: {predict_ms:.2f}ms")
+                if not results or len(results) == 0:
+                    continue
+                result = results[0]
+                # 预提取 boxes/masks 到 CPU numpy，避免后处理线程访问 CUDA tensor
+                _t_ext = time.perf_counter()
+                boxes_cls = result.boxes.cls.cpu().numpy().astype(int) \
+                    if hasattr(result, 'boxes') and result.boxes is not None else None
+                boxes_conf = result.boxes.conf.cpu().numpy() \
+                    if hasattr(result, 'boxes') and result.boxes is not None else None
+                masks_np = result.masks.data.cpu().numpy() \
+                    if hasattr(result, 'masks') and result.masks is not None else None
+                extract_ms = (time.perf_counter() - _t_ext) * 1e3
+                pre_ms = float(speed.get("preprocess") or 0)
+                inf_ms = float(speed.get("inference") or 0)
+                nms_ms = float(speed.get("postprocess") or 0)
+                # print(f"[Timing][real][frame={item['stamp']:.3f}] 模型推理: predict={predict_ms:.2f}ms "
+                #       f"(内部预处理={pre_ms:.2f}ms 内部推理={inf_ms:.2f}ms 内部NMS后处理={nms_ms:.2f}ms) "
+                #       f"结果提取={extract_ms:.2f}ms")
+                # 组装 postprocess 上下文
+                pp_item = {
+                    "conn": item["conn"], "stamp": item["stamp"],
+                    "rgb_mv": item["rgb_mv"], "depth_mv": item["depth_mv"],
+                    "depth_array": item["depth_array"], "odom_arr": item["odom_arr"],
+                    "packed": item["packed"], "result": result,
+                    "boxes_cls": boxes_cls, "boxes_conf": boxes_conf,
+                    "masks_np": masks_np, "names": result.names if hasattr(result, 'names') else {},
+                }
+                self._push_queue(self._postprocess_queue, pp_item, "postprocess")
+            except Exception as e:
+                print(f"[YoloRealTcpService] 推理线程异常: {e}")
 
-    def _send_result(self, conn, result_dict):
-        """将推理结果打包成下行帧（topic_id=100）发送给广播器。"""
-        payload = json.dumps(result_dict).encode("utf-8")
+    def _pop_queue(self, queue):
+        """阻塞等待队列有数据；被 notify 唤醒后取出并返回，None 表示被唤醒但空。"""
+        with self._queue_lock:
+            while not queue:
+                self._queue_cond.wait()
+                if self._stopping:
+                    return None
+            return queue.pop(0)
+
+    def _postprocess_worker(self):
+        """后处理线程：从 postprocess_queue 取推理结果 -> 可视化 / mask base64
+        / CLIP 编码 / depth+odom tail 解析 / JSON 组装 -> _send_result。
+        所有 CPU 密集与 base64/json 操作在此线程完成，不阻塞推理线程。
+        """
+        while True:
+            item = self._pop_queue(self._postprocess_queue)
+            if item is None:
+                continue
+            try:
+                _t_pp = time.perf_counter()
+                result = item["result"]
+                boxes_cls = item["boxes_cls"]
+                boxes_conf = item["boxes_conf"]
+                masks_np = item["masks_np"]
+                names = item["names"]
+                # depth_bytes / odom_arr 解析
+                if item["packed"]:
+                    depth_bytes, odom_arr = self._decode_tail(item["depth_mv"])
+                    if odom_arr is None:
+                        continue
+                    depth_array = None
+                    if self.visualize:
+                        depth_array = self._decode_depth_png(depth_bytes)
+                else:
+                    # 非组合帧：depth_mv 是原始 frame["payload"]，odom_arr 已传
+                    depth_bytes = bytes(item["depth_mv"])
+                    odom_arr = item["odom_arr"]
+                    depth_array = item["depth_array"]
+                rgb_bytes = bytes(item["rgb_mv"])
+
+                # 可视化（可选）：YOLO plot + rgb + 深度伪彩色三图拼接
+                if self.visualize:
+                    try:
+                        yolo_plot_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
+                        vis_yolo = cv2.cvtColor(yolo_plot_img, cv2.COLOR_RGB2BGR)
+                        # 推理队列项没带原始 bgr，这里用 rgb_bytes 重解码一次用于可视化
+                        vis_rgb = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
+                        vis_depth = None
+                        if depth_array is not None:
+                            vis_depth_temp = depth_array.copy()
+                            vis_depth_temp[vis_depth_temp > 10000] = 10000
+                            vis_depth_norm = cv2.normalize(vis_depth_temp, None, 0, 255,
+                                                           cv2.NORM_MINMAX).astype(np.uint8)
+                            vis_depth = cv2.applyColorMap(vis_depth_norm, cv2.COLORMAP_JET)
+                        target_h, target_w = vis_yolo.shape[:2]
+                        if vis_rgb.shape[:2] != (target_h, target_w):
+                            vis_rgb = cv2.resize(vis_rgb, (target_w, target_h))
+                        if vis_depth is not None and vis_depth.shape[:2] != (target_h, target_w):
+                            vis_depth = cv2.resize(vis_depth, (target_w, target_h))
+                        combined_img = np.hstack((vis_yolo, vis_rgb, vis_depth)) \
+                            if vis_depth is not None else np.hstack((vis_yolo, vis_rgb))
+                        if self.visualize_scale != 1.0:
+                            new_w = int(combined_img.shape[1] * self.visualize_scale)
+                            new_h = int(combined_img.shape[0] * self.visualize_scale)
+                            combined_img = cv2.resize(combined_img, (new_w, new_h))
+                        cv2.imshow("YOLO Real-Time Detection", combined_img)
+                        cv2.waitKey(1)
+                    except Exception as e:
+                        print(f"[YoloRealTcpService] 可视化异常: {e}")
+
+                # 提取标签 / 置信度
+                objects = []
+                labels = []
+                if boxes_cls is not None:
+                    class_names = [names.get(cls_id, f"class_{cls_id}") for cls_id in boxes_cls]
+                    labels = list(class_names)
+                    for cls_name, cls_conf in zip(class_names, boxes_conf):
+                        objects.append({
+                            "label": str(cls_name), "conf": float(cls_conf),
+                            "mask_b64": None, "word_vector": None,
+                        })
+
+                if len(labels) == 0:
+                    postprocess_ms = (time.perf_counter() - _t_pp) * 1e3
+                    # print(f"[Timing][real][frame={item['stamp']:.3f}] 后处理: {postprocess_ms:.2f}ms (无检测)")
+                    continue
+
+                # 掩码提取：masks_np -> 二值图 -> PNG 压缩 -> base64
+                # PNG 对二值图压缩率极高（307200B -> 通常 1-5KB），
+                # 后处理时间从 60-70ms 降到 5-10ms，下行 payload 同步大幅缩小。
+                # C++ 端 encodemask_codec 把 mask.format 写为 "png"，
+                # object_factory 走 cv_bridge PNG 解码分支还原为 480x640 单通道 Mat。
+                if masks_np is not None:
+                    for i in range(len(masks_np)):
+                        single_mask = masks_np[i]
+                        binary_mask = (single_mask * 255).astype(np.uint8)
+                        ok_png, png_buf = cv2.imencode(".png", binary_mask)
+                        if ok_png:
+                            objects[i]["mask_b64"] = base64.b64encode(png_buf.tobytes()).decode("utf-8")
+                        else:
+                            objects[i]["mask_b64"] = ""
+
+                # MobileCLIP 文本编码（带 label 缓存）
+                if self.use_clip:
+                    try:
+                        unknown_words = list(set([l for l in labels if l not in self.clip_cache]))
+                        if unknown_words:
+                            text_input = self.clip_tokenizer(unknown_words).to(self.device)
+                            with torch.no_grad():
+                                new_features = self.clip_model.encode_text(text_input)
+                                new_features /= new_features.norm(dim=-1, keepdim=True)
+                                new_features = new_features.cpu().numpy()
+                            for idx, word in enumerate(unknown_words):
+                                self.clip_cache[word] = new_features[idx]
+                        for i, label in enumerate(labels):
+                            if label in self.clip_cache:
+                                objects[i]["word_vector"] = \
+                                    self.clip_cache[label].astype(np.float64).tolist()
+                    except Exception as e:
+                        print(f"[YoloRealTcpService] CLIP 编码异常: {e}")
+
+                # 检测展示图 vis_b64（可选）
+                vis_b64 = ""
+                if self.vis_b64:
+                    try:
+                        vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
+                        vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
+                        ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                        if ok:
+                            vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")
+                    except Exception as e:
+                        print(f"[YoloRealTcpService] 检测展示图生成失败: {e}")
+
+                # 组装回发 payload（二进制头部 + objects JSON）：
+                # 与原 JSON+base64 方案相比，rgb/depth/odom 不再做 base64 编码，
+                # C++ 侧也不再 base64 解码，省掉两次大块字节级循环。
+                # payload 布局（全部大端）：
+                #   8B stamp_double + u32 rgb_len + rgb_bytes +
+                #   u32 depth_len + depth_bytes + 56B odom_7floats +
+                #   u32 objects_json_len + objects_json_bytes
+                # objects_json 内含 objects 数组与 vis_b64，仍走 JSON（数据量小，
+                # 且 mask 必须在 Python 端 base64 编码，无法挪到 C++）。
+                objects_json = json.dumps({
+                    "objects": objects,
+                    "vis_b64": vis_b64,
+                }).encode("utf-8")
+                odom_packed = struct.pack(">7d", *[float(v) for v in odom_arr])
+                payload = (
+                    struct.pack(">d", item["stamp"]) +
+                    struct.pack(">I", len(rgb_bytes)) + rgb_bytes +
+                    struct.pack(">I", len(depth_bytes)) + depth_bytes +
+                    odom_packed +
+                    struct.pack(">I", len(objects_json)) + objects_json
+                )
+                postprocess_ms = (time.perf_counter() - _t_pp) * 1e3
+                # print(f"[Timing][real][frame={item['stamp']:.3f}] 后处理: {postprocess_ms:.2f}ms")
+                self._send_result(item["conn"], payload)
+            except Exception as e:
+                print(f"[YoloRealTcpService] 后处理线程异常: {e}")
+
+    def _decode_depth_png(self, depth_bytes):
+        """从 depth 原始字节解码 PNG 为数组（仅可视化路径需要）。"""
+        depth_payload = depth_bytes
+        if len(depth_payload) > 12 and depth_payload[:12] == COMPRESSED_DEPTH_HEADER:
+            depth_payload = depth_payload[12:]
+        return cv2.imdecode(np.frombuffer(depth_payload, np.uint8), cv2.IMREAD_UNCHANGED)
+
+    def _send_result(self, conn, payload):
+        """将推理结果打包成下行帧（topic_id=100）发送给广播器。
+
+        payload 已是组装好的二进制（stamp + rgb + depth + odom + objects_json）。
+        stamp 从 payload 前 8 字节读出，用于帧头填充。
+        """
+        stamp = struct.unpack_from(">d", payload, 0)[0]
         self._result_seq += 1
         header = struct.pack(
             HEADER_STRUCT, MAGIC, VERSION, DIR_DOWN, TOPIC_RESULT,
-            self._result_seq, result_dict["stamp"], len(payload)
+            self._result_seq, stamp, len(payload)
         )
         # 发送加锁，防止多线程推理时帧交错
+        _t_send = time.perf_counter()
         with self._send_lock:
             try:
                 conn.sendall(header + payload)
             except OSError as e:
                 # socket 断开是必须处理的异常边界
                 print(f"[YoloRealTcpService] 发送结果失败: {e}")
+        send_ms = (time.perf_counter() - _t_send) * 1e3
+        # print(f"[Timing][real][frame={stamp:.3f}] 传回: {send_ms:.2f}ms (payload={len(payload)}B)")
 
 
 if __name__ == '__main__':
@@ -812,6 +924,10 @@ if __name__ == '__main__':
                         help="显示可视化窗口（默认关闭，可用 --no_visualize 关闭）")
     parser.add_argument("--no_visualize", action="store_false", dest="visualize",
                         help="关闭可视化")
+    parser.add_argument("--vis_b64", action="store_true", default=False,
+                        help="生成 vis_b64 检测展示图并随结果回传（默认关闭，省 CPU）")
+    parser.add_argument("--no_vis_b64", action="store_false", dest="vis_b64",
+                        help="关闭 vis_b64 生成（默认）")
     parser.add_argument("--visualize_scale", type=float, default=0.5,
                         help="可视化缩放比例（默认 0.5）")
     parser.add_argument("--debug", action="store_true", default=False,
@@ -837,6 +953,7 @@ if __name__ == '__main__':
         odom_sync_slop=args.odom_sync_slop,
         visualize=args.visualize,
         visualize_scale=args.visualize_scale,
+        vis_b64=args.vis_b64,
         debug=args.debug,
     )
     service.start()

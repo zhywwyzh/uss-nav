@@ -22,8 +22,22 @@ class EncodeMaskCodec {
 public:
     // 解码：把下行 JSON 字符串解析并填充 out（scene_graph::EncodeMask）。
     // 成功返回 true；JSON 非法或字段缺失时返回 false（不抛异常）。
+    // 注：此为旧 JSON+base64 协议的解码接口，保留用于兼容旧检测端。
     static bool decodeEncodeMaskJson(const std::string& json_str,
                                      scene_graph::EncodeMask& out);
+
+    // 解码：把下行二进制 payload（新协议：stamp+rgb+depth+odom+objects_json）
+    // 解析并填充 out（scene_graph::EncodeMask）。
+    // 新协议省掉 rgb/depth/odom 的 base64 编解码，Python 与 C++ 双方均不再
+    // 做大块字节级循环；仅 objects 数组与 vis_b64 走 JSON（数据量小）。
+    // payload 布局（全部大端）：
+    //   8B stamp + u32 rgb_len + rgb + u32 depth_len + depth +
+    //   56B odom_7floats + u32 objects_json_len + objects_json
+    // 解析成功返回 true；payload 长度不足或字段非法返回 false。
+    // vis_b64（若存在）通过 out_vis_b64 输出，由调用方决定是否发布展示图。
+    static bool decodeEncodeMaskBinary(const std::vector<uint8_t>& payload,
+                                       scene_graph::EncodeMask& out,
+                                       std::string& out_vis_b64);
 
     // 编码：把 EncodeMask 消息序列化为 JSON 字符串（预留接口，暂未使用）。
     static bool encodeEncodeMaskJson(const scene_graph::EncodeMask& in,

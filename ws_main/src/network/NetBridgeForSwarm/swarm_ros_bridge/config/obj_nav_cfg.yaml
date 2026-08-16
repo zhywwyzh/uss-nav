@@ -358,3 +358,31 @@ topics:
      - groundStation0
     prefix: false
     same_prefix: false
+
+  # - topic_name: /test/depth_pointcloud
+  #   msg_type: sensor_msgs/PointCloud2
+  #   cloudCompress: true
+  #   cloudDownsample: -1.0
+  #   cloudType: normal
+  #   srcIP:
+  #     - drone1
+  #   srcPort: 4022
+  #   max_freq: 3
+  #   dstIP:
+  #     - groundStation0
+  #   prefix: false
+  #   same_prefix: false
+
+  # - topic_name: /cloud_registered
+  #   msg_type: sensor_msgs/PointCloud2
+  #   cloudCompress: true
+  #   cloudDownsample: -1.0
+  #   cloudType: normal
+  #   srcIP:
+  #     - drone1
+  #   srcPort: 4023
+  #   max_freq: 3
+  #   dstIP:
+  #     - groundStation0
+  #   prefix: false
+  #   same_prefix: false

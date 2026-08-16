@@ -569,10 +569,26 @@ void BroadcasterNode::setupSyncPack(ros::NodeHandle& nh) {
 }
 
 void BroadcasterNode::onSyncOdom(const nav_msgs::OdometryConstPtr& msg) {
-    // 序列化并缓存最近 odom（组合帧在 buildSyncPackFrame 中取用）
-    std::string json_str = encodeOdomJson(msg);
+    // 将 odom 序列化为 7 个 double 大端字节缓存（组合帧在 buildSyncPackFrame 中取用）。
+    // 改为定长 56B 直传，省掉 JSON 序列化与 Python 端 json.loads 解析，
+    // 与 predict_realtime_cam_real_tcp.py 的 struct.unpack(">7d", ...) 对称。
+    const geometry_msgs::Pose& pose = msg->pose.pose;
+    const double vals[7] = {
+        pose.position.x, pose.position.y, pose.position.z,
+        pose.orientation.x, pose.orientation.y, pose.orientation.z,
+        pose.orientation.w
+    };
+    std::array<uint8_t, kOdomBytes> bytes{};
+    for (int i = 0; i < 7; ++i) {
+        uint64_t v;
+        std::memcpy(&v, &vals[i], sizeof(double));
+        for (int k = 0; k < 8; ++k) {
+            bytes[i * 8 + k] = static_cast<uint8_t>((v >> (56 - 8 * k)) & 0xFF);
+        }
+    }
     std::lock_guard<std::mutex> lock(odom_mutex_);
-    latest_odom_json_ = std::move(json_str);
+    latest_odom_bytes_ = bytes;
+    latest_odom_valid_ = true;
     latest_odom_stamp_ = msg->header.stamp;
 }
 
@@ -604,9 +620,44 @@ bool BroadcasterNode::buildSyncPackFrame(
     const sensor_msgs::CompressedImageConstPtr& rgb,
     const sensor_msgs::CompressedImageConstPtr& depth, double stamp,
     std::vector<uint8_t>& frame) {
-    // raw 版本：CompressedImage.data 已是 jpeg/png 字节，直接透传给公共组装函数
+    // raw 版本：CompressedImage.data 已是 jpeg/png 字节。
+    // 与 predict_realtime_cam_real.py 对齐：在打包前校验 depth 可解码，
+    // 过滤掉 RealSense 偶发产生的损坏帧，避免检测端原样回传给 object_factory
+    // 时触发 "Failed to decode compressed depth image"。
+    //
+    // 关键：depth->format 决定是否跳 12B 头：
+    //   - "compressedDepth"（如 /compressedDepth 话题）：12B 头 + PNG
+    //   - "compressed"（如 /compressed 话题）：纯 PNG，无 12B 头
+    // 若无条件跳 12B，会把纯 PNG 的前 12 字节切掉导致解码失败。
+    const auto& depth_data = depth->data;
+    const std::string& depth_fmt = depth->format;
+    bool has_12b_header = depth_fmt.find("compressedDepth") != std::string::npos;
+
+    size_t header_size = has_12b_header ? 12 : 0;
+    if (depth_data.size() <= header_size) {
+        ROS_WARN_THROTTLE(2.0, "[Broadcaster] sync_pack raw depth 数据过短(%zu字节, fmt=%s)，丢帧",
+                          depth_data.size(), depth_fmt.c_str());
+        return false;
+    }
+    // 解码校验（按 format 决定是否跳 12B 头），校验通过后打包【纯 PNG】字节。
+    // 这样下游（检测端→广播器回传→object_factory）收到的 depth_bytes 始终是纯 PNG，
+    // format 字段写 "png" 即可，object_factory 不需要再判断 compressedDepth 头，
+    // 与 test_depth_cloud.py 的 decode_depth_compressed 行为对齐。
+    const uint8_t* depth_payload_ptr = depth_data.data() + header_size;
+    size_t depth_payload_size = depth_data.size() - header_size;
+
+    cv::Mat decoded = cv::imdecode(
+        cv::Mat(1, depth_payload_size, CV_8UC1,
+                const_cast<uint8_t*>(depth_payload_ptr)),
+        cv::IMREAD_UNCHANGED);
+    if (decoded.empty()) {
+        ROS_WARN_THROTTLE(2.0, "[Broadcaster] sync_pack raw depth 解码校验失败(fmt=%s)，丢帧",
+                          depth_fmt.c_str());
+        return false;
+    }
+    // 打包剥头后的纯 PNG（不含 12B compressedDepth 头）
     return buildSyncPackFrameFromBytes(rgb->data.data(), rgb->data.size(),
-                                       depth->data.data(), depth->data.size(),
+                                       depth_payload_ptr, depth_payload_size,
                                        stamp, frame);
 }
 
@@ -688,15 +739,15 @@ bool BroadcasterNode::buildSyncPackFrameFromBytes(
     const uint8_t* depth_data, size_t depth_size,
     double stamp, std::vector<uint8_t>& frame) {
     // 取最近 odom（同步打包允许 odom 相对 rgb/depth 有一定延迟）
-    std::string odom_json;
+    std::array<uint8_t, kOdomBytes> odom_bytes;
     ros::Time odom_stamp;
     {
         std::lock_guard<std::mutex> lock(odom_mutex_);
-        if (latest_odom_json_.empty()) {
+        if (!latest_odom_valid_) {
             // odom 尚未到达：放弃本帧，等待 odom 先到
             return false;
         }
-        odom_json = latest_odom_json_;
+        odom_bytes = latest_odom_bytes_;
         odom_stamp = latest_odom_stamp_;
     }
     // odom 过期告警（仅提示，仍取最近值打包，符合"允许延迟取最近值"的语义）
@@ -708,10 +759,11 @@ bool BroadcasterNode::buildSyncPackFrameFromBytes(
     }
 
     // ---- 组装 payload（全部大端）----
-    // 结构：u32 rgb_len + rgb_bytes + u32 depth_len + depth_bytes +
-    //       u32 odom_len + odom_json(UTF-8)
-    // Python 端用 struct.unpack(">III", ...) 依次解三个长度再切分
-    size_t payload_len = 4 + rgb_size + 4 + depth_size + 4 + odom_json.size();
+    // 结构：u32 rgb_len + rgb_bytes + u32 depth_len + depth_bytes + 56B odom_7floats
+    // odom 改为定长 56 字节（7 个 double 大端），省掉 odom_len 字段和 JSON 解析。
+    // Python 端：rgb_len = unpack(">I", mv, 0); depth_len = unpack(">I", mv, 4+rgb_len);
+    //            odom_arr = unpack(">7d", mv[4+rgb_len+4+depth_len:])
+    size_t payload_len = 4 + rgb_size + 4 + depth_size + kOdomBytes;
     std::vector<uint8_t> payload;
     payload.reserve(payload_len);
 
@@ -726,8 +778,8 @@ bool BroadcasterNode::buildSyncPackFrameFromBytes(
     };
     append_segment(rgb_data, rgb_size);
     append_segment(depth_data, depth_size);
-    append_segment(reinterpret_cast<const uint8_t*>(odom_json.data()),
-                   odom_json.size());
+    // odom：56 字节定长，不带长度前缀
+    payload.insert(payload.end(), odom_bytes.begin(), odom_bytes.end());
 
     // 打包：direction=0 上行，topic_id=50 组合帧，stamp=rgb 时间戳
     return buildFrame(0, sync_pack_.topic_id, sync_pack_seq_++, stamp,
@@ -738,22 +790,17 @@ bool BroadcasterNode::buildSyncPackFrameFromBytes(
 
 void BroadcasterNode::handleEncodeMask(const std::vector<uint8_t>& payload,
                                        double /*stamp*/) {
-    // 帧头 stamp 与 JSON 内 stamp 通常一致；以 JSON 内为准（codec 负责解析）
-    std::string json_str(payload.begin(), payload.end());
-
-    // ---- 可选字段 vis_b64：检测展示图（jpeg base64）----
-    // 非抛异常模式先解析一次 JSON 取 vis_b64；解析失败或字段缺失则
-    // 跳过展示图处理，不影响下方 encodemask 主流程。
-    // （decodeEncodeMaskJson 会再解析一次 JSON，为保持最小改动不合并两处解析）
-    nlohmann::json j = nlohmann::json::parse(json_str, nullptr, false);
-    if (!j.is_discarded() && j.is_object() && j.contains("vis_b64") &&
-        j["vis_b64"].is_string() && !j["vis_b64"].get<std::string>().empty()) {
-        publishPlotImage(j["vis_b64"].get<std::string>());
-    }
-
+    // 新协议：二进制头部（stamp+rgb+depth+odom） + objects JSON。
+    // rgb/depth/odom 不再走 base64+JSON，省掉两次大块字节级循环；
+    // 仅 objects 数组（含 mask_b64）与 vis_b64 走 JSON。
     scene_graph::EncodeMask msg;
-    if (!EncodeMaskCodec::decodeEncodeMaskJson(json_str, msg)) {
+    std::string vis_b64;
+    if (!EncodeMaskCodec::decodeEncodeMaskBinary(payload, msg, vis_b64)) {
         return;
+    }
+    // 可选字段 vis_b64：检测展示图（jpeg base64），存在时发布到 /yoloe/plot
+    if (!vis_b64.empty()) {
+        publishPlotImage(vis_b64);
     }
     // 发布到所有下行话题
     for (ros::Publisher& pub : result_pubs_) {

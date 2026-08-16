@@ -339,10 +339,10 @@
         <param name="skeleton/visualize_nbhd_frontiers" value="false"/>
         <param name="skeleton/visualize_black_polygon" value="true"/>
 
-        <param name="obj/camera_fx" type="double" value="387.3385009765625"/>
-        <param name="obj/camera_fy" type="double" value="386.7434387207031"/>
-        <param name="obj/camera_cx" type="double" value="321.9053649902344"/>
-        <param name="obj/camera_cy" type="double" value="245.8605499267578"/>
+        <param name="obj/camera_fx" type="double" value="385.3385009765625"/>
+        <param name="obj/camera_fy" type="double" value="385.7434387207031"/>
+        <param name="obj/camera_cx" type="double" value="331.9053649902344"/>
+        <param name="obj/camera_cy" type="double" value="243.8605499267578"/>
         <param name="obj/lidar_cam_tx" type="double" value="0.05"/>
         <param name="obj/lidar_cam_ty" type="double" value="0.0"/>
         <param name="obj/lidar_cam_tz" type="double" value="-0.02"/>

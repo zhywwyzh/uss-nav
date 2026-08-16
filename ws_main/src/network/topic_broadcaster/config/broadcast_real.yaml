@@ -14,10 +14,10 @@ connection:
 # 三者合成一个组合帧(topic_id=50)上行；此时 out_topics 中的独立三条会被跳过。
 sync_pack:
   enable: true
-  rgb_topic: "/camera/color/image/compressed"   # 实机 RGB 压缩图（可改）
-  depth_topic: "/camera/depth/image/compressed" # 实机 Depth 压缩图（可改）
+  rgb_topic: "/camera/color/image_raw/compressed"   # 实机 RGB 压缩图（可改）
+  depth_topic: "/camera/aligned_depth_to_color/image_raw/compressedDepth" # 实机 Depth 压缩图（必须用 compressedDepth 保留 16 位 PNG，不能用 compressed 的 JPEG）
   odom_topic: "/ekf_quat/ekf_odom"              # 实机 odom（可改）
-  rgb_depth_slop: 0.05        # rgb/depth 强同步容差(秒)
+  rgb_depth_slop: 0.1        # rgb/depth 强同步容差(秒)
   odom_slop: 0.1              # odom 允许的延迟(秒)，取最近值即可
   max_freq: 20                # 组合帧节流上限(Hz)：应 >= 源话题频率，避免节流压制实际发射率
   topic_id: 50                # 组合帧的帧协议话题号
