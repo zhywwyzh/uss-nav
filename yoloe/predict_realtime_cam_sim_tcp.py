@@ -21,8 +21,7 @@ yoloe_remote_service.py 完全一致）：
         magic     : 4 字节  b"TLBC"
         version   : 1 字节  1
         direction : 1 字节  0=上行(广播器->本服务), 1=下行(本服务->广播器)
-        topic_id  : 2 字节  uint16 大端: 1=rgb, 2=depth, 3=odom,
-                   50=组合帧(rgb+depth+odom 打包), 100=EncodeMask 结果
+        topic_id  : 2 字节  uint16 大端: 1=rgb, 2=depth, 3=odom, 100=EncodeMask 结果
         seq       : 8 字节  uint64 大端, 每话题独立递增
         stamp     : 8 字节  double 大端, 单位秒
         payload_len : 4 字节 uint32 大端
@@ -39,10 +38,11 @@ import threading
 import time
 
 import cv2
+import mobileclip
 import numpy as np
 import torch
 
-from ultralytics import YOLO, YOLOE
+from ultralytics import YOLOE
 
 # ------------------------------ 帧协议常量 ------------------------------ #
 MAGIC = b"TLBC"               # 帧魔数，用于识别帧起始
@@ -52,7 +52,6 @@ DIR_DOWN = 1                  # 下行：本服务 -> 广播器
 TOPIC_RGB = 1                 # 上行：rgb 压缩图（jpeg）
 TOPIC_DEPTH = 2               # 上行：depth 压缩图（png）
 TOPIC_ODOM = 3                # 上行：odom JSON
-TOPIC_PACKED = 50             # 上行：组合帧（rgb+depth+odom 打包，广播器已同步）
 TOPIC_RESULT = 100            # 下行：EncodeMask 结果 JSON
 HEADER_STRUCT = ">4sBBHQdI"   # 帧头打包格式：magic(4s) version(B) direction(B) topic(H) seq(Q) stamp(d) payload_len(I)
 HEADER_SIZE = struct.calcsize(HEADER_STRUCT)  # 28 字节
@@ -134,7 +133,7 @@ class YoloeSimTcpService:
                  clip_model_type="mobileclip_b",
                  clip_model_path="./mobileclip_blt.pt",
                  use_prompt=True, use_clip=True,
-                 conf=0.4, resize_width=640, time_slop=0.1,
+                 conf=0.4, resize_width=640, time_slop=0.01,
                  device="cuda:0", debug=False):
         # ---- 网络与推理参数 ----
         self.host = host
@@ -174,7 +173,6 @@ class YoloeSimTcpService:
 
     # ------------------------------------------------------------------ #
     # 模型加载（逻辑照搬 ROS 仿真版 predict_realtime_cam_sim.py 的 __init__）
-    # 增强：使用 YOLO() 自动分发，同时兼容 YOLOE（含 yoloe-26）与纯 YOLO26 权重。
     # ------------------------------------------------------------------ #
     def _load_models(self):
         if not torch.cuda.is_available():
@@ -182,43 +180,31 @@ class YoloeSimTcpService:
             sys.exit(1)
 
         # Prompt 相关初始化：先用未融合模型根据 prompt 文本计算 vocab
-        # 注意：YOLO() 会按文件名自动分发——文件名含 "yoloe" 时返回 YOLOE 类实例，
-        # 纯 YOLO26（如 yolo26n-seg.pt）返回标准 YOLO 类实例。
         if self.use_prompt:
+            print("[YoloeSimTcpService] 已启用 Prompt 模式，加载 prompt 模型并计算 vocab")
+            unfused_model = YOLOE(self.prompt_model_path)
+            unfused_model.load(self.prompt_model_path)
+            unfused_model.eval()
+            unfused_model.cuda()
             with open(self.prompt_file, "r") as f:
                 self.names = [x.strip() for x in f.readlines()]
+            self.vocab = unfused_model.get_vocab(self.names)
+            print(f"[YoloeSimTcpService] vocab 计算完成，共 {len(self.names)} 个类别")
 
-            # 自动分发加载 prompt 模型，判断是否为 YOLOE（开放词汇）模型
-            prompt_model = YOLO(self.prompt_model_path)
-            if isinstance(prompt_model, YOLOE):
-                # ---- YOLOE（含 yoloe-26）开放词汇流程：计算 vocab 并注入 ----
-                print("[YoloeSimTcpService] 检测到 YOLOE 模型，启用开放词汇注入")
-                unfused_model = prompt_model
-                unfused_model.eval()
-                unfused_model.cuda()
-                self.vocab = unfused_model.get_vocab(self.names)
-                print(f"[YoloeSimTcpService] vocab 计算完成，共 {len(self.names)} 个类别")
-
-                self.model = YOLO(self.prompt_model_path).cuda()
-                self.model.set_vocab(self.vocab, names=self.names)
-                # 原实现将检测头设置为融合推理模式，并放宽内部 conf / max_det
-                self.model.model.model[-1].is_fused = True
-                self.model.model.model[-1].conf = 0.001
-                self.model.model.model[-1].max_det = 1000
-            else:
-                # ---- 纯 YOLO26（闭集）流程：跳过 vocab 注入，使用模型自带类别 ----
-                print("[YoloeSimTcpService] 检测到纯 YOLO26 模型，跳过开放词汇注入"
-                      "（使用模型自带类别，prompt 文件不生效）")
-                self.model = prompt_model.cuda()
+        # 正式推理模型初始化（与原实现一致）
+        if self.use_prompt:
+            self.model = YOLOE(self.prompt_model_path).cuda()
+            self.model.set_vocab(self.vocab, names=self.names)
+            # 原实现将检测头设置为融合推理模式，并放宽内部 conf / max_det
+            self.model.model.model[-1].is_fused = True
+            self.model.model.model[-1].conf = 0.001
+            self.model.model.model[-1].max_det = 1000
         else:
-            # use_prompt=False：同样自动分发，纯 YOLO26 与 YOLOE 均可加载
-            self.model = YOLO(self.model_path).cuda()
+            self.model = YOLOE(self.model_path).cuda()
         self.model.eval()
 
         # MobileCLIP 文本编码器（生成 512 维 word_vector）
-        # 惰性 import：仅启用 use_clip 时加载 mobileclip，纯 YOLO26 闭集测试可跳过
         if self.use_clip:
-            import mobileclip
             self.clip_model, _, self.clip_preprocess = \
                 mobileclip.create_model_and_transforms(self.clip_model_type,
                                                        pretrained=self.clip_model_path)
@@ -314,49 +300,6 @@ class YoloeSimTcpService:
         """按 topic_id 分发上行帧数据。"""
         topic_id = frame["topic_id"]
 
-        if topic_id == TOPIC_PACKED:
-            # 组合帧：rgb/depth/odom 已由广播器同步打包，直接解包并触发推理
-            # payload 布局（全部大端）：u32 rgb_len + rgb(jpeg) + u32 depth_len
-            # + depth(png) + u32 odom_len + odom_json(UTF-8)
-            try:
-                off = 0
-                rgb_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
-                rgb_bytes = frame["payload"][off:off+rgb_len]; off += rgb_len
-                depth_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
-                depth_bytes = frame["payload"][off:off+depth_len]; off += depth_len
-                odom_len = struct.unpack_from(">I", frame["payload"], off)[0]; off += 4
-                odom_json_bytes = frame["payload"][off:off+odom_len]
-            except (struct.error, IndexError) as e:
-                # 长度字段越界 / 数据不完整属协议解析边界，必须捕获
-                print(f"[YoloeSimTcpService][debug] 组合帧解析失败: {e}")
-                return
-            # rgb 解码（jpeg 压缩字节 -> BGR 图）
-            bgr = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
-            if bgr is None:
-                print("[YoloeSimTcpService] rgb jpeg 解码失败，丢弃该帧")
-                return
-            # depth 解码（png 压缩字节 -> 仿真深度图 uchar/uint16）
-            depth = cv2.imdecode(np.frombuffer(depth_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
-            if depth is None:
-                print("[YoloeSimTcpService] depth png 解码失败，丢弃该帧")
-                return
-            # odom 解析（UTF-8 JSON，字段缺省时回退默认值）
-            try:
-                odom = json.loads(odom_json_bytes.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError) as e:
-                print(f"[YoloeSimTcpService] odom JSON 解析失败，丢弃该帧: {e}")
-                return
-            odom_arr = [float(odom.get(k, 0.0)) for k in ("x", "y", "z", "qx", "qy", "qz", "qw")]
-            odom_arr[6] = float(odom.get("qw", 1.0))  # qw 默认 1.0
-            # 更新三路缓存（组合帧已由广播器同步打包，三路 stamp 相同）
-            stamp = frame["stamp"]
-            self._latest_rgb = {"stamp": stamp, "bgr": bgr, "payload": rgb_bytes}
-            self._latest_depth = {"stamp": stamp, "array": depth, "payload": depth_bytes}
-            self._latest_odom = {"stamp": stamp, "arr": odom_arr}
-            # 组合帧已同步好：直接触发推理，无需再做三路时间同步校验
-            self._trigger_infer_packed(conn)
-            return
-
         if topic_id == TOPIC_RGB:
             # rgb：jpeg 压缩字节 -> cv2.imdecode 得到 BGR 图
             bgr = cv2.imdecode(np.frombuffer(frame["payload"], np.uint8), cv2.IMREAD_COLOR)
@@ -406,24 +349,6 @@ class YoloeSimTcpService:
     # ------------------------------------------------------------------ #
     # 推理触发与执行
     # ------------------------------------------------------------------ #
-    def _trigger_infer_packed(self, conn):
-        """组合帧触发：三路已由广播器同步打包（stamp 相同），直接启动推理线程。
-
-        与 _try_infer 的区别：跳过三路时间同步校验（组合帧必然满足），
-        其余（推理锁、异步线程、回发）完全一致。
-        """
-        # 同一时刻只允许一个推理线程：上一帧推理未结束时跳过当前触发帧
-        if not self._infer_lock.acquire(blocking=False):
-            if self.debug:
-                print("[YoloeSimTcpService][debug] 上一帧推理仍在进行，跳过当前组合帧")
-            return
-
-        rgb = self._latest_rgb
-        depth = self._latest_depth
-        odom = self._latest_odom
-        # 异步推理：避免阻塞收帧循环（daemon 线程）
-        threading.Thread(target=self._run_infer, args=(conn, rgb, depth, odom), daemon=True).start()
-
     def _try_infer(self, conn):
         """rgb 触发帧处理：检查三路时间同步后，异步启动推理线程。"""
         if self._latest_rgb is None or self._latest_depth is None or self._latest_odom is None:
@@ -477,19 +402,20 @@ class YoloeSimTcpService:
         返回:
             结果 dict；若模型无检测结果返回 None（不回发）
         """
-        # 1. 缩放至指定宽度保持宽高比（ultralytics 的 predict 对 numpy 按 BGR 处理，无需转换）
-        h, w, _ = rgb_bgr.shape
+        # 1. BGR -> RGB（与原实现一致），并缩放至指定宽度保持宽高比
+        cv_rgb = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2RGB)
+        h, w, _ = cv_rgb.shape
         if w != self.resize_width:
-            resized = cv2.resize(rgb_bgr, (self.resize_width, int(h * self.resize_width / w)))
+            cv_rgb_resized = cv2.resize(cv_rgb, (self.resize_width, int(h * self.resize_width / w)))
         else:
-            resized = rgb_bgr
+            cv_rgb_resized = cv_rgb
 
         # 2. YOLOE 推理
         t1 = time.perf_counter()
         with torch.no_grad():
             results = self.model.predict(
-                resized, conf=self.conf, device=self.device,
-                imgsz=640, verbose=False, save=False
+                cv_rgb_resized, conf=self.conf, device=self.device,
+                verbose=False, save=False
             )
         if self.debug:
             print(f"[YoloeSimTcpService][debug] Predict time: {((time.perf_counter() - t1) * 1e3):.2f}ms")
@@ -510,8 +436,8 @@ class YoloeSimTcpService:
                 objects.append({
                     "label": str(cls_name),
                     "conf": float(cls_conf),
-                    "mask_b64": "",  # 空字符串而非 None，避免 C++ 端 value() 抛 type_error
-                    "word_vector": [],  # 空列表而非 None
+                    "mask_b64": None,
+                    "word_vector": None,
                 })
 
         # 模型无任何检测结果：返回 None，不回发
@@ -549,26 +475,13 @@ class YoloeSimTcpService:
             except Exception as e:
                 print(f"[YoloeSimTcpService] CLIP 编码异常: {e}")
 
-        # 6. 检测展示图：yolo plot（检测框+掩码+置信度+标签）
-        #    result.plot() 返回 RGB，JPEG 标准色彩空间也是 RGB，直接编码即可
-        #    生成失败不影响主结果：仅打印日志并省略该字段
-        vis_b64 = ""
-        try:
-            vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-            ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            if ok:
-                vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")
-        except Exception as e:
-            print(f"[YoloeSimTcpService] 检测展示图生成失败: {e}")
-
-        # 7. 组装回发 JSON（rgb/depth 使用收到的原始压缩字节，不重编码）
+        # 6. 组装回发 JSON（rgb/depth 使用收到的原始压缩字节，不重编码）
         result_dict = {
             "stamp": stamp,
             "odom": [float(v) for v in odom],
             "rgb_b64": base64.b64encode(rgb_bytes).decode("utf-8"),
             "depth_b64": base64.b64encode(depth_bytes).decode("utf-8"),
             "objects": objects,
-            "vis_b64": vis_b64,
         }
         return result_dict
 
@@ -616,7 +529,7 @@ if __name__ == '__main__':
                         help="model.predict 置信度阈值（默认 0.4）")
     parser.add_argument("--resize_width", type=int, default=640,
                         help="推理前 RGB 缩放宽度（默认 640）")
-    parser.add_argument("--time_slop", type=float, default=0.1,
+    parser.add_argument("--time_slop", type=float, default=0.01,
                         help="三路帧时间同步容差，秒（默认 0.01）")
     parser.add_argument("--debug", action="store_true", default=False,
                         help="打印调试信息")

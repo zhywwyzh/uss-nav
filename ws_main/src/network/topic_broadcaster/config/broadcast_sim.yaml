@@ -16,7 +16,7 @@ connection:
 sync_pack:
   enable: true
   rgb_topic: /camera0_gsplat/image/rgb/compressed
-  depth_topic: /camera0_gsplat/image/depth/compressed
+  depth_topic: /camera0_gsplat/image/depth/compressedDepth
   odom_topic: /drone_0_visual_slam/odom_throttled
   rgb_depth_slop: 0.1        # rgb/depth 强同步容差(秒)
   odom_slop: 0.1              # odom 允许的延迟(秒)，取最近值即可
