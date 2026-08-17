@@ -780,7 +780,15 @@ class YoloRealTcpService:
                 # 后处理时间从 60-70ms 降到 5-10ms，下行 payload 同步大幅缩小。
                 # C++ 端 encodemask_codec 把 mask.format 写为 "png"，
                 # object_factory 走 cv_bridge PNG 解码分支还原为 480x640 单通道 Mat。
+                #
+                # 兜底策略（detect 模型无 masks.data）：
+                # - segment 模型：用 result.masks.data 生成真实分割 mask
+                # - detect 模型：从 result.boxes.xyxy 构造 480x640 矩形 mask
+                #   坐标系直接对齐 imgsz=(480,640)，无需缩放；下游 nav_yolo_mixin
+                #   用 np.where(mask>0) 取质心 + boundingRect 取 bbox，矩形 mask
+                #   在语义上等价于 bbox，深度投影仍由下游 mask+depth 路径完成。
                 if masks_np is not None:
+                    # segment 分支：直接用模型输出的真实分割 mask
                     for i in range(len(masks_np)):
                         single_mask = masks_np[i]
                         binary_mask = (single_mask * 255).astype(np.uint8)
@@ -789,6 +797,31 @@ class YoloRealTcpService:
                             objects[i]["mask_b64"] = base64.b64encode(png_buf.tobytes()).decode("utf-8")
                         else:
                             objects[i]["mask_b64"] = ""
+                else:
+                    # detect 分支：从 boxes.xyxy 构造矩形 mask 兜底
+                    boxes_xyxy = result.boxes.xyxy.cpu().numpy() \
+                        if hasattr(result, 'boxes') and result.boxes is not None else None
+                    if boxes_xyxy is not None:
+                        for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
+                            if i >= len(objects):
+                                break
+                            bbox_mask = np.zeros(
+                                (self.imgsz_h, self.imgsz_w), dtype=np.uint8
+                            )
+                            # 坐标裁剪到 [0, imgsz]，防止越界
+                            x1_i = max(0, min(self.imgsz_w, int(round(float(x1)))))
+                            y1_i = max(0, min(self.imgsz_h, int(round(float(y1)))))
+                            x2_i = max(0, min(self.imgsz_w, int(round(float(x2)))))
+                            y2_i = max(0, min(self.imgsz_h, int(round(float(y2)))))
+                            # 非法 bbox（零面积或越界）跳过，保留初始 None
+                            if x2_i <= x1_i or y2_i <= y1_i:
+                                continue
+                            bbox_mask[y1_i:y2_i, x1_i:x2_i] = 255
+                            ok_png, png_buf = cv2.imencode(".png", bbox_mask)
+                            if ok_png:
+                                objects[i]["mask_b64"] = base64.b64encode(
+                                    png_buf.tobytes()
+                                ).decode("utf-8")
 
                 # MobileCLIP 文本编码（带 label 缓存）
                 if self.use_clip:
