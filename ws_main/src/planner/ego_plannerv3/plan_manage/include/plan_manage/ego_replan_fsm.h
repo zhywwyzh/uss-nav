@@ -151,8 +151,7 @@ namespace ego_planner
     ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, odom_sub_, if_handle_yaw_sub_,
                     trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, face_center_sub_;
     ros::Publisher data_disp_pub_, broadcast_ploytraj_pub_, ground_height_pub_, state_pub_, exec_finish_trigger_pub_, ego_state_trigger_pub_;
-    ros::Publisher ego_plan_state_pub_, goal_processed_pub_, goal_seq_pub_;
-    uint32_t goal_seq_{0};
+    ros::Publisher ego_plan_state_pub_, goal_processed_pub_;
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);

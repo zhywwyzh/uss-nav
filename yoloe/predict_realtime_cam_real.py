@@ -457,7 +457,7 @@ class YoloeDetectorNode:
                 # ... (原代码的可视化逻辑)
                 try:
                     yolo_plot_img = results[0].plot(boxes=True, masks=True, conf=True, labels=True)
-                    vis_yolo = cv2.cvtColor(yolo_plot_img, cv2.COLOR_RGB2BGR)
+                    vis_yolo = yolo_plot_img  # plot() 返回 BGR，imshow 按 BGR 显示，勿再转换
                     vis_rgb = cv2.cvtColor(cv_rgb, cv2.COLOR_RGB2BGR)
                     vis_depth_temp = cv_depth.copy()
                     vis_depth_temp[vis_depth_temp > 10000] = 10000

@@ -80,12 +80,6 @@ namespace ego_planner
     ego_plan_state_pub_ = nh.advertise<quadrotor_msgs::EgoPlannerResult>("/planning/ego_plan_result", 10);
     ego_state_trigger_pub_ = nh.advertise<quadrotor_msgs::EgoStateTrigger>("/planning/ego_state_trigger", 10);
     goal_processed_pub_ = nh.advertise<geometry_msgs::PointStamped>("/planning/goal_processed", 10);
-    goal_seq_pub_ = nh.advertise<std_msgs::UInt32>("/planning/goal_seq", 10, true);  // latch=true: 新订阅者连接时自动收到最新 seq
-
-    // 立即发布初始 seq=0 填充 latch 缓存，避免 Python 订阅时缓存为空
-    std_msgs::UInt32 init_seq_msg;
-    init_seq_msg.data = 0;
-    goal_seq_pub_.publish(init_seq_msg);
 
     // ROS_INFO("Wait for 3 seconds.");
     // ros::Time t0 = ros::Time::now();
@@ -337,7 +331,6 @@ namespace ego_planner
             geometry_msgs::PointStamped gp_msg;
             gp_msg.header.stamp = ros::Time::now();
             gp_msg.header.frame_id = "world";
-            gp_msg.header.seq = goal_seq_;
             gp_msg.point.x = final_goal_.x();
             gp_msg.point.y = final_goal_.y();
             gp_msg.point.z = final_goal_.z();
@@ -354,7 +347,6 @@ namespace ego_planner
             geometry_msgs::PointStamped gp_msg;
             gp_msg.header.stamp = ros::Time::now();
             gp_msg.header.frame_id = "world";
-            gp_msg.header.seq = goal_seq_;
             gp_msg.point.x = final_goal_.x();
             gp_msg.point.y = final_goal_.y();
             gp_msg.point.z = final_goal_.z();
@@ -590,7 +582,6 @@ namespace ego_planner
           geometry_msgs::PointStamped gp_msg;
           gp_msg.header.stamp = ros::Time::now();
           gp_msg.header.frame_id = "world";
-          gp_msg.header.seq = goal_seq_;
           gp_msg.point.x = final_goal_.x();
           gp_msg.point.y = final_goal_.y();
           gp_msg.point.z = final_goal_.z();
@@ -1187,12 +1178,6 @@ namespace ego_planner
       yaw_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL;
       yaw_path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST;
     }
-
-    // 外部航点到达: goal_seq 自增并发布 (内部 replan 调用不自增)
-    goal_seq_++;
-    std_msgs::UInt32 seq_msg;
-    seq_msg.data = goal_seq_;
-    goal_seq_pub_.publish(seq_msg);
 
     if (planNextWaypoint(end_wp, msg->yaw, msg->look_forward, yaw_mode, yaw_path_mode))
       // if (planNextWaypoint(end_wp))

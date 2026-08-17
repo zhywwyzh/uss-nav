@@ -530,7 +530,7 @@ bool SceneGraphMapIO::save(const std::string& save_name) {
         frontier_json["out_unit_normal"] = vec3ToJson(frontier->out_unit_normal_);
         frontier_json["proj_center"] = vec3ToJson(frontier->proj_center_);
         frontier_json["next_node_pos"] = vec3ToJson(frontier->next_node_pos_);
-        frontier_json["cos_theta"] = frontier->cos_theta_;
+        frontier_json["cos_theta"] = std::isfinite(frontier->cos_theta_) ? frontier->cos_theta_ : 0.0;
         frontier_json["area_size"] = frontier->area_size_;
         frontier_json["valid"] = frontier->valid_;
         frontier_json["deleted"] = frontier->deleted_;

@@ -1,0 +1,5 @@
+insulation bushing	{"object": "Insulating Bushing"}
+signal cabinet	{"object": "Signal Cabinet"}
+measurement instrument	{"object": "Measurement Gauge"}
+transformer	{"object": "Transformer"}
+poster	{"object": "no similar object"}

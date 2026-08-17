@@ -390,6 +390,17 @@ void ObjectFactory::doSemanticProcessingOnce() {
         // mask处理：raw 字节直构 Mat（640x480 单通道 0/255，无 PNG 解码 ~1.2ms/目标）
         // 按 format 分发：format=="raw" 直接构造，否则回退 cv_bridge 兼容旧 PNG 生产者
         const auto& mask_msg = cur_data_.cur_semantic_recv_msg_->masks[i];
+        // 空数据直跳过：cv_bridge 对空 buffer 调 imdecode 会抛 cv::Exception（非
+        // cv_bridge::Exception），下方 catch 接不住，直接 abort 进程
+        if (mask_msg.data.empty()) {
+            ROS_ERROR_STREAM_THROTTLE(1.0,
+                "[ObjFactory] mask data is empty, skip this mask ...");
+            lock.lock();
+            active_threads--;
+            lock.unlock();
+            cv.notify_one();
+            continue;
+        }
         cv::Mat mask;
         if (mask_msg.format == "raw" && mask_msg.data.size() == static_cast<size_t>(640 * 480)) {
             mask = cv::Mat(480, 640, CV_8UC1,
@@ -486,6 +497,10 @@ void ObjectFactory::segmentationResultCallback(const scene_graph::EncodeMask::Co
     {
         std::unique_lock<std::mutex> lock(mutex_);
         if (!accepting_input_) return;
+    }
+    if (msg->current_depth.data.empty() || msg->current_rgb.data.empty()) {
+        ROS_ERROR("EncodeMask depth/rgb data is empty, drop frame");
+        return;
     }
     SemanticDataInput se_input;
     se_input.cur_semantic_recv_msg_ = msg;

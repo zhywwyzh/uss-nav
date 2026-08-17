@@ -732,7 +732,7 @@ class YoloRealTcpService:
                 if self.visualize:
                     try:
                         yolo_plot_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-                        vis_yolo = cv2.cvtColor(yolo_plot_img, cv2.COLOR_RGB2BGR)
+                        vis_yolo = yolo_plot_img  # plot() 返回 BGR，imshow 按 BGR 显示，勿再转换
                         # 推理队列项没带原始 bgr，这里用 rgb_bytes 重解码一次用于可视化
                         vis_rgb = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
                         vis_depth = None
@@ -767,7 +767,7 @@ class YoloRealTcpService:
                     for cls_name, cls_conf in zip(class_names, boxes_conf):
                         objects.append({
                             "label": str(cls_name), "conf": float(cls_conf),
-                            "mask_b64": None, "word_vector": None,
+                            "mask_b64": "", "word_vector": [],
                         })
 
                 if len(labels) == 0:
@@ -846,8 +846,8 @@ class YoloRealTcpService:
                 vis_b64 = ""
                 if self.vis_b64:
                     try:
+                        # vendored ultralytics 的 plot() 返回 BGR，imencode 按 BGR 编码，勿再转换
                         vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-                        vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
                         ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                         if ok:
                             vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")
