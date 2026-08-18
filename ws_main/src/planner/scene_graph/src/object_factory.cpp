@@ -1,6 +1,7 @@
 #include "../include/scene_graph/object_factory.h"
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
+#include <std_msgs/String.h>
 
 ObjectFactory::ObjectFactory(ros::NodeHandle& nh): nh_(nh), param_prefix_("obj"){
     skeleton_enabled_ = false;
@@ -81,6 +82,8 @@ void ObjectFactory::init() {
     obj_update_vis_pub_      = nh_.advertise<visualization_msgs::MarkerArray>(prefixedTopic("/object_update_vis"), 2);
     obj_update_pt_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(prefixedTopic("/object_update_pointcloud"), 2);
     obj_pt_cloud_all_pub_    = nh_.advertise<sensor_msgs::PointCloud2>(prefixedTopic("/object_pointcloud"), 2);
+    // fly-origin 状态日志: 返航时发布是否找到已挂载的 fly-origin, 便于上层确认 topo 图是否已有稳定返航绑定
+    fly_origin_status_pub_   = nh_.advertise<std_msgs::String>("/if_hold_origin", 10);
 
     obj_process_thread_running_ = true;
     object_process_thread_ = std::make_unique<std::thread>(&ObjectFactory::objectProcessThread, this);
@@ -1000,6 +1003,101 @@ void ObjectFactory::addNewObject(ObjectNode::Ptr &obj_node) {
         INFO_MSG_GREEN("[ObjFactory]: =========== Object KDTree initialized ==========");
     }
     INFO_MSG_GREEN("\n*** [ObjFactory] New Object [id: " << obj_node->id << ", label : " << obj_node->label << "] \n");
+}
+
+// 查询 topo 图中是否已挂载 fly-origin (label == "fly-origin")
+// 返回首个匹配的 ObjectNode; 未找到返回 nullptr
+// 用于返航时判断是否已有持久化的稳定返航绑定 polyhedron, 避免每次都依赖脆弱的实时吸附
+ObjectNode::Ptr ObjectFactory::findFlyOrigin() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& item : object_map_) {
+        if (item.second != nullptr && item.second->label == "fly-origin") {
+            return item.second;
+        }
+    }
+    return nullptr;
+}
+
+// 在指定 polyhedron 上挂载或更新 fly-origin
+// - 若已存在 fly-origin: 更新 pos 与 edge.polyhedron_father (处理 polyhedron 被替换/失效后重新绑定)
+// - 若不存在: 新建 ObjectNode, detection_count 直接置为阈值 (避免被 objectFilterThread 删除)
+// - 同步维护 poly->objs_[id] 双向绑定, 保证 scene_graph_map_io 序列化正确
+// 返回 true 表示挂载成功; false 表示 poly 为空
+bool ObjectFactory::registerFlyOriginAtPoly(const Eigen::Vector3d& pos, const PolyHedronPtr& poly) {
+    if (poly == nullptr) {
+        INFO_MSG_RED("[ObjFactory] registerFlyOriginAtPoly: poly is null, skip");
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 查找已有 fly-origin
+    ObjectNode::Ptr fly_origin = nullptr;
+    int fly_origin_id = -1;
+    for (const auto& item : object_map_) {
+        if (item.second != nullptr && item.second->label == "fly-origin") {
+            fly_origin = item.second;
+            fly_origin_id = item.first;
+            break;
+        }
+    }
+
+    if (fly_origin != nullptr) {
+        // 已存在: 更新 pos 与 polyhedron_father
+        // 清理旧 polyhedron 的 objs_ 绑定 (若旧 poly 仍在)
+        if (fly_origin->edge.polyhedron_father != nullptr) {
+            fly_origin->edge.polyhedron_father->objs_.erase(fly_origin_id);
+        }
+        fly_origin->pos = pos;
+        fly_origin->edge.polyhedron_father = poly;
+        poly->objs_[fly_origin_id] = fly_origin;
+        // 更新 KD-tree 位置 (先删旧位置再加新位置)
+        if (object_kdtree_initialized_) {
+            ObjectKDTreeNodeVector del_nodes, add_nodes;
+            del_nodes.emplace_back(fly_origin);
+            object_kd_tree_->Delete_Points(del_nodes);
+            add_nodes.emplace_back(fly_origin);
+            object_kd_tree_->Add_Points(add_nodes, false);
+        }
+        INFO_MSG_GREEN("[ObjFactory] fly-origin updated at poly center: " << poly->center_.transpose()
+                       << ", pos: " << pos.transpose());
+    } else {
+        // 新建 fly-origin
+        fly_origin = std::make_shared<ObjectNode>();
+        object_max_id_++;
+        fly_origin->id = object_max_id_;
+        fly_origin->label = "fly-origin";
+        fly_origin->pos = pos;
+        fly_origin->conf = 1.0;
+        fly_origin->detection_count = _detection_counter_thresh;  // 直接达阈值, 不进 filter 删除流程
+        fly_origin->edge.polyhedron_father = poly;
+
+        object_map_[fly_origin->id] = fly_origin;
+        poly->objs_[fly_origin->id] = fly_origin;
+
+        // 加入 KD-tree (与 addNewObject 流程一致)
+        ObjectKDTreeNodeVector add_nodes;
+        add_nodes.emplace_back(fly_origin);
+        if (object_kdtree_initialized_) {
+            object_kd_tree_->Add_Points(add_nodes, false);
+        } else {
+            INFO_MSG_YELLOW("[ObjFactory]: Object KDTree not initialized, start build kdtree ...");
+            object_kdtree_initialized_ = true;
+            object_kd_tree_->Build(add_nodes);
+            INFO_MSG_GREEN("[ObjFactory]: =========== Object KDTree initialized ==========");
+        }
+        INFO_MSG_GREEN("[ObjFactory] fly-origin created at poly center: " << poly->center_.transpose()
+                       << ", pos: " << pos.transpose() << ", id: " << fly_origin->id);
+    }
+    return true;
+}
+
+// 发布 fly-origin 挂载状态日志到 /if_hold_origin (std_msgs::String)
+// found=true  -> "find the fly-origin"     (复用已存在挂载)
+// found=false -> "no fly-origin, get it"   (本次新挂载或吸附失败)
+void ObjectFactory::publishFlyOriginStatus(bool found) {
+    std_msgs::String msg;
+    msg.data = found ? "find the fly-origin" : "no fly-origin, get it";
+    fly_origin_status_pub_.publish(msg);
 }
 
 void ObjectFactory::updateExistingObjectInKdtree(const std::vector<std::pair<Eigen::Vector3d, ObjectNode::Ptr>> & update_existing_objects) {
