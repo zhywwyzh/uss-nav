@@ -731,8 +731,9 @@ class YoloRealTcpService:
                 # 可视化（可选）：YOLO plot + rgb + 深度伪彩色三图拼接
                 if self.visualize:
                     try:
-                        yolo_plot_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-                        vis_yolo = cv2.cvtColor(yolo_plot_img, cv2.COLOR_RGB2BGR)
+                        # ultralytics result.plot() 内部用 cv2 直接在 BGR 图上绘制，
+                        # 输出即为 BGR，无需再做 RGB->BGR 转换，否则反而会 R/B 互换导致反色
+                        vis_yolo = result.plot(boxes=True, masks=True, conf=True, labels=True)
                         # 推理队列项没带原始 bgr，这里用 rgb_bytes 重解码一次用于可视化
                         vis_rgb = cv2.imdecode(np.frombuffer(rgb_bytes, np.uint8), cv2.IMREAD_COLOR)
                         vis_depth = None
@@ -846,8 +847,9 @@ class YoloRealTcpService:
                 vis_b64 = ""
                 if self.vis_b64:
                     try:
+                        # ultralytics result.plot() 输出即为 BGR，直接 imencode 即可，
+                        # 多余的 COLOR_RGB2BGR 反而会导致 R/B 互换使 /yoloe/plot 反色
                         vis_img = result.plot(boxes=True, masks=True, conf=True, labels=True)
-                        vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
                         ok, vis_buf = cv2.imencode(".jpg", vis_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                         if ok:
                             vis_b64 = base64.b64encode(vis_buf.tobytes()).decode("ascii")
