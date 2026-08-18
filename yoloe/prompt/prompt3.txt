@@ -1,4 +1,0 @@
-chair
-person
-car
-bike
