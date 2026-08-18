@@ -83,6 +83,18 @@ public:
     bool isUpdateFrozen() const { return scene_graph_update_frozen_; }
     bool getPathToObjectWithId(const int &id, std::vector<Eigen::Vector3d> &path, Eigen::Vector3d & aim_pos, double &aim_yaw);
 
+    // 返航辅助: fly-origin 挂载点查询/注册 (转发给 object_factory_)
+    // fly-origin 是一种虚拟 object, 用于在 topo 图上持久化绑定 "返航起点" 所在的稳定 polyhedron,
+    // 避免每次返航都依赖脆弱的实时 mountCurTopoPoint 吸附
+    // 查询是否已有 fly-origin 绑定, 未找到返回 nullptr
+    ObjectNode::Ptr findFlyOrigin() { return object_factory_->findFlyOrigin(); }
+    // 在指定 polyhedron 上挂载/更新 fly-origin
+    bool registerFlyOriginAtPoly(const Eigen::Vector3d& pos, const PolyHedronPtr& poly) {
+        return object_factory_->registerFlyOriginAtPoly(pos, poly);
+    }
+    // 发布 fly-origin 状态日志到 /if_hold_origin
+    void publishFlyOriginStatus(bool found) { object_factory_->publishFlyOriginStatus(found); }
+
     // 拓扑点不可达: 检测 / 修复 / 标记 / 恢复 //
     // C0: 把不可达点投影到最近的 (在local map内 且 inflate-free) 点;
     //     toward 为前进参考点(下一个路径点/目标), 投影结果趋向该方向且排除往回方向; 失败返回 false
