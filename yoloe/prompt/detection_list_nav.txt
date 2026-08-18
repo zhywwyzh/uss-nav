@@ -1,0 +1,2 @@
+pressure relief valve	{"object": "Pressure Relief Indicator"}
+gear indicator	{"object": "Tap Position Indicator"}
