@@ -44,8 +44,8 @@
         <param name="traj_server/time_forward" value="1.0" type="double"/>
         <param name="traj_server/max_yaw_vel" value="100.0" type="double"/>
         <param name="traj_server/max_yaw_acc" value="120.0" type="double"/>
-        <param name="traj_server/max_yaw_vel_low" value="20.0" type="double"/>
-        <param name="traj_server/max_yaw_acc_low" value="10.0" type="double"/>
+        <param name="traj_server/max_yaw_vel_low" value="100.0" type="double"/>
+        <param name="traj_server/max_yaw_acc_low" value="120.0" type="double"/>
 
         <!-- planning fsm -->
         <param name="fsm/flight_type" value="$(arg flight_type)" type="int"/>
