@@ -3374,11 +3374,29 @@ void FastExplorationFSM::goTargetWithWaypoint() {
 
     ObjectNode::Ptr fly_origin = scene_graph_->findFlyOrigin();
     if (fly_origin != nullptr && fly_origin->edge.polyhedron_father != nullptr) {
-      // 已有 fly-origin: 复用其绑定的 polyhedron 作为 A* 终点
-      target_poly = fly_origin->edge.polyhedron_father;
-      fly_origin_found = true;
-      INFO_MSG_GREEN("[Targ Wpt] | reuse fly-origin bound polyhedron, center: "
-                     << target_poly->center_.transpose());
+      // 检查 fly-origin 位置是否接近当前 waypoint_target_
+      // fly-origin 设计本意是针对稳定返航目标 (如 return-origin 起飞点) 的持久化绑定,
+      // 当 return-previous 等场景下目标变化时, 旧绑定不再适用, 需要重新吸附
+      const double fly_origin_dis =
+          (fly_origin->pos - fd_->waypoint_target_).head(2).norm();
+      if (fly_origin_dis < 1.0) {
+        // 目标匹配: 复用已绑定 polyhedron 作为 A* 终点
+        target_poly = fly_origin->edge.polyhedron_father;
+        fly_origin_found = true;
+        INFO_MSG_GREEN("[Targ Wpt] | reuse fly-origin bound polyhedron, center: "
+                       << target_poly->center_.transpose()
+                       << ", fly_origin_dis: " << fly_origin_dis);
+      } else {
+        // 目标变化 (如连续 return-previous): 不复用旧绑定, 走 mountCurTopoPoint 重新吸附,
+        // 成功后通过 registerFlyOriginAtPoly 更新 fly-origin 到新目标
+        INFO_MSG_GREEN("[Targ Wpt] | fly-origin pos mismatch, fly_origin_pos: "
+                       << fly_origin->pos.transpose()
+                       << ", waypoint_target: " << fd_->waypoint_target_.transpose()
+                       << ", dis: " << fly_origin_dis
+                       << ", fallback to mountCurTopoPoint");
+        target_poly = scene_graph_->skeleton_gen_->mountCurTopoPoint(fd_->waypoint_target_, true);
+        need_register_fly_origin = (target_poly != nullptr);
+      }
     } else {
       // 无 fly-origin 或绑定已失效: 走原 mountCurTopoPoint 吸附逻辑, 成功后挂载 fly-origin
       target_poly = scene_graph_->skeleton_gen_->mountCurTopoPoint(fd_->waypoint_target_, true);
