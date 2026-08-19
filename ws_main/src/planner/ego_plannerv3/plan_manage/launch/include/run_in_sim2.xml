@@ -50,7 +50,7 @@
         <arg name="fy" value="387.229248046875"/>
 
         <!-- maximum velocity, acceleration and jerk the drone will reach -->
-        <arg name="max_vel" value="1.5" />
+        <arg name="max_vel" value="2.0" />
         <arg name="max_acc" value="3.0" />
         <arg name="max_jer" value="2.0" />
         <arg name="max_sna" value="5.0" />
