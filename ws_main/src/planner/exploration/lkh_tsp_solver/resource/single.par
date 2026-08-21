@@ -1,4 +1,4 @@
-PROBLEM_FILE = /workspace/Fly-Agent-Diff-Orbit/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/lkh_tsp_solver/resource/single.tsp
+PROBLEM_FILE = /workspace/Fly-Agent-Diff-Sim/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/lkh_tsp_solver/resource/single.tsp
 GAIN23 = NO
-OUTPUT_TOUR_FILE =/workspace/Fly-Agent-Diff-Orbit/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/lkh_tsp_solver/resource/single.txt
+OUTPUT_TOUR_FILE =/workspace/Fly-Agent-Diff-Sim/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/lkh_tsp_solver/resource/single.txt
 RUNS = 1
