@@ -68,6 +68,8 @@ public:
     cv::Mat read();
     std::vector<uint8_t> readjpg();
     RgbImg readrgb();
+    // 非阻塞版 readjpg：空队列时返回空 vector，避免接收线程因 pop() 阻塞而无法退出
+    std::vector<uint8_t> try_readjpg();
 };
 
 #endif // UDP_H

@@ -146,6 +146,18 @@ topics:
     same_prefix: false
 
   # -- obj process -- #
+  # 透传 CompressedImage（JPEG 字节流），通过 UDP 发送，需点对点配置
+  - topic_name: /yoloe/plot
+    msg_type: sensor_msgs/CompressedImage
+    srcIP:
+      - drone1
+    srcPort: 3008
+    max_freq: 10
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
   # - topic_name: /yoloe/plot/final_vis
   #  msg_type: sensor_msgs/Image
   #  imgResizeRate: 0.8

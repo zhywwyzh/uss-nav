@@ -179,6 +179,8 @@ void BridgeFactory::getIpAndTopicConfig() {
     topic.only1_dst_hostname_ = checkIfPointToPointPipeline(topic);
     if (topic.type_ == "sensor_msgs/Image" && topic.only1_dst_hostname_ == NOT_ONLY_ONE_DST)
       ROS_FATAL("[Bridge]: Image topic must be point-to-point pipeline, please check the configuration!");
+    if (topic.type_ == "sensor_msgs/CompressedImage" && topic.only1_dst_hostname_ == NOT_ONLY_ONE_DST)
+      ROS_FATAL("[Bridge]: CompressedImage topic must be point-to-point pipeline, please check the configuration!");
 
     for (int j = 0; j < src_hostnames.size(); ++j){
       if (src_hostnames[j] == "all"){

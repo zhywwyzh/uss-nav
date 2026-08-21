@@ -313,3 +313,25 @@ RgbImg UDPImgReceiver::readrgb()
    }
    return rgb_que->pop();
 }
+
+std::vector<uint8_t> UDPImgReceiver::try_readjpg()
+{
+   // 非阻塞读取：未初始化、模式不匹配或队列空时返回空 vector
+   if (!config)
+   {
+      std::vector<uint8_t> empty_vector;
+      return empty_vector;
+   }
+   if (mode != MODE_JPGBUF)
+   {
+      std::cout << "You should read cv::Mat." << std::endl;
+      std::vector<uint8_t> empty_vector;
+      return empty_vector;
+   }
+   if (jpg_que->empty())
+   {
+      std::vector<uint8_t> empty_vector;
+      return empty_vector;
+   }
+   return jpg_que->pop();
+}
