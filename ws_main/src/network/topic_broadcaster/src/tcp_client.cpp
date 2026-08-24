@@ -84,6 +84,10 @@ void TcpClient::disconnect() {
     connected_.store(false);
     peer_closed_.store(false);
     if (fd_ >= 0) {
+        // 优雅关闭：先 shutdown 写端，让内核把发送缓冲区的数据发完再发 FIN，
+        // 避免直接 close() 时缓冲区有未确认数据导致发 RST（对端会看到 ECONNRESET）。
+        // 即使有未读的接收数据，shutdown(SHUT_WR) 也只影响写端，不会发 RST。
+        ::shutdown(fd_, SHUT_WR);
         ::close(fd_);
         fd_ = -1;
     }
