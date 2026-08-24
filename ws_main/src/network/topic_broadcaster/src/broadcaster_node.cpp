@@ -883,6 +883,8 @@ void BroadcasterNode::sendLoop() {
                 ROS_WARN("[Broadcaster] 连续失败 %d 次，主动断开以触发重连",
                          consecutive_failures);
                 client_.disconnect();
+                // 清空陈旧帧：重连后只发新帧，避免旧帧集中发送填满对端 recv 缓冲
+                frame_queue_->clear();
                 consecutive_failures = 0;
             }
         }
@@ -911,6 +913,9 @@ void BroadcasterNode::recvLoop() {
                 ROS_WARN("[Broadcaster] 对端关闭连接，等待重连");
                 client_.disconnect();
                 buffer.clear();
+                // 同步清空待发送帧：对端已重启，旧帧的 stamp 已过期，
+                // 重连后集中发送会填满对端 recv 缓冲并触发发送超时断开。
+                frame_queue_->clear();
             }
             continue;
         }
