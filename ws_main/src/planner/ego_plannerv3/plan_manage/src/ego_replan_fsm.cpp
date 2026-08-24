@@ -1187,7 +1187,10 @@ namespace ego_planner
   }
 
   void EGOReplanFSM::execAim() {
-    if (abs(odom_yaw_ - aim_direction_) / M_PI * 180 > 10.0 && (target_pos_ - odom_pos_).norm() > 0.05 && target_look_forward_) {
+    // 兜底: 即使已进入 HANDLE_YAW, face_center 激活时也直接放行 (yaw 由
+    // face_center 分支接管), 避免 setYaw 被覆盖导致转向永远无法收敛的死锁。
+    if (!traj_server_.hasFaceCenter() &&
+        abs(odom_yaw_ - aim_direction_) / M_PI * 180 > 10.0 && (target_pos_ - odom_pos_).norm() > 0.05 && target_look_forward_) {
 
       ROS_WARN_THROTTLE(0.5, "[Ego-FSM] | Turning Yaw ... (cur yaw : %.2f deg, des_yaw : %.2f deg, err : %.2f deg)",
                     odom_yaw_ / M_PI * 180.0, aim_direction_ / M_PI * 180.0 , abs(odom_yaw_ - aim_direction_) / M_PI * 180.0);
@@ -1261,7 +1264,10 @@ namespace ego_planner
     if (aim_direction_ < -M_PI)
       aim_direction_ += 2 * M_PI;
 
-    if (if_handle_yaw_)
+    // face_center 激活期间跳过 HANDLE_YAW: execAim 的 yaw 转向会被 traj_server 的
+    // face_center 分支覆盖 (calculate_yaw 最优先), HANDLE_YAW 必然死锁。绕飞/扫描
+    // 任务依赖此保证, 不再依赖外部 if_handle_yaw 话题的到达时序 (latch 竞态)。
+    if (if_handle_yaw_ && !traj_server_.hasFaceCenter())
     {
       changeFSMExecState(HANDLE_YAW, "Recv Aim Callback");
     }

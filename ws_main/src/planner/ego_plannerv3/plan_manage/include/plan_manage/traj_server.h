@@ -89,6 +89,7 @@ namespace ego_planner
                     uint8_t path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST);
         void setPanoramaYaw(double des_yaw, double cur_yaw, const Eigen::Vector3d& hold_pos);
         void setFaceCenter(const Eigen::Vector3d &center, bool valid);
+        bool hasFaceCenter() const { return has_face_center_; }
         void resetYawLookforward(Eigen::Vector3d pos);
         void syncYawFromOdom(const double yaw, const std::string& source = "");
         void feedDog();
