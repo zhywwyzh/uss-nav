@@ -24,6 +24,10 @@ TopicFactory::TopicFactory(const TopicCfg& topic_cfg,
   if (send_or_recv_ == SEND_OR_RECV::SEND){
     if (topic_cfg_.type_ == "sensor_msgs/Image"){
       udp_sender_ = std::make_unique<UDPImgSender>(ip_map_[topic_cfg_.only1_dst_hostname_].c_str(), topic_cfg_.port_);
+    }else if (topic_cfg_.type_ == "sensor_msgs/CompressedImage"){
+      // CompressedImage 走 UDP + MODE_JPGBUF，直接透传 JPEG 字节流，不做解码/重编码
+      udp_sender_ = std::make_unique<UDPImgSender>(
+          ip_map_[topic_cfg_.only1_dst_hostname_].c_str(), topic_cfg_.port_, MODE_JPGBUF);
     }else if (!topic_cfg_.dynamic_dst_){
       sender_ = std::make_unique<zmqpp::socket>(context_, zmqpp::socket_type::pub);
       const std::string url = "tcp://" + topic_cfg_.src_ip_ + ":" + std::to_string(topic_cfg_.port_);
@@ -50,6 +54,9 @@ TopicFactory::TopicFactory(const TopicCfg& topic_cfg,
   }else if (send_or_recv == SEND_OR_RECV::RECV){
     if (topic_cfg_.type_ == "sensor_msgs/Image"){
       udp_receiver_ = std::make_unique<UDPImgReceiver>(topic_cfg_.port_);
+    }else if (topic_cfg_.type_ == "sensor_msgs/CompressedImage"){
+      // CompressedImage 接收端使用 MODE_JPGBUF，与发送端配对
+      udp_receiver_ = std::make_unique<UDPImgReceiver>(topic_cfg_.port_, MODE_JPGBUF);
     }else{
       std::string const zmq_topic = "";
       std::unique_ptr<zmqpp::socket> receiver_tmp(new zmqpp::socket(context_, zmqpp::socket_type::sub));
@@ -132,6 +139,27 @@ void TopicFactory::subCallback(const ros::MessageEvent<const T> &event) {
     } catch (cv_bridge::Exception& e){
       ROS_ERROR("[SubCallback]: cv_bridge exception: %s", e.what());
     }
+    return;
+  }
+  else if constexpr (std::is_same<T, sensor_msgs::CompressedImage>::value){
+    // CompressedImage 透传：仅支持 jpeg/jpg 格式；其他格式（如 png）不支持 UDP 字节流透传
+    if (msg.format.find("jpeg") == std::string::npos &&
+        msg.format.find("jpg")  == std::string::npos){
+      ROS_WARN_THROTTLE(2.0, "[SubCallback]: CompressedImage format '%s' not supported (only jpeg), drop",
+                        msg.format.c_str());
+      return;
+    }
+    // UDP 包格式：[4字节 format_len (小端)][format 字符串][JPEG 数据]
+    // 接收端首帧解析 format 并缓存，后续帧复用，避免每帧重复解析
+    uint32_t format_len = static_cast<uint32_t>(msg.format.size());
+    std::vector<uint8_t> send_buf;
+    send_buf.reserve(sizeof(uint32_t) + format_len + msg.data.size());
+    const uint8_t* flen_ptr = reinterpret_cast<const uint8_t*>(&format_len);
+    send_buf.insert(send_buf.end(), flen_ptr, flen_ptr + sizeof(uint32_t));
+    send_buf.insert(send_buf.end(), msg.format.begin(), msg.format.end());
+    send_buf.insert(send_buf.end(), msg.data.begin(),  msg.data.end());
+    // 整包透传：format 头 + JPEG 字节流，pic_sockets 内部不再做 JPEG 编解码
+    udp_sender_->sendjpg(send_buf.data(), send_buf.size());
     return;
   }
   else if constexpr (std::is_same<T, sensor_msgs::PointCloud2>::value) {
@@ -319,6 +347,48 @@ void TopicFactory::recvFunction() {
     return;
   }
 
+  if (topic_cfg_.type_ == "sensor_msgs/CompressedImage"){
+    // CompressedImage 接收：用 try_readjpg 非阻塞读取，避免 stopThread 时线程无法退出
+    // 包格式：[4字节 format_len (小端)][format 字符串][JPEG 数据]
+    while (recv_thread_flag_){
+      std::vector<uint8_t> recv_buf = udp_receiver_->try_readjpg();
+      if (!recv_buf.empty()){
+        // 至少要包含 format_len 字段
+        if (recv_buf.size() < sizeof(uint32_t)){
+          ROS_WARN_THROTTLE(2.0, "[recvFunction] CompressedImage UDP packet too small: %zu bytes", recv_buf.size());
+        }else{
+          uint32_t format_len = 0;
+          std::memcpy(&format_len, recv_buf.data(), sizeof(uint32_t));
+          // 首帧解析 format 字段并缓存，后续帧复用 cached_format_，不重复解析
+          if (!format_cached_){
+            if (recv_buf.size() < sizeof(uint32_t) + format_len){
+              ROS_WARN_THROTTLE(2.0, "[recvFunction] CompressedImage packet format field truncated");
+            }else{
+              cached_format_.assign(reinterpret_cast<const char*>(recv_buf.data() + sizeof(uint32_t)), format_len);
+              format_cached_ = true;
+            }
+          }
+          if (format_cached_){
+            // JPEG 数据起始位置 = sizeof(uint32_t) + format_len
+            size_t jpg_offset = sizeof(uint32_t) + format_len;
+            if (recv_buf.size() <= jpg_offset){
+              ROS_WARN_THROTTLE(2.0, "[recvFunction] CompressedImage JPEG data truncated");
+            }else{
+              sensor_msgs::CompressedImage msg;
+              msg.header.stamp    = ros::Time::now();
+              msg.header.frame_id  = "camera_link";
+              msg.format           = cached_format_;
+              msg.data.assign(recv_buf.begin() + jpg_offset, recv_buf.end());
+              pub_.publish(msg);
+            }
+          }
+        }
+      }
+      loop_timer.sleep();
+    }
+    return;
+  }
+
   zmqpp::poller poller;
   poller.add(*receiver_);
   // receive and process message (except image)
@@ -361,14 +431,16 @@ void TopicFactory::createThread() {
 
 void TopicFactory::stopThread() {
   if (send_or_recv_ == SEND_OR_RECV::SEND){
-    sender_->close();
+    // Image/CompressedImage 走 UDP，sender_ 为 nullptr，需判空避免崩溃
+    if (sender_) sender_->close();
     for (auto & sender : dynamic_senders_) sender.second->close();
     sub_.shutdown();
   }else if (send_or_recv_ == SEND_OR_RECV::RECV){
     recv_mutex_.lock();
     recv_thread_flag_ = false;
     recv_mutex_.unlock();
-    receiver_->close();
+    // Image/CompressedImage 走 UDP，receiver_ 为 nullptr，需判空避免崩溃
+    if (receiver_) receiver_->close();
     pub_.shutdown();
   }
 }

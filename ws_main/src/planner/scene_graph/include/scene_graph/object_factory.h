@@ -99,6 +99,16 @@ public:
     void finishMapLoad();
     void visualizeResult(bool force_full_refresh = false);
 
+    // 返航辅助: fly-origin 挂载点查询/注册 + 状态日志发布
+    // fly-origin 是一种特殊的虚拟 object, 用于在 topo 图上持久化绑定 "返航起点" 所在的稳定 polyhedron,
+    // 避免每次返航都依赖脆弱的实时 mountCurTopoPoint 吸附 (origin 落在未建图区域时容易失败)
+    ObjectNode::Ptr findFlyOrigin();
+    // 在指定 polyhedron 上挂载/更新 fly-origin; 若已存在则更新 pos 与 polyhedron_father, 否则新建
+    // 注意: detection_count 直接置为阈值, 不进入 objectFilterThread 的删除流程
+    bool registerFlyOriginAtPoly(const Eigen::Vector3d& pos, const PolyHedronPtr& poly);
+    // 发布 fly-origin 状态日志到 /if_hold_origin (std_msgs::String)
+    void publishFlyOriginStatus(bool found);
+
     // area interface
     std::map<int, ObjectNode::Ptr> object_map_, object_map_needMoreDetection_;
 
@@ -136,6 +146,7 @@ private:
     ros::Subscriber segment_result_sub_;
     ros::Publisher  obj_pt_cloud_all_pub_, odom_depth_pub_;
     ros::Publisher  obj_detection_vis_pub_, obj_all_vis_pub_, obj_update_vis_pub_, obj_update_pt_cloud_pub_;
+    ros::Publisher  fly_origin_status_pub_;   // 发布 fly-origin 挂载状态到 /if_hold_origin
     tf::TransformBroadcaster depth_world_frame_tf_broadcaster_;
 
     // Object Data

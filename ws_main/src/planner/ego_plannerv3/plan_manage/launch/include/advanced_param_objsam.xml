@@ -63,7 +63,7 @@
         <param name="fsm/emergency_time" value="1.0" type="double"/>
         <param name="fsm/realworld_experiment" value="false"/>
         <param name="fsm/fail_safe" value="true"/>
-        <param name="fsm/if_handle_yaw" value="false" type="bool"/> <!-- EGO-Planner收aim时是否进入HANDLE_YAW而非直接导航 -->
+        <param name="fsm/if_handle_yaw" value="true" type="bool"/> <!-- EGO-Planner收aim时是否进入HANDLE_YAW而非直接导航 -->
         <param name="fsm/battery_thr" value="14.0" type="double"/>
         <param name="fsm/enable_area_prediction" value="true" type="bool"/>
         <param name="fsm/enable_scene_graph_update_after_load" value="true" type="bool"/>

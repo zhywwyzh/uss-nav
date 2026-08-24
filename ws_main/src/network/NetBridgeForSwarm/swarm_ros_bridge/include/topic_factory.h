@@ -91,6 +91,10 @@ private:
     std::thread     recv_thread_;
     std::mutex      recv_mutex_;
 
+    // CompressedImage 接收端缓存 format 字段：首帧解析后复用，后续不再重复解析
+    std::string     cached_format_;
+    bool            format_cached_{false};
+
     void recvFunction();
     bool sendFreqControl();
 
