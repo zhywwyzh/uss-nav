@@ -1,5 +1,9 @@
 Signal Cabinet
 Insulating Bushing
 Oil Conservator
-Measurement Gauge
 On-load tap-changer
+Transformer
+Oil Level Indicator
+Pressure Relief Indicator
+Tap Position Indicator
+Gas Density Relay
