@@ -1304,6 +1304,7 @@ namespace ego_planner
   {
     mandatory_stop_ = true;
     ROS_ERROR("Received a mandatory stop command!");
+    flag_escape_emergency_ = true;
     changeFSMExecState(EMERGENCY_STOP, "Mandatory Stop");
     enable_fail_safe_ = false;
   }
