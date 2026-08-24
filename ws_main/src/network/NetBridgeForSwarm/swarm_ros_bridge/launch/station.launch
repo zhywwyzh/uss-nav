@@ -10,6 +10,12 @@
         </node>
 
         <node pkg="swarm_ros_bridge" type="odom_tf_publisher.py" name="odom_tf_publisher" output="screen" />
+
+        <!-- 将 bridge 转发来的 CompressedImage 解码为 raw Image, 供 rviz 直接显示 -->
+        <node pkg="swarm_ros_bridge" type="yoloe_plot_relay.py" name="yoloe_plot_relay" output="screen">
+            <remap from="~input" to="/yoloe/plot" />
+            <remap from="~output" to="/yoloe/plot_std" />
+        </node>
     </group>
 
     <include file="$(find mission_fsm)/launch/rviz.launch" />
