@@ -3435,8 +3435,12 @@ void FastExplorationFSM::goTargetWithWaypoint() {
     fd_->aim_yaw_ = fd_->waypoint_target_yaw_;
 
     INFO_MSG_GREEN("[Targ Wpt] | find path to waypoint success, size: " << fd_->path_res_.size());
-    getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
+    // 先重置再发布：旧任务的 path_inx_ 残留会让 getLocalAim 起步即越界
+    // （Path exec finished），首个 local goal 发布失败，ego-planner 收不到
+    // 新目标，UAV 空转至 periodic replan 兜底放弃。全文件其余调用点
+    // （L747/L2097/L2172/L3282）都是先清零后调用，此处对齐。
     fd_->path_inx_      = 0;
+    getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
     fd_->has_rotated_   = false;
     fd_->last_pub_time_ = ros::Time::now();
     INFO_MSG("[Targ Wpt] | PubNxtLocalAim, aim: " << fd_->local_aim_pos_ << ", global aim: " << fd_->aim_pos_);

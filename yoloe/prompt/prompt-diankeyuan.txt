@@ -4,6 +4,6 @@ Oil Conservator
 On-Load Tap-Changer
 Transformer
 Oil Level Indicator
-Gas Density Monitor
+Gas Density Relay
 Transformer Temperature Controller
 Breather
