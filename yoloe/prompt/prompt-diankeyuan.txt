@@ -1,9 +1,9 @@
-Signal Cabinet
+Signal Control Cabinet
 Insulating Bushing
 Oil Conservator
-On-load tap-changer
+On-Load Tap-Changer
 Transformer
 Oil Level Indicator
-Pressure Relief Indicator
-Tap Position Indicator
-Gas Density Relay
+Gas Density Monitor
+Transformer Temperature Controller
+Breather
