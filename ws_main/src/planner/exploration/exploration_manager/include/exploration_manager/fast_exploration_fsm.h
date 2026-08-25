@@ -115,8 +115,11 @@ private:
   uint8_t active_instruction_task_id_{0};
   uint32_t active_instruction_session_id_{0};
   // 探索任务计时：收到 TURN_REGULAR_EXPLORATION 启动，publishExplorationResult 结算
+  // 找物任务(TURN_OBJECT_NAV, EXPLORATION来源)计时共用 exploration_start_time_ 起点,
+  // 由 object_nav_timing_active_ 独立标记, 两套计时互斥(新任务置位时清对方), 各只记一条
   ros::Time exploration_start_time_;
   bool exploration_timer_active_{false};
+  bool object_nav_timing_active_{false};  // 找物任务计时活跃标志: 启动置true, 结算置false
   std::string exploration_timing_dir_;  // 探索耗时日志目录（默认 logs/exploration_timing）
   double panorama_last_odom_yaw_{0.0};
   double panorama_start_yaw_{0.0};
@@ -229,7 +232,9 @@ private:
                                  const std::string& frame_id = "world");
   void applyExplorationRegionFromInstruction(const quadrotor_msgs::InstructionConstPtr& msg);
   void publishExplorationResult(bool success, const std::string& reason,
-                                const std::string& message = "");
+                                const std::string& message = "",
+                                const std::string& phase = "finished",
+                                int obj_id = -1);
   // 探索任务计时：收到 TURN_REGULAR_EXPLORATION 时启动，publishExplorationResult 时结算并写入本地文件
   void logExplorationTiming(bool success, const std::string& reason, const std::string& message);
   bool isVlaSwarmState(MISSION_FSM_STATE state) const;

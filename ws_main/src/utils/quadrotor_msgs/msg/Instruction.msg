@@ -9,6 +9,8 @@ uint8 instruction_type
 uint8 source_task_id
 # 上层任务会话编号，用于隔离多次 counting 等异步任务的返回结果
 uint32 task_session_id
+# 本任务已排除的物体id列表(复核失败标记), FSM全等匹配时跳过这些物体
+int32[] excluded_obj_ids
 
 uint16 target_obj_id
 string command
@@ -60,6 +62,9 @@ uint8 REQUEST_ALL_AREA_AND_OBJS = 11
 
 ## VLA_Swarm
 uint8 TURN_VLA_SWARM = 12
+
+## 停止当前运动并回到WAIT_TRIGGER(由agent_run在复核导航到达后下发, 无人机原地悬停)
+uint8 STOP_MOTION = 13
 
 
 # source_task_id definitions

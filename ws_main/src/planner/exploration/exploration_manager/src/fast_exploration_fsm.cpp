@@ -385,25 +385,44 @@ void FastExplorationFSM::applyExplorationRegionFromInstruction(const quadrotor_m
 }
 
 void FastExplorationFSM::publishExplorationResult(bool success, const std::string& reason,
-                                                  const std::string& message)
+                                                  const std::string& message,
+                                                  const std::string& phase,
+                                                  int obj_id)
 {
+  // phase == "candidate_arrived" 为 yolo 链路目标蒸馏复核的中间信号:
+  // 上层 agent_run 尚未确认目标, 会话未结束, 不能触发 counting 会话结算与探索计时结算。
+  const bool is_candidate_phase = (phase == "candidate_arrived");
+
   // Counting 专用对象图必须先冻结并发布，确保上层收到 exploration finished 时
   // 对应 session 的 JSON 已经进入 ROS 发布队列。
-  if (counting_scene_graph_ != nullptr && counting_scene_graph_->active()) {
+  if (!is_candidate_phase && counting_scene_graph_ != nullptr && counting_scene_graph_->active()) {
     counting_scene_graph_->finishSessionAndPublish();
   }
 
   // 探索任务计时结算：若计时处于激活状态，计算总耗时并写入本地文件
-  if (exploration_timer_active_) {
+  if (!is_candidate_phase && exploration_timer_active_) {
     logExplorationTiming(success, reason, message);
     exploration_timer_active_ = false;
+  }
+
+  // 找物任务(TURN_OBJECT_NAV, EXPLORATION来源)计时结算: 找遍未得/区域探索完等
+  // finished=true 路径在此结算; 与 TURN_REGULAR_EXPLORATION 计时标志互斥,
+  // 同一任务只记一条; candidate_arrived 中间信号不结算(复核会话尚未结束)
+  if (!is_candidate_phase && object_nav_timing_active_) {
+    logExplorationTiming(success, reason, message);
+    object_nav_timing_active_ = false;
   }
 
   std_msgs::String msg;
   std::ostringstream ss;
   ss << "{"
-     << "\"finished\":true,"
-     << "\"success\":" << (success ? "true" : "false") << ","
+     << "\"finished\":" << (is_candidate_phase ? "false" : "true") << ",";
+  if (is_candidate_phase) {
+    // 中间信号附带 phase 与候选物体id, 供上层区分"任务结束"与"候选到达待复核"
+    ss << "\"phase\":\"" << jsonEscape(phase) << "\","
+       << "\"obj_id\":" << obj_id << ",";
+  }
+  ss << "\"success\":" << (success ? "true" : "false") << ","
      << "\"reason\":\"" << jsonEscape(reason) << "\","
      << "\"message\":\"" << jsonEscape(message) << "\","
      << "\"instruction_type\":" << static_cast<int>(md_->instruction_) << ","
@@ -2144,7 +2163,9 @@ void FastExplorationFSM::planRegularExplore() {
   if (!fd_->target_cmd_.empty() && fd_->target_cmd_ != "None") {
     int found_obj_id = -1;
     for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
-      if (obj_pair.second->label == fd_->target_cmd_) {
+      // 跳过上层复核失败标记排除的物体, 只匹配仍在候选范围内的目标
+      if (obj_pair.second->label == fd_->target_cmd_ &&
+          fd_->excluded_obj_set_.count(obj_pair.second->id) == 0) {
         found_obj_id = obj_pair.second->id;
         break;
       }
@@ -2195,7 +2216,12 @@ void FastExplorationFSM::planRegularExplore() {
       int best_cnt = 0;
       for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
         const auto& obj = obj_pair.second;
-        if (obj->label == fd_->target_cmd_ && (int)obj->detection_count > best_cnt) {
+        // 跳过上层复核失败标记排除的物体(与每轮检查处的过滤一致):
+        // 否则所有候选被排除且 frontier 耗尽时, 兜底会匹配到已排除物体并转
+        // FIND_TERMINATE_TARGET, 最终报 target_not_found 失败, 而预期是
+        // 以 global_explored 成功结束
+        if (obj->label == fd_->target_cmd_ && (int)obj->detection_count > best_cnt &&
+            fd_->excluded_obj_set_.count(obj->id) == 0) {
           found_id = obj->id;
           best_cnt = obj->detection_count;
         }
@@ -3167,7 +3193,18 @@ void FastExplorationFSM::goTargetObject() {
           return;  // phase已归零, 下次tick重试 (prior guidance或正常路径)
         }
         fd_->go_object_prior_guide_count_ = 0;
-        publishExplorationResult(true, "target_found", "reached target object");
+        // yolo链路目标蒸馏复核: EXPLORATION来源任务到达候选物体后不再直接报 finished,
+        // 改发 candidate_arrived 中间信号, 由 agent_run 用 VLM 复核完整目标句后再决定
+        // 结束任务(命中)或排除该物体续探(未命中); COUNTING来源保持旧 finished 语义
+        if (active_instruction_task_id_ == quadrotor_msgs::Instruction::SOURCE_TASK_EXPLORATION) {
+          publishExplorationResult(true, "candidate_arrived",
+                                   "reached candidate object, waiting upper verify",
+                                   "candidate_arrived", fd_->object_target_id_);
+        } else {
+          publishExplorationResult(true, "target_found", "reached target object");
+        }
+        // 仍转入 FINISH 停留态: 无人机原地悬停, 等待下一条 Instruction
+        // (排除重下->继续探索 / STOP_MOTION->回WAIT_TRIGGER)
         transitState(FINISH, "Find Terminate Target Finish");
       }
       else transitState(WAIT_TRIGGER, "Go Target Object Finish");
@@ -3572,7 +3609,10 @@ void FastExplorationFSM::findTerminateTarget(){
     int best_count = 0;
     for (const auto& obj_pair : scene_graph_->object_factory_->object_map_) {
       const auto& obj = obj_pair.second;
-      if (obj->label == target_label && (int)obj->detection_count > best_count) {
+      // 跳过上层复核失败标记排除的物体, 防止排除重下后又飞回同一候选
+      if (obj->label == target_label &&
+          fd_->excluded_obj_set_.count(obj->id) == 0 &&
+          (int)obj->detection_count > best_count) {
         best_id = obj->id;
         best_count = obj->detection_count;
       }
@@ -4039,29 +4079,7 @@ void FastExplorationFSM::egoPlanResCallback(const quadrotor_msgs::EgoPlannerResu
 void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionConstPtr& msg)
 {
   if (msg->robot_id != md_->drone_id_) return;
-  // check recv time frequncy
-  static bool ic_first_recv_flag = true;
-  static ros::Time ic_last_recv_time;
-  const bool bypass_freq_limit =
-      msg->instruction_type == quadrotor_msgs::Instruction::TURN_GOAL ||
-      msg->instruction_type == quadrotor_msgs::Instruction::TURN_WAYPOINT_NAV ||
-      msg->instruction_type == quadrotor_msgs::Instruction::TURN_TRACKING ||
-      msg->instruction_type == quadrotor_msgs::Instruction::TURN_OBJECT_NAV ||
-      msg->instruction_type == quadrotor_msgs::Instruction::TURN_REGULAR_EXPLORATION ||
-      msg->instruction_type == quadrotor_msgs::Instruction::TURN_VLA_SWARM ||
-      msg->instruction_type == quadrotor_msgs::Instruction::REQUEST_ALL_AREA_AND_OBJS;
-  if (ic_first_recv_flag){
-    ic_first_recv_flag = false;
-    ic_last_recv_time = ros::Time::now();
-  }else if (!bypass_freq_limit && !ic_first_recv_flag &&
-            (ros::Time::now() - ic_last_recv_time).toSec() < 0.8){
-    ic_last_recv_time = ros::Time::now();
-    std::cout << "[InstructionCallback] : recv too frequent, skip once! instruction_type="
-              << static_cast<int>(msg->instruction_type)
-              << ", command=" << msg->command << std::endl;
-    return;
-  }else
-    ic_last_recv_time = ros::Time::now();
+  // 指令频率限制机制已于本次移除(原先 0.8s 限频+白名单), 所有 Instruction 立即处理
 
   if (vla_swarm_active_) {
     const bool same_vla_swarm_session =
@@ -4210,19 +4228,42 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       break;
     }
 
-    case quadrotor_msgs::Instruction::TURN_OBJECT_NAV:
+    case quadrotor_msgs::Instruction::TURN_OBJECT_NAV: {
       applyExplorationRegionFromInstruction(msg);
+      // yolo链路目标蒸馏复核: 解析上层下发的已排除物体id列表(复核失败标记),
+      // 覆盖式更新 FSM 侧排除集合, 全等匹配 label 时跳过这些物体
+      fd_->excluded_obj_set_.clear();
+      for (int excluded_id : msg->excluded_obj_ids) {
+        fd_->excluded_obj_set_.insert(excluded_id);
+      }
+      // 排除重下续探: clear_local_map=false 且携带排除列表时, 不清地图/topo/scene-graph,
+      // 不做全景旋转, 仅更新目标词与排除表后直接继续 PLAN_EXPLORE
+      const bool continue_explore_after_reject =
+          !msg->excluded_obj_ids.empty() && !msg->clear_local_map;
       if (msg->source_task_id == quadrotor_msgs::Instruction::SOURCE_TASK_COUNTING &&
           msg->task_session_id > 0) {
         counting_scene_graph_->startSession(msg->task_session_id, fd_->odom_pos_);
       }
-      if (source_requires_panorama && msg->clear_local_map) {
+      if (continue_explore_after_reject) {
+        INFO_MSG_CYAN("[InstructionCallback] continue explore with excluded obj ids (count="
+                      << msg->excluded_obj_ids.size() << "), skip map/topo reset.");
+      } else if (source_requires_panorama && msg->clear_local_map) {
         stopMotion();
         hardResetExploreArea(true, false);
         map_reset_update_seq_ = map_->getOccupancyUpdateSeq();
         wait_fresh_map_after_reset_ = true;
       } else if (source_requires_panorama) {
         startPanoramaRotation();
+      }
+      // 找物任务计时(EXPLORATION来源): 仅"新任务"(非排除重下)时启动;
+      // 排除重下属于同一找物任务的续探, 不重置起点, 保证 elapsed 覆盖整个任务
+      // 总耗时(含多轮排除复核); 同时作废 TURN_REGULAR_EXPLORATION 残留的计时,
+      // 两套计时互斥, 防止共用起点变量导致重复/错乱记录
+      if (!continue_explore_after_reject &&
+          msg->source_task_id == quadrotor_msgs::Instruction::SOURCE_TASK_EXPLORATION) {
+        exploration_start_time_ = ros::Time::now();
+        object_nav_timing_active_ = true;
+        exploration_timer_active_ = false;
       }
       fd_->find_terminate_target_mode_ = false;
       fd_->new_topo_need_predict_immediately_ = true;
@@ -4239,6 +4280,7 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
         transitState(MISSION_FSM_STATE::PLAN_EXPLORE, "instructionCallback");
       }
       break;
+    }
 
     case quadrotor_msgs::Instruction::TURN_REGULAR_EXPLORATION:
       applyExplorationRegionFromInstruction(msg);
@@ -4246,6 +4288,9 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       // 启动探索任务计时（在 publishExplorationResult 时结算）
       exploration_start_time_ = ros::Time::now();
       exploration_timer_active_ = true;
+      // 新探索任务作废找物任务可能残留的计时, 与 TURN_OBJECT_NAV 分支互斥对称,
+      // 保证两套计时互不干扰、各自任务只记一条
+      object_nav_timing_active_ = false;
       if (msg->source_task_id == quadrotor_msgs::Instruction::SOURCE_TASK_COUNTING &&
           msg->task_session_id > 0) {
         counting_scene_graph_->startSession(msg->task_session_id, fd_->odom_pos_);
@@ -4350,6 +4395,21 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       }
       break;
     
+    case quadrotor_msgs::Instruction::STOP_MOTION:
+      // 复核导航到达后由 agent_run 下发: 停止残余运动并回到 WAIT_TRIGGER 原地悬停,
+      // 无人机停留在目标附近等待下一条 Instruction(不返航)
+      // 找物任务计时结算: 复核命中后 agent_run 用 TURN_GOAL 直飞目标, 到达后只下发
+      // STOP_MOTION(不发 finished 信号), 该成功路径在此结算并清除标志;
+      // 非找物场景(计时未活跃)不结算, 停止逻辑不受影响
+      if (object_nav_timing_active_) {
+        logExplorationTiming(true, "verified_target_found",
+                             "verified target reached, task finished by stop motion");
+        object_nav_timing_active_ = false;
+      }
+      stopMotion();
+      transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "instructionCallback:stop_motion");
+      break;
+
     case quadrotor_msgs::Instruction::TURN_SAVE_SCENE_GRAPH: {
       const bool save_ok = scene_graph_->saveMap(msg->map_folder);
       if (save_ok) {

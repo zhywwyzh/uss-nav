@@ -5,6 +5,7 @@
 #include <Eigen/Geometry>
 #include <active_perception/ftr_data_structure.h>
 #include <sys/types.h>
+#include <set>
 #include <string>
 #include <vector>
 #include <quadrotor_msgs/PerceptionMsg.h>
@@ -90,6 +91,9 @@ struct FSMData
   //scene graph
   std::string target_cmd_, prior_knowledge_;
   int object_target_id_;
+  // yolo链路目标蒸馏复核: 本任务已排除的物体id集合(上层复核失败后随Instruction下发),
+  // FSM全等匹配label时跳过其中的物体, 避免反复飞往同一错误候选
+  std::set<int> excluded_obj_set_;
   u_int8_t go_object_process_phase{0};
   bool     go_object_in_prior_guide_{false}; // true=当前是先验引导(cloud未构建), 到达后回phase0重试
   u_int8_t go_object_prior_guide_count_{0};  // 先验引导重试计数(最多2次)
