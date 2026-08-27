@@ -919,7 +919,7 @@ if __name__ == '__main__':
         description="YOLO 实机版实时推理服务（纯 Python TCP server，非 ROS）")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1）")
     parser.add_argument("--port", type=int, default=9010, help="监听端口（默认 9010）")
-    parser.add_argument("--prompt_model_path", default="./yoloe-v8m-seg2.pt",
+    parser.add_argument("--prompt_model_path", default="./yoloe-v8m-seg.pt",
                         help="YOLO 模型路径（含 .engine 则自动启用 TensorRT）")
     parser.add_argument("--prompt_file", default="./prompt/prompt.txt",
                         help="prompt 类别文本文件路径")
@@ -935,11 +935,11 @@ if __name__ == '__main__':
                         help="启用 MobileCLIP 文本编码（默认开启，可用 --no_clip 关闭）")
     parser.add_argument("--no_clip", action="store_false", dest="use_clip",
                         help="关闭 MobileCLIP 文本编码")
-    parser.add_argument("--use_tensorrt", action="store_true", default=None,
-                        help="显式启用 TensorRT（默认 None 为自动判断：路径含 .engine）")
+    parser.add_argument("--use_tensorrt", action="store_true", default=False,
+                        help="启用 TensorRT（默认关闭）")
     parser.add_argument("--no_tensorrt", action="store_false", dest="use_tensorrt",
                         help="强制关闭 TensorRT")
-    parser.add_argument("--export_mode", action="store_true", default=True,
+    parser.add_argument("--export_mode", action="store_true", default=False,
                         help="启动时导出 TensorRT engine（默认开启，可用 --no_export_mode 关闭）")
     parser.add_argument("--no_export_mode", action="store_false", dest="export_mode",
                         help="关闭 engine 导出")
@@ -959,7 +959,7 @@ if __name__ == '__main__':
                         help="显示可视化窗口（默认关闭，可用 --no_visualize 关闭）")
     parser.add_argument("--no_visualize", action="store_false", dest="visualize",
                         help="关闭可视化")
-    parser.add_argument("--vis_b64", action="store_true", default=False,
+    parser.add_argument("--vis_b64", action="store_true", default=True,
                         help="生成 vis_b64 检测展示图并随结果回传（默认关闭，省 CPU）")
     parser.add_argument("--no_vis_b64", action="store_false", dest="vis_b64",
                         help="关闭 vis_b64 生成（默认）")

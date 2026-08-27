@@ -48,7 +48,7 @@
   <!-- map generation 4-->
   <!-- Using pyhton to generate map -->
     <!-- <node pkg ="map_generator" name ="map_generator_easy" type ="map_generator_easy2.py" output = "screen" respawn="true" >
-        <remap from="~odometry"   to="$(arg odom_topic)"/>
+        <remap from="~odometry"   to="$(arg odzom_topic)"/>
         <param name="map/x_size"     value="$(arg map_size_x)" />
         <param name="map/y_size"     value="$(arg map_size_y)" />
         <param name="map/z_size"     value="$(arg map_size_z)" />

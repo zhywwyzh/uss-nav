@@ -182,6 +182,8 @@
         <!-- exploration -->
         <param name="exploration/radius_close_goal" value="1.5" type="double"/>
         <param name="exploration/radius_far_goal" value="7.5" type="double"/>
+        <!-- 远目标方向偏好折减系数(0=关闭) -->
+        <param name="exploration/far_target_weight" type="double" value="0.3"/>
         <param name="exploration/refine_local" value="false" type="bool"/>
         <param name="exploration/refined_num" value="4" type="int"/>
         <param name="exploration/refined_radius" value="5.0" type="double"/>
@@ -268,6 +270,12 @@
         <param name="obj/std_dev_thresh" type="double" value="0.01"/>
         <param name="obj/obj_cloud_num_thresh" type="int" value="20"/>
         <param name="obj/detection_counter_thresh" type="int" value="5"/>
+        <!-- 远目标方向偏好: 深度超出挂载范围的检测引导frontier选择(仅FIND任务生效) -->
+        <param name="obj/far_target/enable" type="bool" value="true"/>
+        <param name="obj/far_target/max_depth" type="double" value="15.0"/>
+        <param name="obj/far_target/ttl" type="double" value="8.0"/>
+        <param name="obj/far_target/merge_angle_deg" type="double" value="10.0"/>
+        <param name="obj/far_target/min_pixels" type="int" value="50"/>
 
         <param name="obj/filter_run_duration" type="double" value="3.0"/>
         <param name="obj/obj_main_thread_run_hz" type="int" value="5"/>

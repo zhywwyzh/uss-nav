@@ -60,6 +60,13 @@ void ObjectFactory::init() {
     readParam<double>(nh_, prefixedParam("max_ray_length"), _max_ray_length, 4.0);
     readParam<bool>(nh_, prefixedParam("use_realsense"), _use_realsense, false);
 
+    // 远目标方向偏好(far target): 深度超出挂载范围的检测仅记录方向, 用于探索frontier引导
+    readParam<bool>(nh_, prefixedParam("far_target/enable"), _far_target_enable, true);
+    readParam<double>(nh_, prefixedParam("far_target/max_depth"), _far_target_max_depth, 15.0);
+    readParam<double>(nh_, prefixedParam("far_target/ttl"), _far_target_ttl, 8.0);
+    readParam<double>(nh_, prefixedParam("far_target/merge_angle_deg"), _far_target_merge_angle_deg, 10.0);
+    readParam<int>(nh_, prefixedParam("far_target/min_pixels"), _far_target_min_pixels, 50);
+
     // lidar-cam extrinsics
     readParam<double>(nh_, prefixedParam("lidar_cam_tx"), _lidar_cam_tx, 0.0);
     readParam<double>(nh_, prefixedParam("lidar_cam_ty"), _lidar_cam_ty, 0.0);
@@ -331,9 +338,125 @@ ObjectNode::Ptr ObjectFactory::processSingleObject(const ProcessedCLoudInput &in
     return result;
 }
 
+// 从mask内有效深度像素提取远距离检测记录
+// 仅当深度中值落在(挂载范围_max_ray_length, 远检测上限_far_target_max_depth]之间才视为远目标
+bool ObjectFactory::extractFarDetection(const cv::Mat& depth_img, const cv::Mat& mask,
+                                        const Eigen::Matrix4d& tf, const Eigen::Vector3d& cam_pos,
+                                        const std::string& label, double conf) {
+    // 尺寸防线(与extractCloud一致): 深度图与mask分辨率不一致时直接放弃,
+    // 防止异常分辨率下行列访问与depth_directions_索引越界读
+    if (depth_img.empty() || mask.empty() || depth_img.size() != mask.size()) return false;
+    // 收集mask内有效深度, 计算质心像素
+    std::vector<float> depths;
+    double u_sum = 0.0, v_sum = 0.0;
+    int cnt = 0;
+    const int rows = depth_img.rows, cols = depth_img.cols;
+    for (int v = 0; v < rows; ++v) {
+        const uchar* ptr_mask = mask.ptr<uchar>(v);
+        for (int u = 0; u < cols; ++u) {
+            if (ptr_mask[u] != 255) continue;
+            // 深度读取与extractCloud一致: realsense为uint16毫米图, 仿真为uchar反色图
+            float distance;
+            if (_use_realsense) {
+                distance = static_cast<float>(depth_img.ptr<uint16_t>(v)[u]) / 1000.0f;
+            } else {
+                distance = (255.0f - static_cast<float>(depth_img.ptr<uchar>(v)[u])) / 255.0f * _max_depth;
+            }
+            if (distance <= 0.0f) continue;
+            depths.push_back(distance);
+            u_sum += u; v_sum += v; cnt++;
+        }
+    }
+    if (cnt < _far_target_min_pixels) return false;   // 有效像素不足, 视为噪声
+
+    // 深度中值: 必须落在"挂载范围之外、远检测上限之内"才算远目标
+    std::sort(depths.begin(), depths.end());
+    const float depth_med = depths[depths.size() / 2];
+    if (depth_med <= _max_ray_length || depth_med > _far_target_max_depth) return false;
+
+    // 质心像素射线 -> 相机系位置 -> 世界系位置
+    // (与extractCloud的点计算方式一致: 内参模式或深度方向表模式)
+    const double u_c = u_sum / cnt, v_c = v_sum / cnt;
+    Eigen::Vector3d p_cam;
+    if (_use_camera_intrinsics) {
+        p_cam << depth_med,
+                -(u_c - _camera_cx) * depth_med / _camera_fx,
+                -(v_c - _camera_cy) * depth_med / _camera_fy;
+    } else {
+        const int pixel_index = static_cast<int>(v_c) * cols + static_cast<int>(u_c);
+        Eigen::Vector3d dir = depth_directions_[pixel_index] * depth_med;
+        p_cam << dir.z(), -dir.x(), -dir.y();
+    }
+    const Eigen::Vector3d world_pos = tf.block<3, 3>(0, 0) * p_cam + tf.block<3, 1>(0, 3);
+
+    // 世界系XY单位方向(深度远端噪声大, 方向比位置可靠)
+    Eigen::Vector3d direction = world_pos - cam_pos;
+    direction.z() = 0.0;
+    if (direction.norm() < 1e-3) return false;
+    direction.normalize();
+
+    FarDetection det;
+    det.label = label;
+    det.world_pos = world_pos;
+    det.direction = direction;
+    det.last_seen = ros::Time::now();
+    det.conf = conf;
+    updateFarDetection(det);
+    return true;
+}
+
+void ObjectFactory::updateFarDetection(const FarDetection& det) {
+    std::unique_lock<std::mutex> lock(far_mutex_);
+    // 同label且方向夹角小于阈值的已有记录 -> 覆盖刷新(滑窗合并)
+    const double cos_thresh = std::cos(_far_target_merge_angle_deg * M_PI / 180.0);
+    for (auto& exist : far_detections_) {
+        if (exist.label != det.label) continue;
+        if (exist.direction.dot(det.direction) >= cos_thresh) {
+            exist.world_pos = det.world_pos;
+            exist.direction = det.direction;
+            exist.conf = det.conf;
+            exist.last_seen = det.last_seen;
+            return;
+        }
+    }
+    far_detections_.push_back(det);
+    INFO_MSG_GREEN("[ObjFactory] New FarDetection [label: " << det.label << "] pos: "
+                   << det.world_pos.transpose());
+}
+
+std::vector<ObjectFactory::FarDetection> ObjectFactory::getActiveFarDetections(const std::string& label) {
+    std::vector<FarDetection> out;
+    std::unique_lock<std::mutex> lock(far_mutex_);
+    const ros::Time now = ros::Time::now();
+    // 惰性清理: 剔除TTL过期的记录(一段时间未再检测到 -> 回归纯TSP)
+    far_detections_.erase(
+        std::remove_if(far_detections_.begin(), far_detections_.end(),
+                       [&](const FarDetection& d) { return (now - d.last_seen).toSec() > _far_target_ttl; }),
+        far_detections_.end());
+    for (const auto& d : far_detections_) {
+        if (d.label == label) out.push_back(d);
+    }
+    return out;
+}
+
+void ObjectFactory::removeFarDetectionsNear(const std::string& label, const Eigen::Vector3d& pos) {
+    std::unique_lock<std::mutex> lock(far_mutex_);
+    far_detections_.erase(
+        std::remove_if(far_detections_.begin(), far_detections_.end(),
+                       [&](const FarDetection& d) {
+                           return d.label == label && (d.world_pos - pos).norm() < 2.5;
+                       }),
+        far_detections_.end());
+}
+
 void ObjectFactory::doSemanticProcessingOnce() {
     // thread pool
     std::vector<std::shared_future<ObjectNode::Ptr>> futures;
+    // 与futures同序保存每个mask的独立拷贝(clone保证生命周期)及其原始下标,
+    // 用于点数不足未挂载时提取远距离检测; 因mask循环存在continue跳过,
+    // futures下标是压缩序, 取label/conf必须用原始下标cur_mask_indices
+    std::vector<cv::Mat> cur_masks;
+    std::vector<int> cur_mask_indices;
     int active_threads = 0;
     std::mutex mtx;
     std::condition_variable cv;
@@ -443,6 +566,8 @@ void ObjectFactory::doSemanticProcessingOnce() {
             }
         );
         futures.emplace_back(std::move(cur_future));
+        cur_masks.push_back(mask_fixed.clone());
+        cur_mask_indices.push_back(i);   // 原始下标, 供收集循环按原始序取label/conf
         // 添加管理线程，监听子线程并通知主线程可以启动新线程
         auto& last_shared_future = futures.back();
         std::thread([&, sf = last_shared_future]() mutable {
@@ -454,13 +579,24 @@ void ObjectFactory::doSemanticProcessingOnce() {
     }
 
     // 等待所有线程完成并收集结果
-    for (auto& future : futures) {
+    // 按索引遍历: futures/cur_masks 为压缩序(continue跳过的mask不入列),
+    // 取label/conf必须经 cur_mask_indices[fi] 还原为mask循环的原始下标,
+    // 否则同帧有mask被跳过时远检测的label会发生错配
+    for (size_t fi = 0; fi < futures.size(); ++fi) {
         try {
-            ObjectNode::Ptr obj = future.get();
+            ObjectNode::Ptr obj = futures[fi].get();
             cur_observe_results_.push_back(obj);
             // 主线程串行执行物体匹配与合并（避免多线程竞态导致重复创建ID）
             if (obj->cloud->size() > _obj_cloud_num_thresh) {
                 mergeObjectIntoMap(obj);
+            } else if (_far_target_enable) {
+                // 点数不足未挂载: 尝试提取远距离检测(深度超出挂载范围的目标)
+                // 远检测只做方向引导, 不创建物体节点
+                const int origin_idx = cur_mask_indices[fi];
+                extractFarDetection(cur_data_.cur_depth_, cur_masks[fi],
+                                    cur_data_.cur_tf_, cur_data_.cur_pos_,
+                                    cur_data_.cur_semantic_recv_msg_->labels[origin_idx],
+                                    cur_data_.cur_semantic_recv_msg_->confs[origin_idx]);
             }
         } catch (const std::exception& e) {
             ROS_ERROR_STREAM("[ObjFactory] Error getting result from thread: " << e.what());
@@ -987,6 +1123,8 @@ void ObjectFactory::addNewObject(ObjectNode::Ptr &obj_node) {
         object_kd_tree_->Build(add_tmp_nodes);
         INFO_MSG_GREEN("[ObjFactory]: =========== Object KDTree initialized ==========");
     }
+    // 物体正式挂载后, 清理同方向远检测记录(后续由label匹配抢占机制接管, 避免双重引导)
+    removeFarDetectionsNear(obj_node->label, obj_node->pos);
     INFO_MSG_GREEN("\n*** [ObjFactory] New Object [id: " << obj_node->id << ", label : " << obj_node->label << "] \n");
 }
 

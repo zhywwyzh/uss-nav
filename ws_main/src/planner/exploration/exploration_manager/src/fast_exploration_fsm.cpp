@@ -4270,6 +4270,8 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       fd_->df_demo_mode_ = false;
       fd_->target_cmd_ = msg->command;
       scene_graph_->setTargetAndPriorKnowledge(fd_->target_cmd_, fd_->prior_knowledge_);
+      // 远目标方向偏好: 同步目标词到frontier规划(远距离检测引导frontier选择)
+      expl_manager_->setFarTargetLabel(fd_->target_cmd_);
       // THINKING关闭时, LLM不参与area选择, 直接走PLAN_EXPLORE(全局TSP);
       // THINKING开启时, 走LLM_PLAN_EXPLORE让LLM选area
       if (fp_->object_id_nav_use_thinking_) {
@@ -4305,9 +4307,11 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       }
       fd_->df_demo_mode_    = false;
       fd_->find_terminate_target_mode_ = false;
+      // 纯探索任务不启用远目标偏好(避免残留上一找物任务的偏向)
+      expl_manager_->clearFarTargetLabel();
       transitState(MISSION_FSM_STATE::PLAN_EXPLORE, "instructionCallback");
       break;
-    
+
     case quadrotor_msgs::Instruction::TURN_DF_DEMO:
       expl_manager_->setExplorationRegion(std::vector<Eigen::Vector3d>(), false);
       fd_->df_demo_mode_ = true;

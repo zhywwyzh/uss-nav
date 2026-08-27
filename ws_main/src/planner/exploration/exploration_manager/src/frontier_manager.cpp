@@ -64,6 +64,11 @@ FrontierManager::FrontierManager(ros::NodeHandle& nh, const MapInterface::Ptr& m
   nh.param("tracking/yaw_threshold", ep_->track_yaw_thr_, 0.5);
   nh.param("tracking/detect_error", ep_->track_detect_error_, 1.5);
 
+  // 远目标方向偏好折减系数(0=关闭), 供findGlobalTour_SomeFtrs代价折减使用
+  nh.param("exploration/far_target_weight", far_target_weight_, 0.3);
+  // 钳位上限: 折减因子 1-w*cos 需保持非负(TSP边权非负假设, LKH不支持负边权), 防误配>1.0
+  far_target_weight_ = std::min(far_target_weight_, 1.0);
+
   // Initialize TSP par file
   ofstream par_file(ep_->tsp_dir_ + "/single.par");
   par_file << "PROBLEM_FILE = " << ep_->tsp_dir_ << "/single.tsp\n";
@@ -705,6 +710,13 @@ int FrontierManager::planLLMExploration(const int &area_id, const Eigen::Vector3
 void FrontierManager::findGlobalTour_SomeFtrs(std::vector<Frontier>& ftr_select, const Eigen::Vector3d& cur_pos,
                                  const Eigen::Vector3d cur_vel, const double& cur_yaw,
                                  const PolyHedronPtr& cur_poly, vector<int>& indices) {
+  // 远目标方向偏好: FIND任务存在活跃远检测时启用(每次规划取一次, lambda内使用)
+  std::vector<ObjectFactory::FarDetection> far_dets;
+  if (!far_target_label_.empty() && far_target_weight_ > 1e-6 &&
+      scene_graph_ != nullptr && scene_graph_->object_factory_ != nullptr) {
+    far_dets = scene_graph_->object_factory_->getActiveFarDetections(far_target_label_);
+  }
+
   // get cost matrix between frontiers
   auto calCostBetween2Ftrs = [this](Frontier& f1, Frontier& f2) {
     vector<Eigen::Vector3d> path;
@@ -757,7 +769,7 @@ void FrontierManager::findGlobalTour_SomeFtrs(std::vector<Frontier>& ftr_select,
   };
 
   // get cost from cur_state to ftr
-  auto calCostFromCurStateToFtr = [this, cur_pos, cur_poly, cur_yaw, cur_vel](Frontier& f) -> double {
+  auto calCostFromCurStateToFtr = [this, cur_pos, cur_poly, cur_yaw, cur_vel, &far_dets](Frontier& f) -> double {
     double dis = -1.0f;
     std::vector<Eigen::Vector3d> path;
     auto vp = f.viewpoints_.front();
@@ -793,6 +805,22 @@ void FrontierManager::findGlobalTour_SomeFtrs(std::vector<Frontier>& ftr_select,
         path_cost           += ego_planner::ViewNode::w_dir_ * diff;
       }
       double cost = max(path_cost, yaw_cost);
+      // 远目标方向偏好: viewpoint方向与活跃远检测方向夹角越小, 代价折减越多
+      // (仅FIND任务存在活跃远检测时生效; 折减温和, 保持TSP全局最优性)
+      if (!far_dets.empty()) {
+        Eigen::Vector3d dir_xy = dir_2_vp; dir_xy.z() = 0.0;
+        if (dir_xy.norm() > 1e-3) {
+          dir_xy.normalize();
+          double best_cos = -1.0;
+          for (const auto& fd : far_dets) {
+            Eigen::Vector3d fd_xy = fd.direction; fd_xy.z() = 0.0;
+            if (fd_xy.norm() < 1e-3) continue;
+            best_cos = std::max(best_cos, dir_xy.dot(fd_xy.normalized()));
+          }
+          if (best_cos > 0.0)
+            cost *= (1.0 - far_target_weight_ * best_cos);
+        }
+      }
       return cost;
     }else {
       return 9999.0f;

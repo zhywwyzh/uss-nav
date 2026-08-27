@@ -70,6 +70,9 @@ class FrontierManager{
   // utils
   void forceDeleteFrontier(Frontier ftr);
   void setExplorationRegion(const std::vector<Eigen::Vector3d>& polygon, bool enabled);
+  // 远目标方向偏好: FIND任务激活时, 朝活跃远检测方向的frontier获得代价折减
+  void setFarTargetLabel(const std::string& label) { far_target_label_ = label; }
+  void clearFarTargetLabel() { far_target_label_.clear(); }
   bool hasExplorationRegion() const;
   bool isPointInExplorationRegion(const Eigen::Vector3d& point) const;
   bool frontierAllowedByRegion(const Frontier& frontier) const;
@@ -130,6 +133,8 @@ class FrontierManager{
   ros::Timer                        frontier_timer, goal_timer;
   bool                              has_exploration_region_{false};
   std::vector<Eigen::Vector3d>      exploration_region_polygon_;
+  std::string                       far_target_label_;       // 当前找物任务的目标词(空=纯探索, 不启用偏好)
+  double                            far_target_weight_{0.3}; // 代价折减系数(温和, 不破坏TSP全局最优性)
   // ros::Publisher plan_goal_pub_;
   // ros::Subscriber odom_sub_, goal_sub_;
 

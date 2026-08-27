@@ -74,6 +74,16 @@ public:
         scene_graph::EncodeMask::ConstPtr cur_semantic_recv_msg_;
     };
 
+    // 远距离检测记录: 深度超出挂载范围(max_ray_length)的目标检测, 仅保留方向信息
+    // 用于探索规划的方向偏好引导, 不参与 scene-graph 物体挂载
+    struct FarDetection {
+        std::string     label;      // 检测标签
+        Eigen::Vector3d world_pos;  // 粗略世界位置(远端深度噪声大, 仅参考)
+        Eigen::Vector3d direction;  // 世界系XY单位方向(消费端主要使用)
+        ros::Time       last_seen;  // 最后检出时间(TTL判定基准)
+        double          conf;       // 检测置信度
+    };
+
     ObjectFactory(ros::NodeHandle& nh);
     ObjectFactory(ros::NodeHandle& nh, SkeletonGeneratorPtr skel_gen_ptr);
     ObjectFactory(ros::NodeHandle& nh, const std::string& param_prefix,
@@ -93,6 +103,8 @@ public:
     void getObjectEdgesWithArea(const std::unordered_map<Eigen::Vector3d, int, Vector3dHash_SpecClus>& poly_clusterId_map,
                                 std::vector<std::vector<Eigen::Vector3d>>& edges);
     std::map<int, ObjectNode::Ptr>* getAllObjs(){return &object_map_;};
+    // 查询活跃远检测(TTL内且label匹配); 内部惰性剔除过期记录, 线程安全
+    std::vector<FarDetection> getActiveFarDetections(const std::string& label);
     bool objInGoodDetection(const ObjectNode::Ptr& obj_node) const {return obj_node->detection_count >= _detection_counter_thresh;};
     void resetForMapLoad();
     bool registerLoadedObject(const ObjectNode::Ptr& obj_node, bool need_more_detection);
@@ -129,6 +141,15 @@ private:
     int    _obj_cloud_num_thresh, _detection_counter_thresh;
 
     int    _max_deque_size;
+
+    // ---- 远距离检测(far target)参数与缓冲 ----
+    bool   _far_target_enable{true};
+    double _far_target_max_depth{15.0};        // 远检测有效深度上限
+    double _far_target_ttl{8.0};               // 记录有效期(秒), 过期回归纯TSP
+    double _far_target_merge_angle_deg{10.0};  // 多帧合并的方向夹角阈值
+    int    _far_target_min_pixels{50};         // mask最小有效像素数(防噪声)
+    std::vector<FarDetection> far_detections_; // 远检测缓冲区
+    std::mutex far_mutex_;                     // 独立锁, 避免与语义队列锁竞争
 
     bool   _depth_cloud_disp_all;
     bool   _use_camera_intrinsics;
@@ -180,6 +201,15 @@ private:
     void pushDataInDeque(const SemanticDataInput& data);
     ObjectNode::Ptr processSingleObject(const ProcessedCLoudInput &input);
     void doSemanticProcessingOnce();
+
+    // 点数不足未挂载时, 从mask提取远距离检测(深度需在挂载范围之外且不超过上限)
+    bool extractFarDetection(const cv::Mat& depth_img, const cv::Mat& mask,
+                             const Eigen::Matrix4d& tf, const Eigen::Vector3d& cam_pos,
+                             const std::string& label, double conf);
+    // 滑窗合并更新: 同label且方向夹角小于阈值的记录刷新, 否则新建
+    void updateFarDetection(const FarDetection& det);
+    // 物体挂载后清理同方向的同label记录(避免与抢占机制双重引导)
+    void removeFarDetectionsNear(const std::string& label, const Eigen::Vector3d& pos);
 
     void calculateDepthDirectionsFromVerticalFov(double vertical_fov);
     void getOrientedBoundingBox(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr &obb_corners);
