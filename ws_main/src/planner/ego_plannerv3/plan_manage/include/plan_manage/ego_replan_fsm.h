@@ -141,6 +141,13 @@ namespace ego_planner
     bool target_look_forward_;
     uint8_t target_yaw_mode_{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
     uint8_t target_yaw_path_mode_{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
+    // 最近一次 planNextWaypoint 的 yaw 配置；mondifyInCollisionFinalGoal 修改
+    // 撞障碍目标后重规划时必须沿用，否则默认 look_forward=true 会把
+    // "保持朝向"命令覆盖成"朝轨迹方向看"，垂直下降时机头会乱转。
+    double goal_yaw_{0.0};
+    bool goal_look_forward_{true};
+    uint8_t goal_yaw_mode_{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
+    uint8_t goal_yaw_path_mode_{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
     void handleYaw();
     double aim_direction_; // rad
     bool yaw_init_finished_{false};

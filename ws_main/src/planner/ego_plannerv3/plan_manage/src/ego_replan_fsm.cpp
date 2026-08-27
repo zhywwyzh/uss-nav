@@ -919,6 +919,12 @@ namespace ego_planner
   {
     final_goal_ = next_wp;
     glb_start_pt_ = odom_pos_;
+    // 记录本次 yaw 配置：后续 mondifyInCollisionFinalGoal 修改目标重规划时沿用，
+    // 避免 planNextWaypoint 默认 look_forward=true 覆盖"保持朝向"语义。
+    goal_yaw_ = next_yaw;
+    goal_look_forward_ = look_forward;
+    goal_yaw_mode_ = yaw_mode;
+    goal_yaw_path_mode_ = yaw_path_mode;
     have_target_ = true;
     pending_goal_finish_trigger_ = false;
     goal_finish_stable_start_time_ = ros::Time(0);
@@ -1124,7 +1130,10 @@ namespace ego_planner
 
     has_been_modified_ = flag_goal_modified;
     if ( flag_goal_modified && in_obs_goal_clear && swarm_collide_goal_clear )
-      return planNextWaypoint(final_goal_); // final_goal_=pt inside if success
+      // 沿用原目标命令的 yaw 配置重规划；此前只传位置导致 look_forward 掉回默认
+      // true，垂直下降类"保持朝向"命令会被覆盖成朝轨迹方向看，机头乱转。
+      return planNextWaypoint(final_goal_, goal_yaw_, goal_look_forward_,
+                              goal_yaw_mode_, goal_yaw_path_mode_); // final_goal_=pt inside if success
     else
       return false;
   }
