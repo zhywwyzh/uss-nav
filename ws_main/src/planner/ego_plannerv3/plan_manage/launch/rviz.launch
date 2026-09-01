@@ -1,3 +1,5 @@
 <launch>
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ego_planner)/launch/include/default.rviz" required="true" />
+  <!-- rviz 配置文件名（位于 launch/include/ 下）：default / 3dgs / mesh -->
+  <arg name="rviz_config" default="default.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ego_planner)/launch/include/$(arg rviz_config)" required="true" />
 </launch>
