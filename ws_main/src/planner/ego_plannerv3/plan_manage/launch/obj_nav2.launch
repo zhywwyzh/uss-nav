@@ -8,6 +8,7 @@
 
     <arg name="odom_topic" default="visual_slam/odom" />
     <arg name="cloud_topic" default="mid360/points" />
+    <arg name="seg_result_topic" default="/yoloe/encodemask_disable" />
 
     <include file="$(find ego_planner)/launch/include/run_in_sim2.xml">
         <arg name="drone_id" value="0"/>
@@ -19,6 +20,7 @@
         <arg name="map_size_z" value="$(arg map_size_z)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="seg_result_topic" value="$(arg seg_result_topic)"/>
 
         <!-- MANUAL_TARGET  = 1, // Set aim in rviz
              EXPLORE_TARGET = 2, // Get aim from Exploration

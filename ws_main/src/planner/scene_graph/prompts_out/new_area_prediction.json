@@ -2,11 +2,87 @@
   "areas": [
     {
       "dimensions": {
-        "height": "4.41",
+        "height": "23.58",
         "unit": "meters",
-        "width": "6.64"
+        "width": "33.34"
       },
-      "id": "0"
+      "id": "0",
+      "objects": [
+        {
+          "info": "Transformer,14.99,0.89"
+        },
+        {
+          "info": "Voltage Boost System,12.86,-6.14"
+        },
+        {
+          "info": "High Voltage Power Cable,0.86,-5.22"
+        },
+        {
+          "info": "Gas-Insulated Metal-Enclosed Switchgear,-5.79,9.10"
+        },
+        {
+          "info": "fly-origin,0.00,0.00"
+        },
+        {
+          "info": "Insulating Bushing,16.92,2.78"
+        },
+        {
+          "info": "Signal Control Cabinet,14.58,2.81"
+        },
+        {
+          "info": "Oil Conservator,12.97,6.31"
+        }
+      ]
+    },
+    {
+      "dimensions": {
+        "height": "23.58",
+        "unit": "meters",
+        "width": "33.34"
+      },
+      "id": "0",
+      "objects": [
+        {
+          "info": "Transformer,14.99,0.89"
+        },
+        {
+          "info": "Voltage Boost System,12.86,-6.14"
+        },
+        {
+          "info": "High Voltage Power Cable,0.86,-5.22"
+        },
+        {
+          "info": "Gas-Insulated Metal-Enclosed Switchgear,-5.79,9.10"
+        },
+        {
+          "info": "fly-origin,0.00,0.00"
+        },
+        {
+          "info": "Insulating Bushing,16.92,2.78"
+        },
+        {
+          "info": "Signal Control Cabinet,14.58,2.81"
+        },
+        {
+          "info": "Oil Conservator,12.97,6.31"
+        }
+      ]
+    },
+    {
+      "dimensions": {
+        "height": "4.16",
+        "unit": "meters",
+        "width": "2.53"
+      },
+      "id": "2"
+    },
+    {
+      "dimensions": {
+        "height": "1.03",
+        "unit": "meters",
+        "width": "1.35"
+      },
+      "id": "3"
     }
   ]
 }

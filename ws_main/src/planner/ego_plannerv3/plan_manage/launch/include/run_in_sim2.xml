@@ -27,11 +27,13 @@
 
     <arg name="odom_topic"/>
     <arg name="cloud_topic"/>
+    <arg name="seg_result_topic" default="/yoloe/encodemask_disable"/>
 
     <!-- main algorithm params -->
     <include file="$(find ego_planner)/launch/include/advanced_param_sim2.xml">
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="odometry_topic" value="$(arg odom_topic)"/>
+        <arg name="seg_result_topic" value="$(arg seg_result_topic)"/>
 
         <!-- camera pose: transform of camera frame in the world frame -->
         <!-- depth topic: depth image, 640x480 by default -->
