@@ -936,6 +936,28 @@ bool SceneGraphMapIO::load(const std::string& save_name) {
         if (poly_lookup.find(master_poly_id) != poly_lookup.end()) facet->master_polyhedron_ = poly_lookup.at(master_poly_id);
     }
 
+    // 过滤顶点数不足 3 的退化 facet：快照中部分 facet 的 vertex_ids 引用了全局
+    // vertices 里不存在的 id，加载时被静默丢弃后 vertices_ 少于 3 个，运行期对
+    // facet 顶点的下标访问会越界崩溃。这里统一清理，避免退化 facet 进入运行时拓扑。
+    std::unordered_set<const Facet*> degenerate_facets;
+    for (const auto& facet_pair : facet_lookup) {
+        if (facet_pair.second->vertices_.size() != 3) degenerate_facets.insert(facet_pair.second.get());
+    }
+    if (!degenerate_facets.empty()) {
+        for (auto& facet_pair : facet_lookup) {
+            FacetPtr facet = facet_pair.second;
+            facet->neighbor_facets_.erase(
+                std::remove_if(facet->neighbor_facets_.begin(), facet->neighbor_facets_.end(),
+                               [&](const FacetPtr& nf) { return degenerate_facets.count(nf.get()) > 0; }),
+                facet->neighbor_facets_.end());
+        }
+        for (auto it = facet_lookup.begin(); it != facet_lookup.end();) {
+            if (degenerate_facets.count(it->second.get()) > 0) it = facet_lookup.erase(it);
+            else ++it;
+        }
+        INFO_MSG_YELLOW("[SceneGraphMapIO] Dropped " << degenerate_facets.size() << " degenerate facets (vertex count < 3).");
+    }
+
     for (const auto& frontier_json : root.value("frontiers", json::array())) {
         PolyhedronFtrPtr frontier = frontier_lookup.at(frontier_json.at("id").get<int>());
         const int master_poly_id = frontier_json.value("master_poly_id", -1);

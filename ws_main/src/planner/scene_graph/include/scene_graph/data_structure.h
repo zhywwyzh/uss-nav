@@ -218,16 +218,21 @@ public:
   Facet(const std::vector<VertexPtr> &vertices, const PolyHedronPtr &master_polyhedron){
     vertices_ = vertices;
     master_polyhedron_ = master_polyhedron;
-    center_ = (vertices_.at(0)->position_ + vertices_.at(1)->position_ + vertices_.at(2)->position_) / 3.0;
-    // Compute plane equation: ax + by + cz + d = 0
-    const Eigen::Vector3d v1 = vertices.at(1)->position_ - vertices.at(0)->position_;
-    const Eigen::Vector3d v2 = vertices.at(2)->position_ - vertices.at(0)->position_;
-    Eigen::Vector3d normal = v1.cross(v2);
-    normal.normalize();
-    const double a = normal(0); const double b = normal(1); const double c = normal(2);
-    Eigen::Vector3d abc(a, b, c);
-    const double d = -normal.dot(vertices.at(0)->position_);
-    plane_equation_ = Eigen::Vector4d(a, b, c, d);
+    if (vertices_.size() >= 3) {
+      center_ = (vertices_.at(0)->position_ + vertices_.at(1)->position_ + vertices_.at(2)->position_) / 3.0;
+      // Compute plane equation: ax + by + cz + d = 0
+      const Eigen::Vector3d v1 = vertices.at(1)->position_ - vertices.at(0)->position_;
+      const Eigen::Vector3d v2 = vertices.at(2)->position_ - vertices.at(0)->position_;
+      Eigen::Vector3d normal = v1.cross(v2);
+      normal.normalize();
+      const double a = normal(0); const double b = normal(1); const double c = normal(2);
+      Eigen::Vector3d abc(a, b, c);
+      const double d = -normal.dot(vertices.at(0)->position_);
+      plane_equation_ = Eigen::Vector4d(a, b, c, d);
+    } else {
+      center_ = Eigen::Vector3d::Zero();
+      plane_equation_ = Eigen::Vector4d::Zero();
+    }
     frontier_processed_ = false;
     is_linked_   = false;
     is_visited_  = false;
@@ -325,6 +330,7 @@ public:
 
   PolyhedronFtr(std::vector<FacetPtr> facets, PolyHedronPtr master){
     auto addSingleFacetAreaSize = [] (FacetPtr facet) -> double{
+        if (facet->vertices_.size() < 3) return 0.0;
         Eigen::Vector3d v1 = facet->vertices_.at(1)->position_ - facet->vertices_.at(0)->position_;
         Eigen::Vector3d v2 = facet->vertices_.at(2)->position_ - facet->vertices_.at(0)->position_;
         return 0.5 * v1.cross(v2).norm();

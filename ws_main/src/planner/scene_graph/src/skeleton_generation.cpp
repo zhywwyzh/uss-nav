@@ -679,6 +679,7 @@ void SkeletonGenerator::generateFrontiers(PolyHedronPtr polyhedron){  std::vecto
   // Calculate outwards normal for each facet
   // 生成候选单位法向量，并确定最终的法向量朝向
   for (auto & facet : polyhedron->facets_){
+    if (facet->vertices_.size() < 3) continue;
     Eigen::Vector3d v1 = facet->vertices_.at(1)->position_ - facet->vertices_.at(0)->position_;
     Eigen::Vector3d v2 = facet->vertices_.at(2)->position_ - facet->vertices_.at(0)->position_;
     Eigen::Vector3d candidate_normal = v1.cross(v2);
@@ -730,6 +731,7 @@ void SkeletonGenerator::generateFrontiers(PolyHedronPtr polyhedron){  std::vecto
   std::vector<FacetPtr> ignored_facets;
   for (FacetPtr cur_facet : polyhedron->facets_){
     if (cur_facet->frontier_processed_) continue;
+    if (cur_facet->vertices_.size() < 3) continue;
     // todo： 此处有z轴上下界检查，不知道是否关键，暂时不加
     int ignore_cnt = 0;
     for (int i = 0; i < 3; i++){
@@ -1503,8 +1505,10 @@ void SkeletonGenerator::findNeighborFacets(std::vector<FacetPtr> facets){
   int num_facet = facets.size();
   for (int i = 0; i < num_facet; i++){
     const FacetPtr& f1 = facets.at(i);
+    if (f1->vertices_.size() < 3) continue;
     for (int j = i+1; j < num_facet; j++){
       const FacetPtr& f2 = facets.at(j);
+      if (f2->vertices_.size() < 3) continue;
       if (f1->neighbor_facets_.size() == 3) break;
       int same_vertex_cnt = 0;
       for (int m = 0; m < 3; m++)
@@ -1788,6 +1792,7 @@ void SkeletonGenerator::drawFacets(std::vector<FacetPtr> facets, Eigen::Vector4d
   marker.color.a = color(3);
 
   for (auto facet : facets){
+    if (facet->vertices_.size() < 3) continue;
     for (int i = 0; i < 3; i++){
       geometry_msgs::Point point1, point2;
       point1.x = facet->vertices_.at(i)->position_(0);
@@ -1982,6 +1987,7 @@ void SkeletonGenerator::visualizeFacets(const std::vector<FacetPtr> &facets, con
   marker_frontier.color.r = 1.0; marker_frontier.color.g = 0.0; marker_frontier.color.b = 0.0;
 
   for (const auto& facet : facets){
+    if (facet->vertices_.size() < 3) continue;
     for (int i = 0; i < 3; i++){
       geometry_msgs::Point point1, point2;
       point1.x = facet->vertices_.at(i)->position_(0);
