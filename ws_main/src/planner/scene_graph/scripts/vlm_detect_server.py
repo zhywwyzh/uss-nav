@@ -51,7 +51,7 @@ class VlmDetectServer:
         self.result_pub = rospy.Publisher(encodemask_topic, EncodeMask, queue_size=5)
 
         # ---- VLM 配置 ----
-        vlm_base_url = rospy.get_param("~vlm_base_url", "http://127.0.0.1:2230/v1")
+        vlm_base_url = rospy.get_param("~vlm_base_url", "http://119.45.181.200:8002/v1")
         vlm_api_key_env = rospy.get_param("~vlm_api_key_env", "DOUBAO_API_KEY")
         vlm_api_key = os.environ.get(vlm_api_key_env, "EMPTY")
         self.vlm_temperature = rospy.get_param("~vlm_temperature", 0.8)
@@ -210,7 +210,8 @@ class VlmDetectServer:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
                 {"type": "text", "text": prompt},
             ]}],
-            temperature=self.vlm_temperature, max_tokens=128)
+            temperature=self.vlm_temperature, max_tokens=128,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}})
         content = self._strip_think(resp.choices[0].message.content)
         data, _ = self._try_parse_json(content)
         return bool(data.get("vis_first", False)) if isinstance(data, dict) else False
@@ -230,7 +231,8 @@ class VlmDetectServer:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
                 {"type": "text", "text": prompt},
             ]}],
-            temperature=self.vlm_temperature, max_tokens=256)
+            temperature=self.vlm_temperature, max_tokens=256,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}})
         content = self._strip_think(resp.choices[0].message.content)
 
         import re as _re

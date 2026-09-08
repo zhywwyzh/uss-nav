@@ -33,15 +33,15 @@ SMALL_MAP_TOPIC = "/vla_swarm/small_map"
 OBSERVATION_TOPIC = "/vla_swarm/observation"
 NODE_NAME = "LLM_LOCAL_API_NODE"
 
-# 普通 SceneGraph 与 VLA-Swarm 文本 Prompt 默认使用 2233。
+# 普通 SceneGraph 与 VLA-Swarm 文本 Prompt 默认使用 8002（Qwen3.6-35B-A3B）。
 TEXT_BASE_URL = os.environ.get(
     "SCENE_GRAPH_LOCAL_TEXT_BASE_URL",
-    "http://127.0.0.1:2233/v1",
+    "http://119.45.181.200:8002/v1",
 )
-# SmallMap 和前视 Observation 等视觉 Prompt 默认使用 2235。
+# SmallMap 和前视 Observation 等视觉 Prompt 默认使用 8002。
 VISION_BASE_URL = os.environ.get(
     "SCENE_GRAPH_LOCAL_VISION_BASE_URL",
-    "http://127.0.0.1:2235/v1",
+    "http://119.45.181.200:8002/v1",
 )
 API_KEY = os.environ.get("SCENE_GRAPH_LOCAL_API_KEY", "EMPTY")
 TEXT_MODEL = os.environ.get("SCENE_GRAPH_LOCAL_TEXT_MODEL", "")
@@ -342,8 +342,14 @@ def call_llm_api(prompt_in):
             model=model_name,
             messages=messages,
             temperature=TEMPERATURE,
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
         )
-        answer_text = completion.choices[0].message.content
+        message = completion.choices[0].message
+        answer_text = getattr(message, "content", None)
+        if not answer_text:
+            answer_text = getattr(message, "reasoning", None)
         if not answer_text:
             raise RuntimeError("Local model returned an empty answer")
         return create_answer(
