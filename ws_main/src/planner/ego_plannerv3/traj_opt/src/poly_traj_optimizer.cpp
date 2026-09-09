@@ -61,6 +61,7 @@ namespace ego_planner
     Eigen::Map<Eigen::VectorXd> Vt(x_init + initInnerPts.size(), initT.size());
     RealT2VirtualT(initT, Vt);
     min_ellip_dist2_.resize(swarm_trajs_->size());
+    prepareRouteTrackingReference();
 
     /*************restrict_plane_**************/
     Eigen::Vector3d v_s2e = finState.col(0) - iniState.col(0);
@@ -1649,6 +1650,40 @@ namespace ego_planner
     }
   }
 
+  void PolyTrajOptimizer::prepareRouteTrackingReference()
+  {
+    route_tracking_refs_.clear();
+    const int reference_count = cps_.points.cols();
+    if (route_tracking_path_.size() < 2 || reference_count < 2 ||
+        wei_route_tracking_ <= 0.0)
+      return;
+
+    std::vector<double> arc_lengths(route_tracking_path_.size(), 0.0);
+    for (size_t index = 1; index < route_tracking_path_.size(); ++index)
+      arc_lengths[index] = arc_lengths[index - 1] +
+                           (route_tracking_path_[index] - route_tracking_path_[index - 1]).norm();
+    const double total_length = arc_lengths.back();
+    if (total_length < 1e-6)
+      return;
+
+    size_t segment_index = 0;
+    route_tracking_refs_.reserve(reference_count);
+    for (int index = 0; index < reference_count; ++index)
+    {
+      const double target_length = total_length * index / (reference_count - 1);
+      while (segment_index + 1 < arc_lengths.size() - 1 &&
+             arc_lengths[segment_index + 1] < target_length)
+        ++segment_index;
+
+      const double segment_length = arc_lengths[segment_index + 1] - arc_lengths[segment_index];
+      const double ratio = segment_length < 1e-6 ? 0.0 :
+                           (target_length - arc_lengths[segment_index]) / segment_length;
+      route_tracking_refs_.push_back(route_tracking_path_[segment_index] +
+                                     ratio * (route_tracking_path_[segment_index + 1] -
+                                              route_tracking_path_[segment_index]));
+    }
+  }
+
   void PolyTrajOptimizer::computeVelLim(const Eigen::MatrixXd &iniState, Eigen::MatrixXd finState)
   {
     constexpr double MIN_VEL = 0.1, DACC = 3.0 /* about 17-degree drone tilt */, SIDE_ACC_MAX = 1.5;
@@ -2275,6 +2310,15 @@ namespace ego_planner
           cost_rec(0) += omg * step * costp;
         }
 
+        if (RouteTrackingGradCostP(i_dp, pos, gradp, costp))
+        {
+          gradViolaPc = beta0 * gradp.transpose();
+          gradViolaPt = alpha * gradp.transpose() * vel;
+          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) += omg * step * gradViolaPc;
+          gdT(i) += omg * (costp / K + step * gradViolaPt);
+          cost_rec(7) += omg * step * costp;
+        }
+
         // restrict plane
         if (i < N - 1 && j == K && restrictplaneGradCostP(i, pos, gradp, costp))
         {
@@ -2885,6 +2929,26 @@ namespace ego_planner
     return true;
   }
 
+  bool PolyTrajOptimizer::RouteTrackingGradCostP(const int cps_id,
+                                                  const Eigen::Vector3d &p,
+                                                  Eigen::Vector3d &gradp,
+                                                  double &costp)
+  {
+    if (cps_id <= 0 || cps_id >= static_cast<int>(route_tracking_refs_.size()) ||
+        wei_route_tracking_ <= 0.0)
+      return false;
+
+    const Eigen::Vector3d deviation = p - route_tracking_refs_[cps_id];
+    const double distance = deviation.norm();
+    const double excess = distance - route_tracking_corridor_;
+    if (excess <= 0.0 || distance < 1e-6)
+      return false;
+
+    costp = wei_route_tracking_ * excess * excess;
+    gradp = 2.0 * wei_route_tracking_ * excess / distance * deviation;
+    return true;
+  }
+
   bool PolyTrajOptimizer::swarmGradCostP(const int i_dp,
                                          const double t,
                                          const Eigen::Vector3d &p,
@@ -3239,5 +3303,16 @@ namespace ego_planner
   void PolyTrajOptimizer::setCPsNumPerPiece(const int N) { cps_num_prePiece_ = N, cps_num_prePiece_Long_ = N; }
 
   void PolyTrajOptimizer::setPlanParametersCopy(const PlanParameters &pp_cpy) { pp_cpy_ = pp_cpy; }
+
+  void PolyTrajOptimizer::setRouteTrackingPath(const std::vector<Eigen::Vector3d> &path)
+  {
+    route_tracking_path_ = path;
+  }
+
+  void PolyTrajOptimizer::clearRouteTrackingPath()
+  {
+    route_tracking_path_.clear();
+    route_tracking_refs_.clear();
+  }
 
 } // namespace ego_planner

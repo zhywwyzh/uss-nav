@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <thread>
+#include <vector>
 #include <optimizer/poly_traj_utils.hpp>
 #include <quadrotor_msgs/PositionCommand.h>
 #include <quadrotor_msgs/EgoGoalSet.h>
@@ -47,6 +48,8 @@ namespace ego_planner
         double yaw_vel_panorama_, yaw_acc_panorama_;
         bool panorama_yaw_active_{false};
 
+        int route_projection_lookahead_waypoints_{5};
+        
         // face target center: yaw points at the object center continuously.
         // Clear request is deferred until hover to avoid mid-flight yaw jumps.
         bool has_face_center_{false};
@@ -71,6 +74,14 @@ namespace ego_planner
             uint8_t control_mode{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
             uint8_t path_mode{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
             Eigen::Vector3d pos;
+            // use low yaw rate/acc limits (e.g. route profile following)
+            bool low_speed{false};
+            // route yaw profile: interpolate yaw along the route arc-length.
+            bool route_profile{false};
+            std::vector<Eigen::Vector3d> route_wps;
+            std::vector<double> route_s;
+            std::vector<double> route_yaws;
+            double route_last_s{0.0};
         };
         struct TIME_REC
         {
@@ -86,8 +97,13 @@ namespace ego_planner
         void setTrajectory(poly_traj::Trajectory &traj, double start_time);
         void setYaw(double des_yaw, double cur_yaw, Eigen::Vector3d pos, bool look_forward = true,
                     uint8_t control_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL,
-                    uint8_t path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST);
+                    uint8_t path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST,
+                    bool low_speed = false);
         void setPanoramaYaw(double des_yaw, double cur_yaw, const Eigen::Vector3d& hold_pos);
+        void setRouteYawProfile(const std::vector<Eigen::Vector3d> &route_wps,
+                                const std::vector<double> &route_s,
+                                const std::vector<double> &route_yaws,
+                                double init_yaw, Eigen::Vector3d pos, bool low_speed = false);
         void setFaceCenter(const Eigen::Vector3d &center, bool valid);
         bool hasFaceCenter() const { return has_face_center_; }
         void resetYawLookforward(Eigen::Vector3d pos);
@@ -100,6 +116,9 @@ namespace ego_planner
     private:
         // void heartbeatCallback(std_msgs::EmptyPtr msg);
         std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, double dt);
+        bool projectRouteS(const Eigen::Vector3d &pos, double &projected_s);
+        double interpolateRouteYaw(double s) const;
+        static double normalizeYaw(double yaw);
         void publish_cmd(Eigen::Vector3d p, Eigen::Vector3d v, Eigen::Vector3d a, Eigen::Vector3d j, double y, double yd);
         static void cmdThread(void *obj);
         void cmdFun();

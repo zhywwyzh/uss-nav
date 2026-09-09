@@ -5,6 +5,39 @@
 
 namespace ego_planner
 {
+  namespace
+  {
+    // route 模式:把剩余 route 参考截断到规划视界长度,供轨迹优化跟踪。
+    std::vector<Eigen::Vector3d> truncateRouteReference(
+        const std::vector<Eigen::Vector3d> &path, const double max_length)
+    {
+      std::vector<Eigen::Vector3d> reference;
+      if (path.size() < 2 || max_length <= 1e-6)
+        return reference;
+
+      reference.push_back(path.front());
+      double remaining_length = max_length;
+      for (size_t index = 1; index < path.size() && remaining_length > 1e-6; ++index)
+      {
+        const Eigen::Vector3d segment = path[index] - reference.back();
+        const double segment_length = segment.norm();
+        if (segment_length < 1e-6)
+          continue;
+
+        if (segment_length <= remaining_length)
+        {
+          reference.push_back(path[index]);
+          remaining_length -= segment_length;
+        }
+        else
+        {
+          reference.push_back(reference.back() + segment * (remaining_length / segment_length));
+          remaining_length = 0.0;
+        }
+      }
+      return reference.size() >= 2 ? reference : std::vector<Eigen::Vector3d>();
+    }
+  } // namespace
 
   // SECTION interfaces for setup and query
 
@@ -50,7 +83,9 @@ namespace ego_planner
       const Eigen::Vector3d &start_acc, const Eigen::Vector3d &start_jerk,
       const Eigen::Vector3d &glb_start_pt, const Eigen::Vector3d &final_goal,
       const bool flag_use_last_optimial, const bool flag_random_init,
-      vector<DensityEvalRayData> *pathes, bool &touch_goal)
+      vector<DensityEvalRayData> *pathes, bool &touch_goal,
+      const std::vector<Eigen::Vector3d> *guide_path,
+      const bool enable_route_tracking)
   {
     ros::Time t_start = ros::Time::now();
     ros::Duration t_init, t_opt;
@@ -75,7 +110,7 @@ namespace ego_planner
 
     poly_traj::MinJerkOpt initMJO;
     if (!computeInitState(start_pt, start_vel, start_acc, glb_start_pt, final_goal,
-                          flag_use_last_optimial, flag_random_init, pathes, initMJO, touch_goal))
+                          flag_use_last_optimial, flag_random_init, pathes, initMJO, touch_goal, guide_path))
     {
       continous_failures_count_++;
       failure_cnt_++;
@@ -86,6 +121,15 @@ namespace ego_planner
     poly_traj_opt_->setIfTouchGoal(touch_goal);
     poly_traj_opt_->setMaxVelAcc(pp_.max_vel_, pp_.max_acc_);
     poly_traj_opt_->setPlanParametersCopy(pp_);
+    poly_traj_opt_->clearRouteTrackingPath();
+    if (enable_route_tracking && guide_path && guide_path->size() >= 2 &&
+        !flag_use_last_optimial && !flag_random_init)
+    {
+      std::vector<Eigen::Vector3d> route_reference =
+          truncateRouteReference(*guide_path, pp_.planning_horizen_);
+      if (route_reference.size() >= 2)
+        poly_traj_opt_->setRouteTrackingPath(route_reference);
+    }
 
     vector<std::pair<int, int>> segments;
     vector<vector<Eigen::Vector3d>> AstarPathes;
@@ -289,13 +333,17 @@ namespace ego_planner
       const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
       const Eigen::Vector3d &glb_start_pt, const Eigen::Vector3d &final_goal,
       const bool flag_use_last_optimial, const bool flag_random_init, vector<DensityEvalRayData> *pathes,
-      poly_traj::MinJerkOpt &initMJO, bool &touch_goal)
+      poly_traj::MinJerkOpt &initMJO, bool &touch_goal,
+      const std::vector<Eigen::Vector3d> *guide_path)
   {
 
     const int TrialTimesLim = 3;
     const int MinPieceNum = 3; // One of the Piece (i.e. an innerPts) will be given manually within the first segment, so MinPieceNum always minus 1
     touch_goal = false;
     vector<Eigen::Vector3d> trajPtVec;
+
+    // route 模式:提供 guide_path 时优先以其作为初始化路径。
+    const bool use_guide_path = guide_path && guide_path->size() >= 2 && !flag_use_last_optimial && !flag_random_init;
 
     if (flag_use_last_optimial) /*** case 1: initialize from previous optimal trajectory ***/
     {
@@ -370,8 +418,18 @@ namespace ego_planner
     {
       // step1: get the rough path with only some nodes
       vector<Eigen::Vector3d> best_path;
-      best_path.push_back(start_pt);
-      if ((pathes && !pathes->empty()) && !flag_random_init)
+      if (use_guide_path)
+      {
+        best_path = *guide_path;
+        best_path.front() = start_pt;
+        best_path.back() = final_goal;
+      }
+      else
+      {
+        best_path.push_back(start_pt);
+      }
+
+      if (!use_guide_path && (pathes && !pathes->empty()) && !flag_random_init)
       {
         // for (auto path : *pathes)
         //   cout << "score=" << path.score << " mid_p=" << path.mid_p.transpose() << " end_p=" << path.end_p.transpose() << " safe_margin=" << path.safe_margin << " norm_devi=" << path.norm_devi << " safe_l=" << path.safe_l << endl;
@@ -448,17 +506,31 @@ namespace ego_planner
           }
         }
       }
-      else
+      else if (!use_guide_path)
       {
         /* pathes->empty() means the drone gets too close to the final goal.*/
         best_path.push_back(GenRandomMidPt(start_pt, final_goal));
       }
-      best_path.push_back(final_goal);
+      if (!use_guide_path)
+        best_path.push_back(final_goal);
 
       // step2: uniformly sample trajPtVec on the rough path
+      double init_ref_len = (best_path.front() - best_path.back()).norm();
+      if (use_guide_path)
+      {
+        init_ref_len = 0.0;
+        for (size_t i = 1; i < best_path.size(); ++i)
+          init_ref_len += (best_path[i] - best_path[i - 1]).norm();
+      }
+      if (init_ref_len < 1e-6)
+      {
+        ROS_ERROR("init path length is too short.");
+        return false;
+      }
+
       int trialtimes = 0;
       double piece_len = min(pp_.polyTraj_piece_length,
-                             min(pp_.planning_horizen_, (best_path.front() - best_path.back()).norm()) /
+                             min(pp_.planning_horizen_, init_ref_len) /
                                  (MinPieceNum - 1));
       while (true)
       {
@@ -470,8 +542,10 @@ namespace ego_planner
         for (int path_id = 0; path_id < (int)best_path.size() - 1; ++path_id)
         {
           Eigen::Vector3d seg_start = trajPtVec.back();
-          Eigen::Vector3d seg_dir = (best_path[path_id + 1] - seg_start).normalized();
           double seg_len = (best_path[path_id + 1] - seg_start).norm();
+          if (seg_len < 1e-6)
+            continue;
+          Eigen::Vector3d seg_dir = (best_path[path_id + 1] - seg_start).normalized();
           bool found_local_end = false;
           for (double cur_len = piece_len; cur_len < seg_len; cur_len += piece_len)
           {
@@ -577,7 +651,12 @@ namespace ego_planner
 
     // step3: compute time allocation as accurate as possible
     double traj_dura = computeInitDuration(trajPtVec.front(), start_vel, trajPtVec.back(), Eigen::Vector3d::Zero());
-    Eigen::Vector3d tailVel = touch_goal ? Eigen::Vector3d::Zero() : Eigen::Vector3d((final_goal - trajPtVec.back()).normalized() * (0.7 * pp_.max_vel_));
+    Eigen::Vector3d tail_dir = final_goal - trajPtVec.back();
+    if (!touch_goal && use_guide_path && trajPtVec.size() >= 2)
+      tail_dir = trajPtVec.back() - trajPtVec[trajPtVec.size() - 2];
+    Eigen::Vector3d tailVel = touch_goal || tail_dir.norm() < 1e-3
+                                  ? Eigen::Vector3d::Zero()
+                                  : Eigen::Vector3d(tail_dir.normalized() * (0.7 * pp_.max_vel_));
     auto traj = OnePieceTrajGen(trajPtVec.front(), start_vel, start_acc, trajPtVec.back(), tailVel, Eigen::Vector3d::Zero(), traj_dura);
     double total_len = 0, cur_len = 0;
     for (size_t i = 1; i < trajPtVec.size(); i++)

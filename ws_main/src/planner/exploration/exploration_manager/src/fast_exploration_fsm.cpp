@@ -346,6 +346,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
       ros::TransportHints().tcpNoDelay());
 
   ego_goal_pub_         = nh.advertise<quadrotor_msgs::EgoGoalSet>("local_goal", 10);
+  ego_route_pub_        = nh.advertise<quadrotor_msgs::EgoWaypointRoute>("local_route", 10);
   goal_from_station_pub_ = nh.advertise<quadrotor_msgs::GoalSet>("/goal_with_id_from_station", 10);
   vis_marker_pub_       = nh.advertise<visualization_msgs::Marker>("planning/fsm_vis", 10);
   vis_path_pub_         = nh.advertise<visualization_msgs::MarkerArray>("planning/fsm_path", 10);
@@ -1617,6 +1618,13 @@ void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::
       stopMotion();
     }
     transitState(MISSION_FSM_STATE::WAIT_TRIGGER, source);
+  }
+
+  if (goals.size() > 1) {
+    // 多waypoint轨迹:整条下发给 ego-planner 的 route 模式(local_route),
+    // 由 EGO 沿 route 滚动规划执行;单点仍走 local_goal 保持旧行为。
+    pubLocalRoute(goals, yaws, look_forward, source);
+    return;
   }
 
   pubLocalGoal(
@@ -3825,6 +3833,37 @@ void FastExplorationFSM::pubLocalGoal(const Eigen::Vector3d local_goal, const do
   msg.yaw_mode = yaw_mode;
   msg.yaw_path_mode = yaw_path_mode;
   ego_goal_pub_.publish(msg);
+}
+
+void FastExplorationFSM::pubLocalRoute(const std::vector<geometry_msgs::Point>& goals,
+                                       const std::vector<float>& yaws,
+                                       bool look_forward,
+                                       const std::string& source) {
+  if (goals.empty()) {
+    ROS_WARN_STREAM("[ROUTE] Ignore empty route instruction from " << source);
+    return;
+  }
+
+  static uint32_t route_seq = 0;
+  quadrotor_msgs::EgoWaypointRoute msg;
+  msg.drone_id = md_->drone_id_;
+  msg.goals = goals;
+  msg.yaw.clear();
+  if (!yaws.empty() && yaws.size() == goals.size()) {
+    msg.yaw.reserve(yaws.size());
+    for (const float y : yaws) msg.yaw.push_back(y);
+  }
+  msg.look_forward = look_forward;
+  msg.goal_to_follower = false;
+  msg.route_id = ++route_seq;
+  msg.job_id = source;
+
+  fd_->ego_exec_finished_ = false;
+  ego_route_pub_.publish(msg);
+  ROS_INFO_STREAM("[ROUTE] Published " << goals.size()
+                    << "-waypoint route to ego-planner (route_id=" << msg.route_id
+                    << ", source=" << source << ", look_forward="
+                    << (look_forward ? 1 : 0) << ")");
 }
 
 // return aim_pose aim_vel, aim_yaw and path_res

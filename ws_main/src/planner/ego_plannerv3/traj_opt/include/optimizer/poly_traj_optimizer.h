@@ -133,6 +133,8 @@ namespace ego_planner
     ConstraintPoints cps_;
     std::vector<std::pair<Eigen::Vector3d, double>> restrict_plane_;
     PlanParameters pp_cpy_;
+    std::vector<Eigen::Vector3d> route_tracking_path_;
+    std::vector<Eigen::Vector3d> route_tracking_refs_;
 
     int drone_id_;
     int cps_num_prePiece_, cps_num_prePiece_Long_; // number of distinctive constraint points each piece
@@ -166,6 +168,7 @@ namespace ego_planner
     double wei_feas_, wei_feas_mod_;                                               // feasibility weight
     double wei_sqrvar_;                                                            // squared variance weight
     double wei_time_;                                                              // time weight
+    double wei_route_tracking_, route_tracking_corridor_;                          // route tracking weight and soft corridor
     double obs_clearance_, obs_clearance4_, obs_clearance_soft_, swarm_clearance_; // safe distance
     double max_vel_, max_acc_, max_jer_, max_sna_;                                 // dynamic limits
     Eigen::Vector3d start_jerk_;
@@ -196,6 +199,8 @@ namespace ego_planner
     void setMaxVelAcc(double max_vel, double max_acc);
     void setCPsNumPerPiece(const int N);
     void setPlanParametersCopy(const PlanParameters &pp_cpy);
+    void setRouteTrackingPath(const std::vector<Eigen::Vector3d> &path);
+    void clearRouteTrackingPath();
 
     /* helper functions */
     inline const ConstraintPoints &getControlPoints(void) { return cps_; }
@@ -238,6 +243,8 @@ namespace ego_planner
     void computeVelLim(const Eigen::MatrixXd &iniState, Eigen::MatrixXd finState);
 
     void prepareFittedCurve();
+
+    void prepareRouteTrackingReference();
 
     /* multi-topo support */
     std::vector<ConstraintPoints> distinctiveTrajs(vector<std::pair<int, int>> segments);
@@ -308,6 +315,11 @@ namespace ego_planner
                                const Eigen::Vector3d &p,
                                Eigen::Vector3d &gradp,
                                double &costp);
+
+    bool RouteTrackingGradCostP(const int cps_id,
+                                const Eigen::Vector3d &p,
+                                Eigen::Vector3d &gradp,
+                                double &costp);
 
     bool swarmGradCostP(const int i_dp,
                         const double t,

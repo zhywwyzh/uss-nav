@@ -52,11 +52,17 @@ namespace ego_planner
     yaw_given_.look_forward = true;
     yaw_given_.control_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL;
     yaw_given_.path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST;
+    yaw_given_.low_speed = false;
+    yaw_given_.route_profile = false;
+    yaw_given_.route_wps.clear();
+    yaw_given_.route_s.clear();
+    yaw_given_.route_yaws.clear();
+    yaw_given_.route_last_s = 0.0;
   }
 
 
   void TrajServer::setYaw(double des_yaw, double cur_yaw, Eigen::Vector3d pos, bool look_forward,
-                          uint8_t control_mode, uint8_t path_mode)
+                          uint8_t control_mode, uint8_t path_mode, bool low_speed)
   {
     panorama_yaw_active_ = false;
     // 保持方向模式下，将新odometry yaw展开到最接近当前内部连续角的等价角度。
@@ -75,6 +81,12 @@ namespace ego_planner
     yaw_given_.look_forward = look_forward;
     yaw_given_.control_mode = control_mode;
     yaw_given_.path_mode = path_mode;
+    yaw_given_.low_speed = low_speed;
+    yaw_given_.route_profile = false;
+    yaw_given_.route_wps.clear();
+    yaw_given_.route_s.clear();
+    yaw_given_.route_yaws.clear();
+    yaw_given_.route_last_s = 0.0;
   }
 
   void TrajServer::setPanoramaYaw(double des_yaw, double cur_yaw, const Eigen::Vector3d& hold_pos)
@@ -98,6 +110,40 @@ namespace ego_planner
     yaw_given_.look_forward = false;
     yaw_given_.control_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_PANORAMA;
     yaw_given_.path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_KEEP_DIRECTION;
+    yaw_given_.low_speed = false;
+    yaw_given_.route_profile = false;
+    yaw_given_.route_wps.clear();
+    yaw_given_.route_s.clear();
+    yaw_given_.route_yaws.clear();
+    yaw_given_.route_last_s = 0.0;
+  }
+
+  void TrajServer::setRouteYawProfile(const std::vector<Eigen::Vector3d> &route_wps,
+                                      const std::vector<double> &route_s,
+                                      const std::vector<double> &route_yaws,
+                                      double init_yaw, Eigen::Vector3d pos, bool low_speed)
+  {
+    panorama_yaw_active_ = false;
+    yaw_given_.yaw = normalizeYaw(init_yaw);
+    yaw_given_.pos = pos;
+    yaw_given_.reach_given_yaw_ = false;
+    yaw_given_.look_forward = false;
+    yaw_given_.control_mode = low_speed
+                                  ? quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED
+                                  : quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL;
+    yaw_given_.path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST;
+    yaw_given_.route_profile = true;
+    yaw_given_.route_wps = route_wps;
+    yaw_given_.route_s = route_s;
+    yaw_given_.route_yaws = route_yaws;
+    yaw_given_.route_last_s = 0.0;
+
+    if (!route_s.empty())
+    {
+      double projected_s = 0.0;
+      if (projectRouteS(pos, projected_s))
+        yaw_given_.route_last_s = projected_s;
+    }
   }
 
   void TrajServer::setFaceCenter(const Eigen::Vector3d &center, bool valid)
@@ -141,6 +187,82 @@ namespace ego_planner
     traj_state_   = TrajState::IDLE;
   }
 
+  double TrajServer::normalizeYaw(double yaw)
+  {
+    while (yaw > M_PI)
+      yaw -= 2.0 * M_PI;
+    while (yaw < -M_PI)
+      yaw += 2.0 * M_PI;
+    return yaw;
+  }
+
+  bool TrajServer::projectRouteS(const Eigen::Vector3d &pos, double &projected_s)
+  {
+    if (yaw_given_.route_wps.size() < 2 || yaw_given_.route_s.size() != yaw_given_.route_wps.size())
+      return false;
+
+    double best_dist = std::numeric_limits<double>::max();
+    double best_s = yaw_given_.route_last_s;
+
+    size_t anchor_idx = 0;
+    while (anchor_idx + 1 < yaw_given_.route_s.size() &&
+           yaw_given_.route_s[anchor_idx + 1] <= yaw_given_.route_last_s)
+      ++anchor_idx;
+    anchor_idx = std::min(anchor_idx, yaw_given_.route_wps.size() - 2);
+    const size_t last_segment_idx = std::min(
+        yaw_given_.route_wps.size() - 2,
+        anchor_idx + static_cast<size_t>(route_projection_lookahead_waypoints_));
+    for (size_t i = anchor_idx; i <= last_segment_idx; ++i)
+    {
+      Eigen::Vector3d seg = yaw_given_.route_wps[i + 1] - yaw_given_.route_wps[i];
+      double seg_len2 = seg.squaredNorm();
+      if (seg_len2 < 1e-6)
+        continue;
+
+      double t = (pos - yaw_given_.route_wps[i]).dot(seg) / seg_len2;
+      t = std::max(0.0, std::min(1.0, t));
+      Eigen::Vector3d proj = yaw_given_.route_wps[i] + t * seg;
+      double dist = (pos - proj).squaredNorm();
+      if (dist < best_dist)
+      {
+        best_dist = dist;
+        best_s = yaw_given_.route_s[i] + t * std::sqrt(seg_len2);
+      }
+    }
+
+    projected_s = std::max(yaw_given_.route_last_s, best_s);
+    if (!yaw_given_.route_s.empty())
+      projected_s = std::min(projected_s, yaw_given_.route_s.back());
+    yaw_given_.route_last_s = projected_s;
+    return true;
+  }
+
+  double TrajServer::interpolateRouteYaw(double s) const
+  {
+    if (yaw_given_.route_s.empty() || yaw_given_.route_yaws.size() != yaw_given_.route_s.size())
+      return normalizeYaw(yaw_given_.yaw);
+
+    if (s <= yaw_given_.route_s.front())
+      return normalizeYaw(yaw_given_.route_yaws.front());
+    if (s >= yaw_given_.route_s.back())
+      return normalizeYaw(yaw_given_.route_yaws.back());
+
+    for (size_t i = 0; i + 1 < yaw_given_.route_s.size(); ++i)
+    {
+      if (s <= yaw_given_.route_s[i + 1])
+      {
+        double ds = yaw_given_.route_s[i + 1] - yaw_given_.route_s[i];
+        if (ds < 1e-6)
+          return normalizeYaw(yaw_given_.route_yaws[i + 1]);
+        double ratio = (s - yaw_given_.route_s[i]) / ds;
+        double yaw = yaw_given_.route_yaws[i] + ratio * (yaw_given_.route_yaws[i + 1] - yaw_given_.route_yaws[i]);
+        return normalizeYaw(yaw);
+      }
+    }
+
+    return normalizeYaw(yaw_given_.route_yaws.back());
+  }
+
   std::pair<double, double> TrajServer::calculate_yaw(double t_cur, Eigen::Vector3d &pos, double dt)
   {
     // constexpr double YAW_DOT_MAX_PER_SEC = 1.5 * M_PI;
@@ -158,6 +280,17 @@ namespace ego_planner
       yaw_temp = to_center.head<2>().norm() > 0.05
                      ? atan2(to_center(1), to_center(0))
                      : last_yaw_;
+    }
+    else if (yaw_given_.route_profile)
+    {
+      double projected_s = yaw_given_.route_last_s;
+      if (!projectRouteS(pos, projected_s))
+        yaw_temp = yaw_given_.yaw;
+      else
+        yaw_temp = interpolateRouteYaw(projected_s);
+
+      if (!yaw_given_.reach_given_yaw_ && fabs(normalizeYaw(last_yaw_ - yaw_temp)) < 0.01)
+        yaw_given_.reach_given_yaw_ = true;
     }
     else if (yaw_given_.look_forward && yaw_given_.reach_given_yaw_)
     // if (yaw_given_.reach_given_yaw_)
@@ -340,6 +473,7 @@ namespace ego_planner
 
     if (!receive_traj_ && yaw_given_.reach_given_yaw_) {
       time_rec_.has_init   = false;
+      yaw_given_.low_speed = false;
       // ROS_WARN_THROTTLE(5.0, "[traj_server] Waiting for trajectory to be received...");
     }
     if ((time_now - heartbeat_time_).toSec() > 0.5){

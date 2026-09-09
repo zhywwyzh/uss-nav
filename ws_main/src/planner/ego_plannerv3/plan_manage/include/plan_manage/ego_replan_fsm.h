@@ -22,6 +22,8 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/PointStamped.h>
 #include <quadrotor_msgs/EgoGoalSet.h>
+#include <quadrotor_msgs/EgoWaypointRoute.h>
+#include <quadrotor_msgs/EgoWaypointRouteResult.h>
 #include <quadrotor_msgs/EgoPlannerResult.h>
 #include <quadrotor_msgs/EgoStateTrigger.h>
 #include <traj_utils/DataDisp.h>
@@ -96,6 +98,9 @@ namespace ego_planner
 
     /* parameters */
     int target_type_; // 1 mannual select, 2 hard code
+    int final_goal_occupancy_check_mode_{1};
+    // 是否允许在碰撞终点外侧前探最多 4 个地图栅格。
+    bool enable_forward_goal_search_{false};
     double no_replan_thresh_ /*, replan_thresh_*/;
     double waypoints_[50][3];
     int waypoint_num_, wpt_id_;
@@ -135,10 +140,33 @@ namespace ego_planner
     std::vector<Eigen::Vector3d> wps_;
     quadrotor_msgs::EgoPlannerResult ego_plan_result_;
 
+    // route-mode task state
+    bool have_route_{false};
+    bool route_result_sent_{false};
+    // 本条 route 的原始末点是否曾被碰撞/编队安全逻辑改写为替代终点。
+    bool route_goal_modified_{false};
+    size_t route_anchor_idx_{0};
+    uint32_t active_route_id_{0};
+    std::string active_job_id_;
+    std::vector<Eigen::Vector3d> route_wps_;
+    std::vector<double> route_yaws_;
+    std::vector<double> route_s_;
+    std::vector<double> route_yaws_unwrapped_;
+    bool route_look_forward_{true};
+    bool route_goal_to_follower_{false};
+    bool route_replan_use_guide_path_{false};
+    int route_projection_lookahead_waypoints_{5};
+    double route_local_window_length_{3.0};
+    double route_local_window_overlap_{1.0};
+    double route_terminal_handoff_length_{0.0};
+    bool route_terminal_handoff_active_{false};
+    bool route_guide_allow_obstacle_fallback_{true};
+
     // handle yaw
     Eigen::Vector3d target_pos_;
     double target_yaw_;
     bool target_look_forward_;
+    bool target_yaw_low_speed_{false};
     uint8_t target_yaw_mode_{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
     uint8_t target_yaw_path_mode_{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
     // 最近一次 planNextWaypoint 的 yaw 配置；mondifyInCollisionFinalGoal 修改
@@ -155,10 +183,10 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, odom_sub_, if_handle_yaw_sub_,
+    ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, route_sub_, odom_sub_, if_handle_yaw_sub_,
                     trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, face_center_sub_;
     ros::Publisher data_disp_pub_, broadcast_ploytraj_pub_, ground_height_pub_, state_pub_, exec_finish_trigger_pub_, ego_state_trigger_pub_;
-    ros::Publisher ego_plan_state_pub_, goal_processed_pub_;
+    ros::Publisher ego_plan_state_pub_, goal_processed_pub_, route_result_pub_;
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);
@@ -173,22 +201,39 @@ namespace ego_planner
     bool callCrashRecovery();
 
     /* local planning */
-    PLAN_RET callReboundReplan(bool flag_use_last_optimal, bool flag_random_init, vector<DensityEvalRayData> *pathes);
+    PLAN_RET callReboundReplan(bool flag_use_last_optimal, bool flag_random_init,
+                               vector<DensityEvalRayData> *pathes,
+                               bool use_route_guide = true);
     bool planFromGlobalTraj(const int trial_times = 1);
     bool planFromLocalTraj(const int trial_times = 1);
     bool getTrajPVAJ(const string data_source);
     void execTraj();
+    std::vector<Eigen::Vector3d> buildRouteGuidePath(const Eigen::Vector3d &start_pt);
+    void updateRouteProgress();
+    bool projectToRoute(const Eigen::Vector3d &pos, size_t start_idx, size_t &best_idx,
+                        Eigen::Vector3d &best_proj, double &best_t, double &best_s) const;
+    double interpolateRouteYaw(double s) const;
+    bool hasRouteYawProfile() const;
+    bool isWithinRouteFinishThreshold(const Eigen::Vector3d &goal) const;
+    bool routeReachedFinal() const;
+    bool routeReachedModifiedGoal() const;
+    bool tryFinishRouteByOdom();
+    void publishRouteResult(bool success, bool reached_final, const std::string &reason);
+    void clearRouteState();
+    void resetMandatoryStopState();
 
     /* global trajectory */
     void waypointCallback(const geometry_msgs::PoseStampedPtr &msg);
     void aimCallback(const quadrotor_msgs::EgoGoalSetPtr &msg);
     void aimCallbackYawPreset(const quadrotor_msgs::EgoGoalSetPtr &msg);
+    void routeCallback(const quadrotor_msgs::EgoWaypointRoutePtr &msg);
     void execAim();
     void readGivenWpsAndPlan();
     bool planNextWaypoint(
         const Eigen::Vector3d next_wp, const double next_yaw = 0.0, const bool look_forward = true,
         uint8_t yaw_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL,
-        uint8_t yaw_path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST);
+        uint8_t yaw_path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST,
+        bool yaw_low_speed = false);
     bool mondifyInCollisionFinalGoal();
 
     /* input-output */

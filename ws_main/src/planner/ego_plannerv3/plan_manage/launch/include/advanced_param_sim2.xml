@@ -77,6 +77,14 @@
         <param name="fsm/ego_state_trigger_yaw_rate_thresh" value="0.20" type="double"/>
         <param name="fsm/ego_state_trigger_hold_time" value="0.50" type="double"/>
 
+        <!-- route mode (multi-waypoint local_route) -->
+        <param name="fsm/route_replan_use_guide_path" value="true" type="bool"/>
+        <param name="fsm/route_projection_lookahead_waypoints" value="5" type="int"/>
+        <param name="fsm/route_local_window_length" value="5.0" type="double"/>
+        <param name="fsm/route_local_window_overlap" value="1.0" type="double"/>
+        <param name="fsm/route_terminal_handoff_length" value="2.0" type="double"/>
+        <param name="fsm/route_guide_allow_obstacle_fallback" value="true" type="bool"/>
+
         <!-- <param name="grid_map/resolution" value="0.1" /> -->
         <!-- local_map的size必须比depth_filter_maxdist大两个resoluiton -->
         <param name="grid_map/local_update_range_x" value="8.0" />
@@ -307,6 +315,8 @@
         <param name="optimization/weight_feasibility" value="250.0" type="double"/>
         <param name="optimization/weight_sqrvariance" value="0.0" type="double"/>
         <param name="optimization/weight_time" value="10.0" type="double"/>
+        <param name="optimization/weight_route_tracking" value="200.0" type="double"/>
+        <param name="optimization/route_tracking_corridor" value="0.4" type="double"/>
         <param name="optimization/obstacle_clearance" value="0.1" type="double"/>
         <param name="optimization/obstacle_clearance_soft" value="1.5" type="double"/>
         <param name="optimization/swarm_clearance" value="0.45" type="double"/> <!-- heterogeneous support: my required clearance -->
