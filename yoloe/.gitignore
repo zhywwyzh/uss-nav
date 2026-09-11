@@ -172,4 +172,6 @@ calibration_*.npy
 
 ignore
 exports
-pretrain
+
+pretrain/*
+!pretrain/.gitkeep
