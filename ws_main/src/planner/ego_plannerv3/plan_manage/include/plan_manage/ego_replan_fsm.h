@@ -50,6 +50,7 @@ namespace ego_planner
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   private:
+    friend class RouteExecutionTest;
     /* ---------- flag ---------- */
     enum FSM_EXEC_STATE
     {
@@ -98,9 +99,6 @@ namespace ego_planner
 
     /* parameters */
     int target_type_; // 1 mannual select, 2 hard code
-    int final_goal_occupancy_check_mode_{1};
-    // 是否允许在碰撞终点外侧前探最多 4 个地图栅格。
-    bool enable_forward_goal_search_{false};
     double no_replan_thresh_ /*, replan_thresh_*/;
     double waypoints_[50][3];
     int waypoint_num_, wpt_id_;
@@ -121,7 +119,6 @@ namespace ego_planner
 
     bool have_trigger_, have_target_, have_odom_, cur_traj_to_cur_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
     bool if_handle_yaw_{false};
-    bool has_been_modified_;
     bool pending_goal_finish_trigger_;
     ros::Time goal_finish_stable_start_time_;
     FSM_EXEC_STATE exec_state_;
@@ -143,8 +140,6 @@ namespace ego_planner
     // route-mode task state
     bool have_route_{false};
     bool route_result_sent_{false};
-    // 本条 route 的原始末点是否曾被碰撞/编队安全逻辑改写为替代终点。
-    bool route_goal_modified_{false};
     size_t route_anchor_idx_{0};
     uint32_t active_route_id_{0};
     std::string active_job_id_;
@@ -152,6 +147,14 @@ namespace ego_planner
     std::vector<double> route_yaws_;
     std::vector<double> route_s_;
     std::vector<double> route_yaws_unwrapped_;
+    Eigen::Vector3d route_requested_goal_;
+    std::vector<size_t> route_corners_;
+    size_t route_next_corner_{0};
+    bool route_window_reaches_stop_{false};
+    Eigen::Vector3d route_window_stop_;
+    ros::Time route_finish_stable_since_{ros::Time(0)};
+    ros::Time route_last_progress_time_{ros::Time(0)};
+    double route_best_progress_s_{0.0};
     bool route_look_forward_{true};
     bool route_goal_to_follower_{false};
     bool route_replan_use_guide_path_{false};
@@ -161,6 +164,9 @@ namespace ego_planner
     double route_terminal_handoff_length_{0.0};
     bool route_terminal_handoff_active_{false};
     bool route_guide_allow_obstacle_fallback_{true};
+    double route_progress_epsilon_{0.10};    // route 前进量判定容差，单位米
+    double route_no_progress_timeout_{20.0}; // route 无前进超时，单位秒
+    double route_corner_angle_deg_{55.0};    // 触发必停的转角阈值，单位度
 
     // handle yaw
     Eigen::Vector3d target_pos_;
@@ -169,13 +175,6 @@ namespace ego_planner
     bool target_yaw_low_speed_{false};
     uint8_t target_yaw_mode_{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
     uint8_t target_yaw_path_mode_{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
-    // 最近一次 planNextWaypoint 的 yaw 配置；mondifyInCollisionFinalGoal 修改
-    // 撞障碍目标后重规划时必须沿用，否则默认 look_forward=true 会把
-    // "保持朝向"命令覆盖成"朝轨迹方向看"，垂直下降时机头会乱转。
-    double goal_yaw_{0.0};
-    bool goal_look_forward_{true};
-    uint8_t goal_yaw_mode_{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
-    uint8_t goal_yaw_path_mode_{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
     void handleYaw();
     double aim_direction_; // rad
     bool yaw_init_finished_{false};
@@ -210,13 +209,14 @@ namespace ego_planner
     void execTraj();
     std::vector<Eigen::Vector3d> buildRouteGuidePath(const Eigen::Vector3d &start_pt);
     void updateRouteProgress();
+    void rebuildRouteGeometry();
+    bool checkRouteProgressTimeout();
     bool projectToRoute(const Eigen::Vector3d &pos, size_t start_idx, size_t &best_idx,
                         Eigen::Vector3d &best_proj, double &best_t, double &best_s) const;
     double interpolateRouteYaw(double s) const;
     bool hasRouteYawProfile() const;
     bool isWithinRouteFinishThreshold(const Eigen::Vector3d &goal) const;
     bool routeReachedFinal() const;
-    bool routeReachedModifiedGoal() const;
     bool tryFinishRouteByOdom();
     void publishRouteResult(bool success, bool reached_final, const std::string &reason);
     void clearRouteState();
@@ -234,7 +234,6 @@ namespace ego_planner
         uint8_t yaw_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL,
         uint8_t yaw_path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST,
         bool yaw_low_speed = false);
-    bool mondifyInCollisionFinalGoal();
 
     /* input-output */
     void mandatoryStopCallback(const std_msgs::Empty &msg);

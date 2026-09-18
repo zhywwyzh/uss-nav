@@ -73,6 +73,7 @@
 
     <!-- use simulator -->
     <include file="$(find ego_planner)/launch/include/simulator.xml">
+        <arg name="enable_takeoff_land" value="true"/>
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="map_size_x_" value="$(arg map_size_x)"/>
         <arg name="map_size_y_" value="$(arg map_size_y)"/>
@@ -83,4 +84,3 @@
         <arg name="odometry_topic" value="$(arg odom_topic)" />
     </include>
 </launch>
-    

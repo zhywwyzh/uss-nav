@@ -282,11 +282,13 @@ private:
       const quadrotor_msgs::EgoStateTrigger::ConstPtr& msg);
   void objectIdNavReplanCallback(const std_msgs::Bool::ConstPtr& msg);
   void handleGoalInstruction(const std::vector<geometry_msgs::Point>& goals, const std::vector<float>& yaws,
-                             bool look_forward, const std::string& source);
+                             bool look_forward, const std::string& source,
+                             uint32_t route_id = 0, const std::string& job_id = "");
   // 多waypoint:把整条轨迹以 EgoWaypointRoute 下发给 ego-planner(local_route)。
   void pubLocalRoute(const std::vector<geometry_msgs::Point>& goals,
                      const std::vector<float>& yaws, bool look_forward,
-                     const std::string& source);
+                     const std::string& source, uint32_t route_id = 0,
+                     const std::string& job_id = "");
   void handleTrackingTarget(const std::vector<geometry_msgs::Point>& global_poses,
                             const std::string& source,
                             const ros::Time& stamp = ros::Time(),

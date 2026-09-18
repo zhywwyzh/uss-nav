@@ -1,9 +1,14 @@
 #include <Eigen/Geometry>
+#include <algorithm>
+#include <cmath>
 #include <nav_msgs/Odometry.h>
 #include <nodelet/nodelet.h>
 #include <quadrotor_msgs/Corrections.h>
+#include <quadrotor_msgs/EgoGoalSet.h>
+#include <quadrotor_msgs/EgoWaypointRoute.h>
 #include <quadrotor_msgs/PositionCommand.h>
 #include <quadrotor_msgs/SO3Command.h>
+#include <quadrotor_msgs/TakeoffLand.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <so3_control/SO3Control.h>
@@ -37,6 +42,10 @@ private:
   void enable_motors_callback(const std_msgs::Bool::ConstPtr& msg);
   void corrections_callback(const quadrotor_msgs::Corrections::ConstPtr& msg);
   void imu_callback(const sensor_msgs::Imu& imu);
+  void takeoff_land_callback(const quadrotor_msgs::TakeoffLand::ConstPtr& msg);
+  void goal_resume_callback(const quadrotor_msgs::EgoGoalSet::ConstPtr& msg);
+  void route_resume_callback(const quadrotor_msgs::EgoWaypointRoute::ConstPtr& msg);
+  void resumeFromTakeoffHold(const std::string& source);
 
   SO3Control      controller_;
   ros::Publisher  so3_command_pub_;
@@ -45,6 +54,9 @@ private:
   ros::Subscriber enable_motors_sub_;
   ros::Subscriber corrections_sub_;
   ros::Subscriber imu_sub_;
+  ros::Subscriber takeoff_land_sub_;
+  ros::Subscriber goal_resume_sub_;
+  ros::Subscriber route_resume_sub_;
 
   bool        position_cmd_updated_, position_cmd_init_;
   std::string frame_id_;
@@ -56,6 +68,14 @@ private:
   bool            use_external_yaw_;
   double          kR_[3], kOm_[3], corrections_[3];
   double          init_x_, init_y_, init_z_;
+  enum FlightMode { POSITION, LANDING, LANDED, TAKING_OFF, TAKEOFF_HOLD };
+  FlightMode flight_mode_{POSITION};
+  bool have_odom_{false};
+  Eigen::Vector3d current_pos_, current_vel_;
+  double landing_height_{0.1}, takeoff_height_{1.0};
+  double vertical_speed_{0.25};
+  ros::Time vertical_update_time_;
+  uint32_t latest_trajectory_id_{0}, hold_trajectory_id_{0};
 };
 
 void
@@ -96,6 +116,14 @@ void
 SO3ControlNodelet::position_cmd_callback(
   const quadrotor_msgs::PositionCommand::ConstPtr& cmd)
 {
+  latest_trajectory_id_ = cmd->trajectory_id;
+  if (flight_mode_ != POSITION)
+  {
+    if (flight_mode_ == TAKEOFF_HOLD && cmd->trajectory_id != hold_trajectory_id_)
+      flight_mode_ = POSITION;
+    else
+      return;
+  }
   des_pos_ = Eigen::Vector3d(cmd->position.x, cmd->position.y, cmd->position.z);
   des_vel_ = Eigen::Vector3d(cmd->velocity.x, cmd->velocity.y, cmd->velocity.z);
   des_acc_ = Eigen::Vector3d(cmd->acceleration.x, cmd->acceleration.y,
@@ -129,9 +157,39 @@ SO3ControlNodelet::odom_callback(const nav_msgs::Odometry::ConstPtr& odom)
                                  odom->twist.twist.linear.z);
 
   current_yaw_ = tf::getYaw(odom->pose.pose.orientation);
+  current_pos_ = position;
+  current_vel_ = velocity;
+  have_odom_ = true;
 
   controller_.setPosition(position);
   controller_.setVelocity(velocity);
+
+  if (flight_mode_ != POSITION)
+  {
+    const ros::Time now = ros::Time::now();
+    const double dt = std::max(0.0, std::min(0.05, (now - vertical_update_time_).toSec()));
+    vertical_update_time_ = now;
+    des_vel_.setZero();
+    des_acc_.setZero();
+    if (flight_mode_ == LANDING || flight_mode_ == TAKING_OFF)
+    {
+      const double target = flight_mode_ == LANDING ? landing_height_ : takeoff_height_;
+      const double delta = target - des_pos_.z();
+      const double step = std::max(-vertical_speed_ * dt, std::min(vertical_speed_ * dt, delta));
+      des_pos_.z() += step;
+      if (std::abs(delta) > vertical_speed_ * dt)
+        des_vel_.z() = delta > 0.0 ? vertical_speed_ : -vertical_speed_;
+      if (std::abs(position.z() - target) < 0.04 && velocity.norm() < 0.10 &&
+          std::abs(des_pos_.z() - target) < 1e-6)
+      {
+        flight_mode_ = flight_mode_ == LANDING ? LANDED : TAKEOFF_HOLD;
+        hold_trajectory_id_ = latest_trajectory_id_;
+        ROS_INFO("[SimFlight] %s at z=%.3f", flight_mode_ == LANDED ? "Landed" : "Takeoff reached", position.z());
+      }
+    }
+    publishSO3Command();
+    return;
+  }
 
   if (position_cmd_init_)
   {
@@ -153,6 +211,50 @@ SO3ControlNodelet::odom_callback(const nav_msgs::Odometry::ConstPtr& odom)
     publishSO3Command();
   }
   
+}
+
+void
+SO3ControlNodelet::takeoff_land_callback(const quadrotor_msgs::TakeoffLand::ConstPtr& msg)
+{
+  if (!have_odom_ || (msg->takeoff_land_cmd != 1 && msg->takeoff_land_cmd != 2))
+    return;
+  if (msg->takeoff_land_cmd == 2 && current_vel_.norm() > 0.30)
+  {
+    ROS_WARN("[SimFlight] Refusing landing while moving; stop above the landing site first.");
+    return;
+  }
+  flight_mode_ = msg->takeoff_land_cmd == 2 ? LANDING : TAKING_OFF;
+  des_pos_ = current_pos_;
+  des_vel_.setZero();
+  des_acc_.setZero();
+  des_yaw_ = current_yaw_;
+  des_yaw_dot_ = 0.0;
+  position_cmd_init_ = true;
+  vertical_update_time_ = ros::Time::now();
+  ROS_INFO("[SimFlight] Controlled %s at x=%.3f y=%.3f",
+           flight_mode_ == LANDING ? "landing" : "takeoff", des_pos_.x(), des_pos_.y());
+}
+
+void
+SO3ControlNodelet::resumeFromTakeoffHold(const std::string& source)
+{
+  if (flight_mode_ != TAKEOFF_HOLD)
+    return;
+  flight_mode_ = POSITION;
+  ROS_INFO("[SimFlight] New %s during takeoff hold; resuming position control.",
+           source.c_str());
+}
+
+void
+SO3ControlNodelet::goal_resume_callback(const quadrotor_msgs::EgoGoalSet::ConstPtr& msg)
+{
+  resumeFromTakeoffHold("goal");
+}
+
+void
+SO3ControlNodelet::route_resume_callback(const quadrotor_msgs::EgoWaypointRoute::ConstPtr& msg)
+{
+  resumeFromTakeoffHold("route " + std::to_string(msg->route_id) + " (" + msg->job_id + ")");
 }
 
 void
@@ -219,6 +321,23 @@ SO3ControlNodelet::onInit(void)
   n.param("so3_control/init_state_x", init_x_, 0.0);
   n.param("so3_control/init_state_y", init_y_, 0.0);
   n.param("so3_control/init_state_z", init_z_, -10000.0);
+
+  bool enable_takeoff_land = false;
+  n.param("enable_takeoff_land", enable_takeoff_land, false);
+  if (enable_takeoff_land)
+  {
+    // Match the existing simulated landing pose; no physics state is reset.
+    n.param("landing_height", landing_height_, 0.1);
+    n.param("takeoff_height", takeoff_height_, std::max(1.0, init_z_));
+    takeoff_land_sub_ = n.subscribe("/px4ctrl/takeoff_land", 2,
+        &SO3ControlNodelet::takeoff_land_callback, this, ros::TransportHints().tcpNoDelay());
+    // Snoop the planner's goal inputs so a new goal/route issued right after
+    // takeoff releases the takeoff hold without waiting for a new trajectory.
+    goal_resume_sub_ = n.subscribe("goal_resume", 2,
+        &SO3ControlNodelet::goal_resume_callback, this, ros::TransportHints().tcpNoDelay());
+    route_resume_sub_ = n.subscribe("route_resume", 2,
+        &SO3ControlNodelet::route_resume_callback, this, ros::TransportHints().tcpNoDelay());
+  }
 
   so3_command_pub_ = n.advertise<quadrotor_msgs::SO3Command>("so3_cmd", 10);
 
