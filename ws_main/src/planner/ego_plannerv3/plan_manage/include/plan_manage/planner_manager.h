@@ -45,7 +45,8 @@ namespace ego_planner
         const Eigen::Vector3d &start_acc, const Eigen::Vector3d &glb_start_pt,
         const Eigen::Vector3d &final_goal, const bool flag_use_last_optimial,
         const bool flag_random_init, vector<DensityEvalRayData> *pathes,
-        poly_traj::MinJerkOpt &initMJO, bool &touch_goal);
+        poly_traj::MinJerkOpt &initMJO, bool &touch_goal,
+        const std::vector<Eigen::Vector3d> *guide_path = nullptr);
     double computeInitDuration(
         const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
         const Eigen::Vector3d &local_target_pt, const Eigen::Vector3d &local_target_vel);
@@ -57,7 +58,9 @@ namespace ego_planner
         const Eigen::Vector3d &start_acc, const Eigen::Vector3d &start_jerk,
         const Eigen::Vector3d &glb_start_pt, const Eigen::Vector3d &final_goal,
         const bool flag_use_last_optimial, const bool flag_random_init,
-        vector<DensityEvalRayData> *pathes, bool &touch_goal);
+        vector<DensityEvalRayData> *pathes, bool &touch_goal,
+        const std::vector<Eigen::Vector3d> *guide_path = nullptr,
+        const bool enable_route_tracking = false);
     bool densityEval(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt,
                      DensityEvalRayData *best_ray = NULL, vector<DensityEvalRayData> *all_rays = NULL) const;
     bool DetVelByDensity(DensityEvalRayData &best_ray);

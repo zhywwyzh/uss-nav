@@ -72,7 +72,6 @@ struct FSMData
   Eigen::Vector3d         ego_local_goal_;
   int                     ego_plan_times_;
   bool                    ego_plan_status_;
-  bool                    ego_modify_status_;
   int                     goal_replan_times_;
   bool                    ego_exec_finished_;
   double                  target_yaw_;                  // only used for turn yaw slowly

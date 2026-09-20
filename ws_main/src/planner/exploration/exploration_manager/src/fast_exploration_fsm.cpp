@@ -346,6 +346,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh, const MapInterface::Ptr& map)
       ros::TransportHints().tcpNoDelay());
 
   ego_goal_pub_         = nh.advertise<quadrotor_msgs::EgoGoalSet>("local_goal", 10);
+  ego_route_pub_        = nh.advertise<quadrotor_msgs::EgoWaypointRoute>("local_route", 10);
   goal_from_station_pub_ = nh.advertise<quadrotor_msgs::GoalSet>("/goal_with_id_from_station", 10);
   vis_marker_pub_       = nh.advertise<visualization_msgs::Marker>("planning/fsm_vis", 10);
   vis_path_pub_         = nh.advertise<visualization_msgs::MarkerArray>("planning/fsm_path", 10);
@@ -1590,7 +1591,9 @@ void FastExplorationFSM::triggerCallback(const geometry_msgs::PoseStamped::Const
 void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::Point>& goals,
                                                const std::vector<float>& yaws,
                                                bool look_forward,
-                                               const std::string& source) {
+                                               const std::string& source,
+                                               uint32_t route_id,
+                                               const std::string& job_id) {
   switchPlannerCmdMuxToEgo(source + ":goal");
   stopElasticTracker(source + ":goal");
 
@@ -1617,6 +1620,13 @@ void FastExplorationFSM::handleGoalInstruction(const std::vector<geometry_msgs::
       stopMotion();
     }
     transitState(MISSION_FSM_STATE::WAIT_TRIGGER, source);
+  }
+
+  if (goals.size() > 1) {
+    // 多waypoint轨迹:整条下发给 ego-planner 的 route 模式(local_route),
+    // 由 EGO 沿 route 滚动规划执行;单点仍走 local_goal 保持旧行为。
+    pubLocalRoute(goals, yaws, look_forward, source, route_id, job_id);
+    return;
   }
 
   pubLocalGoal(
@@ -2238,7 +2248,6 @@ void FastExplorationFSM::approachRegularExplore() {
   // 旧逻辑用 last_pub_time_, 被 [7] 分支无条件刷新 → t_cur 永远 <15s → [5] 卡死恢复被饿死
   double t_cur = (ros::Time::now() - fd_->last_progress_time_).toSec();
   std::string ego_plan_status_str_   = fd_->ego_plan_status_ ? "True" : "False";
-  std::string ego_modify_status_str_ = fd_->ego_modify_status_ ? "True" : "False";
 
   ROS_INFO_STREAM_THROTTLE(0.5, "\033[1;33mApproach EXPLORE...\033[0m \n"
                                 "   * Dis to Aim: " << dis_2_aim_2d << "\n"
@@ -2249,21 +2258,12 @@ void FastExplorationFSM::approachRegularExplore() {
                                 << "\n   * t_cur(progress): " << t_cur);  // 黄
   ROS_INFO_STREAM_THROTTLE(0.5, "[EXPL-FSM] : ego local goal -> (" << fd_->ego_local_goal_.transpose() << ")");
   ROS_INFO_STREAM_THROTTLE(0.5, "[EXPL-FSM] : ego plan times: " << fd_->ego_plan_times_
-                                                                << "  ego plan statue: " << ego_plan_status_str_
-                                                                << "  ego modify status: " << ego_modify_status_str_);
+                                                                << "  ego plan statue: " << ego_plan_status_str_);
 
   // ! bad frontier delete
   bool bad_frontier = false;
-  Eigen::Vector3d cur_viewpoint = fd_->path_res_.back();
   if (fd_->ego_plan_times_ > 40) {
     INFO_MSG_RED("[EXPL-FSM] : replan time out, delete this frontier and add it to blacklist, replan!");
-    bad_frontier = true;
-  }
-
-  if (fd_->ego_modify_status_ && fd_->ego_exec_finished_
-      && (fd_->odom_pos_ - fd_->ego_local_goal_).norm() < 0.1
-      && map_->isInLocalMap(cur_viewpoint) && t_cur > 8.0) {
-    INFO_MSG_RED("[EXPL-FSM] : ego modify status, delete this frontier and add it to blacklist, replan!");
     bad_frontier = true;
   }
 
@@ -2405,12 +2405,10 @@ void FastExplorationFSM::approachRegularExplore() {
 
   // [7] Waypoint 推进
   if (fd_->path_res_.size() > 2 && dis_2_local_aim < 2.0){
-    // 建议C: 内部守卫解耦 ego 反馈 —— 增加"本地卡死+末点"的纯本地 fallback
-    // 旧守卫要求 ego_exec_finished_ && ego_modify_status_, ego 断链时永不触发
+    // 建议C: 增至末点且长时间无进展时, 用纯本地信号判定该 local goal 不可达
     if (fd_->path_inx_ >= fd_->path_res_.size() - 1 &&
-        ((fd_->ego_exec_finished_ && fd_->ego_modify_status_) ||     // 原条件(ego 反馈正常)
-         (t_cur > fp_->explore_local_stuck_duration_ &&              // 建议C: ego 断链时的纯本地 fallback
-          fd_->odom_vel_.norm() < fp_->explore_local_stuck_vel_thresh_))) {
+        t_cur > fp_->explore_local_stuck_duration_ &&
+        fd_->odom_vel_.norm() < fp_->explore_local_stuck_vel_thresh_) {
       INFO_MSG_RED("\n[Approach EXPLORE] Force Replan, because local goal can't reach!\n");
       resetExploreStuckState();
       fd_->last_progress_time_ = ros::Time::now();
@@ -3140,15 +3138,13 @@ void FastExplorationFSM::goTargetObject() {
     double dis_yaw         = abs(fd_->aim_yaw_ - fd_->odom_yaw_);
     double t_cur = (ros::Time::now() - fd_->last_pub_time_).toSec();
     std::string ego_plan_status_str_   = fd_->ego_plan_status_ ? "True" : "False";
-    std::string ego_modify_status_str_ = fd_->ego_modify_status_ ? "True" : "False";
     ROS_INFO_STREAM_THROTTLE(0.5, "\033[1;33mApproach Object...\033[0m \n"
                                   "   * Dis to Aim: " << dis_2_aim_2d << "\n"
                                   "   * Dis to LocalAim: " << dis_2_local_aim << "\n"
                                   "   * Dis to yaw: " << dis_yaw);  // 黄
     ROS_INFO_STREAM_THROTTLE(0.5, "[Targ Obj] : ego local goal -> (" << fd_->ego_local_goal_.transpose() << ")");
     ROS_INFO_STREAM_THROTTLE(0.5, "[Targ Obj] : ego plan times: " << fd_->ego_plan_times_
-                                                                  << "  ego plan statue: " << ego_plan_status_str_
-                                                                  << "  ego modify status: " << ego_modify_status_str_);
+                                                                  << "  ego plan statue: " << ego_plan_status_str_);
 
     displayLocalAim();  // 橙色marker标记当前导航点
 
@@ -3172,18 +3168,6 @@ void FastExplorationFSM::goTargetObject() {
       }
       else transitState(WAIT_TRIGGER, "Go Target Object Finish");
       return;
-    }
-
-    // crash recovery 1: 末尾 yaw 旋转不到位时重新下发旋转指令
-    if (fp_->object_id_nav_require_final_yaw_ &&
-        fd_->ego_exec_finished_ && fd_->ego_modify_status_
-         && (dis_2_local_aim > 1.0 || dis_yaw > 10.0f / 180.0f * M_PI)
-         && fd_->path_inx_ == fd_->path_res_.size() - 1){
-      fd_->last_pub_time_ = ros::Time::now();
-      ROS_WARN("-------------> RePublish LocalGoal: crash recovery, forcely rotate yaw<----------------");
-      pubLocalGoal(fd_->odom_pos_, fd_->aim_yaw_, false,
-                   quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL);
-      // INFO_MSG_GREEN("[Targ Obj] [PubNxtLocalAim] aim: " << fd_->aim_pos_.transpose() << ", local_aim: " << fd_->local_aim_pos_.transpose());
     }
 
     // Replan after some time
@@ -3336,13 +3320,6 @@ void FastExplorationFSM::goTargetObject() {
 
     // Local goal
     if (fd_->path_res_.size() > 2 && dis_2_local_aim < 1.5){
-      if (fd_->path_inx_ == fd_->path_res_.size() - 1 && dis_2_local_aim < 1.0 
-          && fd_->ego_exec_finished_ && fd_->ego_modify_status_) {  
-        INFO_MSG_YELLOW("[TARG Obj] Force Replan, because local goal can't reach!");
-        fd_->go_object_process_phase = 0;
-        transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "can't reach local goal");
-        return ;
-      }
       getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
       fd_->stuck_force_advance_count_ = 0;       // 正常推进时重置卡死强制推进计数
       fd_->stuck_force_advance_triggered_ = false;
@@ -3455,15 +3432,13 @@ void FastExplorationFSM::goTargetWithWaypoint() {
     double dis_yaw         = abs(fd_->aim_yaw_ - fd_->odom_yaw_);
     double t_cur = (ros::Time::now() - fd_->last_pub_time_).toSec();
     std::string ego_plan_status_str_   = fd_->ego_plan_status_ ? "True" : "False";
-    std::string ego_modify_status_str_ = fd_->ego_modify_status_ ? "True" : "False";
     ROS_INFO_STREAM_THROTTLE(0.5, "\033[1;33mApproach Waypoint...\033[0m \n"
                                   "   * Dis to Aim: " << dis_2_aim_2d << "\n"
                                   "   * Dis to LocalAim: " << dis_2_local_aim << "\n"
                                   "   * Dis to yaw: " << dis_yaw);
     ROS_INFO_STREAM_THROTTLE(0.5, "[Targ Wpt] : ego local goal -> (" << fd_->ego_local_goal_.transpose() << ")");
     ROS_INFO_STREAM_THROTTLE(0.5, "[Targ Wpt] : ego plan times: " << fd_->ego_plan_times_
-                                                                  << "  ego plan statue: " << ego_plan_status_str_
-                                                                  << "  ego modify status: " << ego_modify_status_str_);
+                                                                  << "  ego plan statue: " << ego_plan_status_str_);
 
     if (dis_2_aim_2d < fp_->replan_dis_thresh_ && fabs(fd_->odom_yaw_ - fd_->aim_yaw_) / 3.14 * 180.0f < 5.0) {
       ROS_WARN("-------------> Finish: [Reach Both Pos&Yaw Aim] <-------------");
@@ -3471,15 +3446,6 @@ void FastExplorationFSM::goTargetWithWaypoint() {
       fd_->go_waypoint_process_phase = 0;
       transitState(WAIT_TRIGGER, "Go Target Waypoint Finish");
       return;
-    }
-
-    if (fd_->ego_exec_finished_ && fd_->ego_modify_status_
-         && (dis_2_local_aim > 1.0 || dis_yaw > 10.0f / 180.0f * M_PI)
-         && fd_->path_inx_ == fd_->path_res_.size() - 1) {
-      fd_->last_pub_time_ = ros::Time::now();
-      ROS_WARN("-------------> RePublish LocalGoal: crash recovery, forcely rotate yaw<----------------");
-      pubLocalGoal(fd_->odom_pos_, fd_->aim_yaw_, false,
-                   quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL);
     }
 
     if (t_cur > fp_->replan_thresh3_ && fd_->odom_vel_.norm() <= 0.1) {
@@ -3502,13 +3468,6 @@ void FastExplorationFSM::goTargetWithWaypoint() {
     }
 
     if (fd_->path_res_.size() > 2 && dis_2_local_aim < 2.0) {
-      if (fd_->path_inx_ == fd_->path_res_.size() - 1 && dis_2_local_aim < 1.0
-          && fd_->ego_exec_finished_ && fd_->ego_modify_status_) {
-        INFO_MSG_YELLOW("[TARG Wpt] Force Replan, because local goal can't reach!");
-        fd_->go_waypoint_process_phase = 0;
-        transitState(MISSION_FSM_STATE::WAIT_TRIGGER, "can't reach local goal");
-        return;
-      }
       getAndPublishNextAim(fd_->path_res_, true, fd_->aim_yaw_);
       fd_->last_pub_time_ = ros::Time::now();
     }
@@ -3827,6 +3786,39 @@ void FastExplorationFSM::pubLocalGoal(const Eigen::Vector3d local_goal, const do
   ego_goal_pub_.publish(msg);
 }
 
+void FastExplorationFSM::pubLocalRoute(const std::vector<geometry_msgs::Point>& goals,
+                                       const std::vector<float>& yaws,
+                                       bool look_forward,
+                                       const std::string& source,
+                                       uint32_t route_id,
+                                       const std::string& job_id) {
+  if (goals.empty()) {
+    ROS_WARN_STREAM("[ROUTE] Ignore empty route instruction from " << source);
+    return;
+  }
+
+  static uint32_t route_seq = 0;
+  quadrotor_msgs::EgoWaypointRoute msg;
+  msg.drone_id = md_->drone_id_;
+  msg.goals = goals;
+  msg.yaw.clear();
+  if (!yaws.empty() && yaws.size() == goals.size()) {
+    msg.yaw.reserve(yaws.size());
+    for (const float y : yaws) msg.yaw.push_back(y);
+  }
+  msg.look_forward = look_forward;
+  msg.goal_to_follower = false;
+  msg.route_id = route_id != 0 ? route_id : ++route_seq;
+  msg.job_id = job_id.empty() ? source : job_id;
+
+  fd_->ego_exec_finished_ = false;
+  ego_route_pub_.publish(msg);
+  ROS_INFO_STREAM("[ROUTE] Published " << goals.size()
+                    << "-waypoint route to ego-planner (route_id=" << msg.route_id
+                    << ", source=" << source << ", look_forward="
+                    << (look_forward ? 1 : 0) << ")");
+}
+
 // return aim_pose aim_vel, aim_yaw and path_res
 int FastExplorationFSM::callExplorationPlanner(Eigen::Vector3d& aim_pose, Eigen::Vector3d& aim_vel, double& aim_yaw, vector<Eigen::Vector3d>& path_res)
 {
@@ -4024,7 +4016,6 @@ void FastExplorationFSM::egoPlanResCallback(const quadrotor_msgs::EgoPlannerResu
   fd_->ego_local_goal_.z() = msg->planner_goal.z;
   fd_->ego_plan_times_     = msg->plan_times;
   fd_->ego_plan_status_    = msg->plan_status;
-  fd_->ego_modify_status_  = msg->modify_status;
 
   // EGO 结果消息没有会话字段，只在 VLA 当前局部目标坐标匹配时消费，
   // 避免前一任务或 stopMotion 的迟到回调推进本次路径。
@@ -4285,7 +4276,8 @@ void FastExplorationFSM::instructionCallback(const quadrotor_msgs::InstructionCo
       break;
 
     case quadrotor_msgs::Instruction::TURN_GOAL:
-      handleGoalInstruction(msg->goal, msg->yaw, msg->look_forward, "instructionCallback:goal");
+      handleGoalInstruction(msg->goal, msg->yaw, msg->look_forward, "instructionCallback:goal",
+                            msg->header.seq, msg->header.frame_id);
       break;
 
     case quadrotor_msgs::Instruction::TURN_TRACKING:
@@ -4407,10 +4399,9 @@ void FastExplorationFSM::resetExploreStuckState() {
 }
 
 // 重置 ego 反馈相关状态(建议E): 删 frontier 或重规划时调用
-// 防止 ego_plan_times_/ego_modify_status_ 等残留值下次误触发 bad_frontier 或 [6]
+// 防止 ego_plan_times_ 等残留值下次误触发 bad_frontier 或 [6]
 void FastExplorationFSM::resetExploreEgoState() {
   fd_->ego_plan_times_    = 0;
-  fd_->ego_modify_status_ = false;
   fd_->ego_exec_finished_ = false;
   fd_->ego_plan_status_   = false;
   fd_->has_rotated_       = false;

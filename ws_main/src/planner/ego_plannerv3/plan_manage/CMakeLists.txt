@@ -59,12 +59,9 @@ target_link_libraries(ego_planner
   ${catkin_LIBRARIES}
 )
 
-#add_executable(ego_test src/ego_planner_node.cpp)
-#target_link_libraries(ego_test ${catkin_LIBRARIES})
-#add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
-
-# add_executable(traj_server src/traj_server.cpp)
-# target_link_libraries(traj_server ${catkin_LIBRARIES})
-# add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
-
-
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(route_execution_test test/route_execution_test.cpp)
+  if(TARGET route_execution_test)
+    target_link_libraries(route_execution_test ego_planner ${catkin_LIBRARIES})
+  endif()
+endif()

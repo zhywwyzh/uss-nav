@@ -18,6 +18,7 @@
 #include <quadrotor_msgs/FrontierMsg.h>
 #include <quadrotor_msgs/PerceptionMsg.h>
 #include <quadrotor_msgs/EgoGoalSet.h>
+#include <quadrotor_msgs/EgoWaypointRoute.h>
 #include <quadrotor_msgs/EgoStateTrigger.h>
 #include <quadrotor_msgs/GoalSet.h>
 #include <quadrotor_msgs/DetectOut.h>
@@ -90,6 +91,7 @@ private:
   ros::Subscriber vla_swarm_ego_state_trigger_sub_;
   ros::Subscriber object_id_nav_replan_sub_;    // 订阅 /object_id_nav_replan
   ros::Publisher ego_goal_pub_, goal_from_station_pub_, perception_data_pub_, instruction_resp_pub_;
+  ros::Publisher ego_route_pub_;  // 多waypoint route 下发(话题 local_route)
   ros::Publisher vis_marker_pub_, vis_path_pub_;
   ros::Publisher fsm_state_pub_;
   ros::Publisher tracking_finish_pub_;
@@ -280,7 +282,13 @@ private:
       const quadrotor_msgs::EgoStateTrigger::ConstPtr& msg);
   void objectIdNavReplanCallback(const std_msgs::Bool::ConstPtr& msg);
   void handleGoalInstruction(const std::vector<geometry_msgs::Point>& goals, const std::vector<float>& yaws,
-                             bool look_forward, const std::string& source);
+                             bool look_forward, const std::string& source,
+                             uint32_t route_id = 0, const std::string& job_id = "");
+  // 多waypoint:把整条轨迹以 EgoWaypointRoute 下发给 ego-planner(local_route)。
+  void pubLocalRoute(const std::vector<geometry_msgs::Point>& goals,
+                     const std::vector<float>& yaws, bool look_forward,
+                     const std::string& source, uint32_t route_id = 0,
+                     const std::string& job_id = "");
   void handleTrackingTarget(const std::vector<geometry_msgs::Point>& global_poses,
                             const std::string& source,
                             const ros::Time& stamp = ros::Time(),

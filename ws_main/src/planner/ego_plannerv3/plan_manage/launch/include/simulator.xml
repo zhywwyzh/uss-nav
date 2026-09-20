@@ -10,6 +10,7 @@
     <arg name="min_dist"/>
     <arg name="odometry_topic"/>
     <arg name="drone_id"/>
+    <arg name="enable_takeoff_land" default="false"/>
 
 
     <arg name="downsample_resolution_" value="0.1" />
@@ -31,11 +32,16 @@
         <param name="so3_control/init_state_x" value="$(arg init_x_)"/>
         <param name="so3_control/init_state_y" value="$(arg init_y_)"/>
         <param name="so3_control/init_state_z" value="$(arg init_z_)"/>
+        <param name="enable_takeoff_land" value="$(arg enable_takeoff_land)"/>
+        <param name="landing_height" value="0.1"/>
+        <param name="takeoff_height" value="$(arg init_z_)"/>
         <remap from="~odom" to="drone_$(arg drone_id)_visual_slam/odom"/>
         <remap from="~position_cmd" to="drone_$(arg drone_id)_planning/pos_cmd"/>
         <remap from="~motors" to="drone_$(arg drone_id)_motors"/>
         <remap from="~corrections" to="drone_$(arg drone_id)_corrections"/>
         <remap from="~so3_cmd" to="drone_$(arg drone_id)_so3_cmd"/>
+        <remap from="~goal_resume" to="/drone_$(arg drone_id)_ego_planner_node/local_goal"/>
+        <remap from="~route_resume" to="/drone_$(arg drone_id)_ego_planner_node/local_route"/>
         <rosparam file="$(find so3_control)/config/gains_hummingbird.yaml"/>
         <rosparam file="$(find so3_control)/config/corrections_hummingbird.yaml"/>
         <param name="mass" value="0.98"/>

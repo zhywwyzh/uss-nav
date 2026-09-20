@@ -1,5 +1,6 @@
 
 #include <plan_manage/ego_replan_fsm.h>
+#include <limits>
 #include <std_msgs/Bool.h>
 #include <tf/tf.h>
 #include <cmath>
@@ -15,11 +16,11 @@ namespace ego_planner
     flag_wait_crash_rec_    = false;
     mandatory_stop_         = false;
     cur_traj_to_cur_target_ = false;
-    has_been_modified_      = false;
     nh.param("fsm/if_handle_yaw", if_handle_yaw_, false);
 
-    pending_goal_finish_trigger_ = false;  
+    pending_goal_finish_trigger_ = false;
     goal_finish_stable_start_time_ = ros::Time(0);
+    clearRouteState();
     /*  fsm param  */
     nh.param("fsm/flight_type", target_type_, -1);//target_type_==2
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
@@ -31,6 +32,42 @@ namespace ego_planner
     nh.param("fsm/ego_state_trigger_acc_thresh", ego_state_trigger_acc_thresh_, 0.30);
     nh.param("fsm/ego_state_trigger_yaw_rate_thresh", ego_state_trigger_yaw_rate_thresh_, 0.20);
     nh.param("fsm/ego_state_trigger_hold_time", ego_state_trigger_hold_time_, 0.20);
+    nh.param("fsm/route_replan_use_guide_path", route_replan_use_guide_path_, false);
+    nh.param("fsm/route_projection_lookahead_waypoints",
+             route_projection_lookahead_waypoints_, 5);
+    if (route_projection_lookahead_waypoints_ < 0)
+    {
+      ROS_WARN("Invalid route_projection_lookahead_waypoints=%d, use 5.",
+               route_projection_lookahead_waypoints_);
+      route_projection_lookahead_waypoints_ = 5;
+    }
+    nh.param("fsm/route_local_window_length", route_local_window_length_, 3.0);
+    nh.param("fsm/route_local_window_overlap", route_local_window_overlap_, 1.0);
+    nh.param("fsm/route_terminal_handoff_length", route_terminal_handoff_length_, 0.0);
+    nh.param("fsm/route_guide_allow_obstacle_fallback",
+             route_guide_allow_obstacle_fallback_, true);
+    nh.param("fsm/route_progress_epsilon", route_progress_epsilon_, 0.10);
+    nh.param("fsm/route_no_progress_timeout", route_no_progress_timeout_, 20.0);
+    nh.param("fsm/route_corner_angle_deg", route_corner_angle_deg_, 55.0);
+    if (route_local_window_length_ <= 0.0)
+    {
+      ROS_WARN("Invalid route_local_window_length=%.3f, use 3.0m.",
+               route_local_window_length_);
+      route_local_window_length_ = 3.0;
+    }
+    if (route_local_window_overlap_ < 0.0 ||
+        route_local_window_overlap_ >= route_local_window_length_)
+    {
+      ROS_WARN("Invalid route_local_window_overlap=%.3f for window %.3f, use half the window.",
+               route_local_window_overlap_, route_local_window_length_);
+      route_local_window_overlap_ = route_local_window_length_ * 0.5;
+    }
+    if (route_terminal_handoff_length_ < 0.0)
+    {
+      ROS_WARN("Invalid route_terminal_handoff_length=%.3f, disable terminal handoff.",
+               route_terminal_handoff_length_);
+      route_terminal_handoff_length_ = 0.0;
+    }
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
     for (int i = 0; i < waypoint_num_; i++)
@@ -80,6 +117,7 @@ namespace ego_planner
     ego_plan_state_pub_ = nh.advertise<quadrotor_msgs::EgoPlannerResult>("/planning/ego_plan_result", 10);
     ego_state_trigger_pub_ = nh.advertise<quadrotor_msgs::EgoStateTrigger>("/planning/ego_state_trigger", 10);
     goal_processed_pub_ = nh.advertise<geometry_msgs::PointStamped>("/planning/goal_processed", 10);
+    route_result_pub_ = nh.advertise<quadrotor_msgs::EgoWaypointRouteResult>("/planning/route_exec_result", 10);
 
     // ROS_INFO("Wait for 3 seconds.");
     // ros::Time t0 = ros::Time::now();
@@ -99,6 +137,7 @@ namespace ego_planner
     {
       waypoint_sub_ = nh.subscribe("local_goal", 10, &EGOReplanFSM::aimCallback, this);
       waypoint_sub_yaw_preset_sub_ = nh.subscribe("local_goal_yaw_preset", 10, &EGOReplanFSM::aimCallbackYawPreset, this);
+      route_sub_ = nh.subscribe("local_route", 10, &EGOReplanFSM::routeCallback, this);
     }
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
@@ -117,8 +156,17 @@ namespace ego_planner
     traj_server_.feedDog();
     // measureGroundHeight();
     // measureGroundHeight2();
-    mondifyInCollisionFinalGoal();
     checkCollision();
+    if (tryFinishRouteByOdom())
+    {
+      exec_timer_.start();
+      return;
+    }
+    if (checkRouteProgressTimeout())
+    {
+      exec_timer_.start();
+      return;
+    }
     planningReturnsChk();
     evaluateEnvironmentDensity();
 
@@ -259,6 +307,13 @@ namespace ego_planner
       constexpr double EXEC_PROPORTION = 0.5;
       bool close_to_current_traj_end = t_cur > info->last_opt_cp_time * EXEC_PROPORTION;
       bool close_to_final_goal = (final_goal_ - pos).norm() < no_replan_thresh_;
+      const bool route_window_active = have_route_ && route_replan_use_guide_path_ &&
+                                       !route_terminal_handoff_active_ &&
+                                       !route_window_reaches_stop_;
+      const double local_end_distance =
+          (info->traj.getPos(info->duration) - pos).norm();
+      const bool close_to_route_window_end =
+          route_window_active && local_end_distance <= route_local_window_overlap_;
 
       bool uk_see_alot = false;
       if (!close_to_final_goal && info->uk_info.enable)
@@ -312,7 +367,29 @@ namespace ego_planner
       }
       else if (t_cur > info->duration - 1e-2) // case 3: the final waypoint reached
       {
-        if (touch_goal_)
+        if (have_route_)
+        {
+          // Completion is decided only by tryFinishRouteByOdom(), including
+          // route progress and a stable real pose. Let the controller settle
+          // at the final endpoint or a mandatory corner before replanning.
+          if (!(route_window_reaches_stop_ &&
+                isWithinRouteFinishThreshold(route_window_stop_)))
+          {
+            const double original_goal_distance = (odom_pos_ - route_requested_goal_).norm();
+            const double active_goal_distance = (odom_pos_ - final_goal_).norm();
+            ROS_WARN(
+                "[Ego] Local trajectory ended before route completion: touch_goal=%d "
+                "original_goal_distance=%.3f active_goal_distance=%.3f; "
+                "replanning route=%u job=%s.",
+                touch_goal_ ? 1 : 0,
+                original_goal_distance,
+                active_goal_distance,
+                active_route_id_,
+                active_job_id_.c_str());
+            changeFSMExecState(GEN_NEW_TRAJ, "route_endpoint_not_reached");
+          }
+        }
+        else if (touch_goal_)
         {
           have_target_ = false;
           have_trigger_ = false;
@@ -354,6 +431,10 @@ namespace ego_planner
           }
           changeFSMExecState(WAIT_TARGET, "EGOFSM"); // no better choises
         }
+      }
+      else if (close_to_route_window_end) // route-guide rolling replan
+      {
+        changeFSMExecState(REPLAN_TRAJ, "route_window_overlap");
       }
       else if ((uk_see_alot || (!touch_goal_ && close_to_current_traj_end)) &&
                !close_to_final_goal) // case 3: time to perform next replan
@@ -569,6 +650,11 @@ namespace ego_planner
         have_trigger_ = false;
         pending_goal_finish_trigger_ = false;
         goal_finish_stable_start_time_ = ros::Time(0);
+        if (have_route_)
+        {
+          publishRouteResult(false, false, "planner_failed");
+          clearRouteState();
+        }
 
         if (target_type_ == TARGET_TYPE::PRESET_TARGET)
         {
@@ -775,20 +861,27 @@ namespace ego_planner
     return false;
   }
 
-  PLAN_RET EGOReplanFSM::callReboundReplan(bool flag_use_last_optimal, bool flag_random_init, vector<DensityEvalRayData> *pathes)
+  PLAN_RET EGOReplanFSM::callReboundReplan(bool flag_use_last_optimal, bool flag_random_init, vector<DensityEvalRayData> *pathes, bool use_route_guide)
   {
     ros::Time t_s = ros::Time::now();
 
     planner_manager_->computePlanningParams(planner_manager_->pp_.max_vel_);
+    std::vector<Eigen::Vector3d> guide_path = buildRouteGuidePath(start_pt_);
+    const std::vector<Eigen::Vector3d> *guide_path_ptr =
+        use_route_guide && guide_path.size() >= 2 ? &guide_path : nullptr;
+    const bool use_route_window = have_route_ && route_replan_use_guide_path_ &&
+                                  guide_path.size() >= 2;
+    const Eigen::Vector3d planning_goal = use_route_window ? guide_path.back() : final_goal_;
     // ROS_WARN("Map Lock try");
     planner_manager_->map_->cur_->LockCopyToOutputAllMap(true); // to avoid map change during planning
     // ROS_WARN("Map Lock done");
     PLAN_RET plan_success =
         planner_manager_->reboundReplan(
             start_pt_, start_vel_, start_acc_, start_jerk_,
-            glb_start_pt_, final_goal_,
+            glb_start_pt_, planning_goal,
             flag_use_last_optimal,
-            flag_random_init, pathes, touch_goal_);
+            flag_random_init, pathes, touch_goal_, guide_path_ptr,
+            have_route_ && route_replan_use_guide_path_ && use_route_guide);
     planner_manager_->map_->cur_->LockCopyToOutputAllMap(false); // allow map change
 
     ROS_WARN("Map Use=%d", planner_manager_->map_->getMapUse());
@@ -813,20 +906,19 @@ namespace ego_planner
   {
 
     vector<DensityEvalRayData> *all_rays = new vector<DensityEvalRayData>;
-    if (getTrajPVAJ("odom"))
-    {
-      if (!planner_manager_->densityEval(start_pt_, final_goal_, NULL, all_rays))
-        all_rays = NULL;
-    }
-    else
+    if (!getTrajPVAJ("odom"))
       return false;
 
+    if (!planner_manager_->densityEval(start_pt_, final_goal_, NULL, all_rays))
+      all_rays = NULL;
+
+    const bool force_route_guide = have_route_ && route_replan_use_guide_path_;
     for (int i = 0; i < trial_times; i++)
     {
       ROS_INFO("Tried for %d time.", i);
       if (getTrajPVAJ("odom"))
         if (callReboundReplan(false,
-                              !all_rays || plan_ret_stat_.keep_failure_times >= trial_times,
+                              force_route_guide ? false : (!all_rays || plan_ret_stat_.keep_failure_times >= trial_times),
                               all_rays) == PLAN_RET::SUCCESS)
         {
           if (i > 0)
@@ -834,16 +926,33 @@ namespace ego_planner
           return true;
         }
     }
+
+    if (force_route_guide && route_guide_allow_obstacle_fallback_)
+    {
+      const std::vector<Eigen::Vector3d> local_guide = buildRouteGuidePath(start_pt_);
+      const Eigen::Vector3d local_goal = local_guide.size() >= 2
+                                             ? local_guide.back()
+                                             : final_goal_;
+      vector<DensityEvalRayData> *fallback_rays = new vector<DensityEvalRayData>;
+      if (!planner_manager_->densityEval(start_pt_, local_goal, NULL, fallback_rays))
+        fallback_rays = NULL;
+      const bool random_init = !fallback_rays || fallback_rays->empty();
+      ROS_WARN("[Ego] Route guide failed; trying one local obstacle-avoidance fallback "
+               "(random_init=%d).", random_init ? 1 : 0);
+      if (callReboundReplan(false, random_init, fallback_rays, false) == PLAN_RET::SUCCESS)
+        return true;
+    }
     return false;
   }
 
   bool EGOReplanFSM::planFromLocalTraj(const int trial_times /*=1*/)
   {
     PLAN_RET ret = PLAN_RET::DEFAULT_FAIL;
-
-    // first trial
-    if (cur_traj_to_cur_target_ && getTrajPVAJ("traj")) // zx-todo this logic will make REPLAN_TRAJ state plan trajs again and again even it keeps fail. I modified REPLAN_TRAJ logic
+    const bool force_route_guide = have_route_ && route_replan_use_guide_path_;
+    if (!force_route_guide && cur_traj_to_cur_target_ && getTrajPVAJ("traj")) // zx-todo this logic will make REPLAN_TRAJ state plan trajs again and again even it keeps fail. I modified REPLAN_TRAJ logic
       ret = callReboundReplan(true, false, NULL);
+    if (force_route_guide && !getTrajPVAJ("traj"))
+      return false;
 
     if (ret != PLAN_RET::SUCCESS)
     {
@@ -864,18 +973,38 @@ namespace ego_planner
         for (int i = 0; i < trial_times; i++)
         {
           if (getTrajPVAJ("traj"))
-            ret = callReboundReplan(false, true, all_rays);
+            ret = callReboundReplan(false, force_route_guide ? false : true, all_rays);
           if (ret)
             break;
         }
-        if (ret != PLAN_RET::SUCCESS)
+        if (ret != PLAN_RET::SUCCESS &&
+            (!force_route_guide || !route_guide_allow_obstacle_fallback_))
         {
           return false;
         }
       }
+
+      if (ret != PLAN_RET::SUCCESS && force_route_guide &&
+          route_guide_allow_obstacle_fallback_ &&
+          getTrajPVAJ("traj"))
+      {
+        // The guide is a preference, not permission to violate hard obstacle
+        // constraints.  This single retry keeps the same rolling endpoint.
+        const std::vector<Eigen::Vector3d> local_guide = buildRouteGuidePath(start_pt_);
+        const Eigen::Vector3d local_goal = local_guide.size() >= 2
+                                               ? local_guide.back()
+                                               : final_goal_;
+        vector<DensityEvalRayData> *fallback_rays = new vector<DensityEvalRayData>;
+        if (!planner_manager_->densityEval(start_pt_, local_goal, NULL, fallback_rays))
+          fallback_rays = NULL;
+        const bool random_init = !fallback_rays || fallback_rays->empty();
+        ROS_WARN("[Ego] Route guide replan failed; trying one local obstacle-avoidance "
+                 "fallback (random_init=%d).", random_init ? 1 : 0);
+        ret = callReboundReplan(false, random_init, fallback_rays, false);
+      }
     }
 
-    return true;
+    return ret == PLAN_RET::SUCCESS;
   }
 
   bool EGOReplanFSM::getTrajPVAJ(const string data_source)
@@ -915,16 +1044,10 @@ namespace ego_planner
 
   bool EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp, const double next_yaw,
                                       const bool look_forward, const uint8_t yaw_mode,
-                                      const uint8_t yaw_path_mode)
+                                      const uint8_t yaw_path_mode, bool yaw_low_speed)
   {
     final_goal_ = next_wp;
     glb_start_pt_ = odom_pos_;
-    // 记录本次 yaw 配置：后续 mondifyInCollisionFinalGoal 修改目标重规划时沿用，
-    // 避免 planNextWaypoint 默认 look_forward=true 覆盖"保持朝向"语义。
-    goal_yaw_ = next_yaw;
-    goal_look_forward_ = look_forward;
-    goal_yaw_mode_ = yaw_mode;
-    goal_yaw_path_mode_ = yaw_path_mode;
     have_target_ = true;
     pending_goal_finish_trigger_ = false;
     goal_finish_stable_start_time_ = ros::Time(0);
@@ -952,7 +1075,12 @@ namespace ego_planner
         yaw_cmd_.yaw_reach = false; // this will work only if the drone state is WAIT_TARGET
         yaw_cmd_.cmd_time = ros::Time::now();
         yaw_cmd_.des_yaw = next_yaw;
-        traj_server_.setYaw(next_yaw, odom_yaw_, odom_pos_, false, yaw_mode, yaw_path_mode);
+        if (hasRouteYawProfile())
+          traj_server_.setRouteYawProfile(route_wps_, route_s_, route_yaws_unwrapped_,
+                                          next_yaw, odom_pos_,
+                                          yaw_low_speed || yaw_mode == quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED);
+        else
+          traj_server_.setYaw(next_yaw, odom_yaw_, odom_pos_, false, yaw_mode, yaw_path_mode, yaw_low_speed);
       }
     }
 
@@ -961,7 +1089,12 @@ namespace ego_planner
       yaw_cmd_.yaw_reach = false; // this will work only if the drone state is WAIT_TARGET
       yaw_cmd_.cmd_time = ros::Time::now();
       yaw_cmd_.des_yaw = next_yaw;
-      traj_server_.setYaw(next_yaw, odom_yaw_, odom_pos_, false, yaw_mode, yaw_path_mode);
+      if (hasRouteYawProfile())
+        traj_server_.setRouteYawProfile(route_wps_, route_s_, route_yaws_unwrapped_,
+                                        next_yaw, odom_pos_,
+                                        yaw_low_speed || yaw_mode == quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED);
+      else
+        traj_server_.setYaw(next_yaw, odom_yaw_, odom_pos_, false, yaw_mode, yaw_path_mode, yaw_low_speed);
     }
     else
     {
@@ -982,162 +1115,6 @@ namespace ego_planner
     return true;
   }
 
-  bool EGOReplanFSM::mondifyInCollisionFinalGoal()
-  {
-    if (!have_target_)
-      return false;
-
-
-    /* This part will cause unnecessary goal modification */
-    // if (touch_goal_ && plan_ret_stat_.ret != PLAN_RET::SUCCESS && plan_ret_stat_.times > 10) // sometimes the goal stays inside a big obstacle
-    // {
-    //   double d_step = planner_manager_->grid_map_->getResolution() / 2;
-    //   double d_end = (final_goal_ - glb_start_pt_).norm();
-    //   Eigen::Vector3d dir = (glb_start_pt_ - final_goal_).normalized();
-    //   for (double d = d_step; d < d_end; d += d_step)
-    //   {
-    //     Eigen::Vector3d pt = final_goal_ + d * dir;
-    //     // bool new_goal_clear = true;
-    //     if (planner_manager_->grid_map_->getInflateOccupancy(pt) > 0) // make final_goal_ collided deliberately so that following codes will handle it.
-    //     {
-    //       ROS_WARN("Move final_goal_ from [%f %f %f] to [%f %f %f].", final_goal_(0), final_goal_(1), final_goal_(2), pt(0), pt(1), pt(2));
-    //       final_goal_ = pt;
-    //       break;
-    //     }
-    //   }
-    // }
-
-    bool flag_goal_modified = false;
-
-    auto map = planner_manager_->map_;
-    bool in_obs_goal_clear = true;
-    const double res = planner_manager_->map_->cur_->getResolution();
-    for (double x = -res; x < res + 1e-5; x += res)
-      for (double y = -res; y < res + 1e-5; y += res)
-        for (double z = -res; z < res + 1e-5; z += res)
-        {
-          if (map->getOcc(final_goal_ + Eigen::Vector3d(x, y, z)) > 0)
-          {
-            in_obs_goal_clear = false;
-            goto out_loop1;
-          }
-        }
-  out_loop1:;
-    if (!in_obs_goal_clear) // Reason: in obstacles
-    {
-      Eigen::Vector3d orig_goal = final_goal_;
-      double d_step = map->cur_->getResolution();
-      double d_end = (final_goal_ - glb_start_pt_).norm();
-      Eigen::Vector3d dir = (glb_start_pt_ - final_goal_).normalized();
-      double d = d_step;
-      for (; d < d_end && !in_obs_goal_clear; d += d_step)
-      {
-        Eigen::Vector3d pt = final_goal_ + d * dir;
-        bool new_goal_clear = true;
-        const double res = map->cur_->getResolution();
-        for (double x = -res; x < res + 1e-5; x += res)
-          for (double y = -res; y < res + 1e-5; y += res)
-            for (double z = -res; z < res + 1e-5; z += res)
-            {
-              if (map->getOcc(pt + Eigen::Vector3d(x, y, z)) > 0)
-              {
-                new_goal_clear = false;
-                goto out_loop2;
-              }
-            }
-      out_loop2:;
-        if (new_goal_clear)
-        {
-          final_goal_ = pt;
-          ROS_WARN("Current in-collision waypoint (%.3f, %.3f %.3f) has been modified to (%.3f, %.3f %.3f)",
-                   orig_goal(0), orig_goal(1), orig_goal(2), final_goal_(0), final_goal_(1), final_goal_(2));
-          in_obs_goal_clear = true;
-          flag_goal_modified = true;
-          break;
-        }
-      }
-
-      if (!in_obs_goal_clear)
-      {
-        d_step = map->cur_->getResolution() / 2;
-        for (d = d_step; d < d_end && !in_obs_goal_clear; d += d_step)
-        {
-          Eigen::Vector3d pt = final_goal_ + d * dir;
-          cout << "pt=" << pt.transpose() << endl;
-          if (map->getOcc(pt) <= 0)
-          {
-            final_goal_ = pt;
-            ROS_WARN("[Weak check]Current in-collision waypoint (%.3f, %.3f %.3f) has been modified to (%.3f, %.3f %.3f)",
-                     orig_goal(0), orig_goal(1), orig_goal(2), final_goal_(0), final_goal_(1), final_goal_(2));
-            in_obs_goal_clear = true;
-            flag_goal_modified = true;
-            break;
-          }
-        }
-
-        // can't find any valid collision-free point
-        if (map->getOcc(final_goal_) <= 0)
-        {
-          // can't find any goal with enough clearance, just ignore
-        }
-        else
-          ROS_ERROR_THROTTLE(1.0, "Can't find any collision-free point on global path.");
-      }
-    }
-
-    bool swarm_collide_goal_clear = true;
-    if (touch_goal_)
-    {
-      for (size_t id = 0; id < planner_manager_->traj_.swarm_traj.size(); id++)
-      {
-        if ((planner_manager_->traj_.swarm_traj.at(id).drone_id != (int)id) ||
-            (planner_manager_->traj_.swarm_traj.at(id).drone_id == planner_manager_->pp_.drone_id))
-        {
-          continue;
-        }
-
-        Eigen::Vector3d others_lc_goal = planner_manager_->traj_.swarm_traj.at(id).traj.getPos(planner_manager_->traj_.swarm_traj.at(id).duration);
-        double allowed_dist = planner_manager_->getSwarmClearance() + planner_manager_->traj_.swarm_traj.at(id).des_clearance;
-        if ((others_lc_goal - final_goal_).norm() < allowed_dist)
-        {
-          bool new_goal_clear = false;
-          Eigen::Vector3d orig_goal = final_goal_;
-          double d_step = map->cur_->getResolution();
-          double d_end = (final_goal_ - glb_start_pt_).norm();
-          Eigen::Vector3d dir = (glb_start_pt_ - final_goal_).normalized();
-          for (double d = d_step; d < d_end; d += d_step)
-          {
-            Eigen::Vector3d pt = final_goal_ + d * dir;
-            if ((others_lc_goal - pt).norm() >= allowed_dist * 1.5)
-            {
-              final_goal_ = pt;
-              ROS_WARN("Current swarm-collision waypoint (%.3f, %.3f %.3f) has been modified to (%.3f, %.3f %.3f)",
-                       orig_goal(0), orig_goal(1), orig_goal(2), final_goal_(0), final_goal_(1), final_goal_(2));
-              new_goal_clear = true;
-              flag_goal_modified = true;
-              break;
-            }
-          }
-
-          if (!new_goal_clear)
-          {
-            swarm_collide_goal_clear = false;
-            ROS_ERROR_THROTTLE(1.0, "Can't find any swarm-collision-free point on global path.");
-          }
-        }
-      }
-    }
-
-    has_been_modified_ = flag_goal_modified;
-    if ( flag_goal_modified && in_obs_goal_clear && swarm_collide_goal_clear )
-      // 沿用原目标命令的 yaw 配置重规划；此前只传位置导致 look_forward 掉回默认
-      // true，垂直下降类"保持朝向"命令会被覆盖成朝轨迹方向看，机头乱转。
-      return planNextWaypoint(final_goal_, goal_yaw_, goal_look_forward_,
-                              goal_yaw_mode_, goal_yaw_path_mode_); // final_goal_=pt inside if success
-    else
-      return false;
-  }
-  
   void EGOReplanFSM::waypointCallback(const geometry_msgs::PoseStampedPtr &msg)
   {
     // if (msg->goal[2] < -0.1)
@@ -1162,6 +1139,7 @@ namespace ego_planner
       return;
     std::cout << "[Ego]: <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << std::endl;
 
+    clearRouteState();
     initEgoPlanResult();
     Eigen::Vector3d end_wp(msg->goal[0], msg->goal[1], msg->goal[2]);
 
@@ -1226,6 +1204,7 @@ namespace ego_planner
       return;
 
     std::cout << "[Ego]: <<<<<<<<<<<<<<<<<< New Goal <<<<<<<<<<<<<<<<<< " << std::endl;
+    clearRouteState();
     initEgoPlanResult();
     target_pos_ = Eigen::Vector3d(msg->goal[0], msg->goal[1], msg->goal[2]);
     visualization_->displayGoalPoint(target_pos_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
@@ -1288,6 +1267,462 @@ namespace ego_planner
 
   }
 
+  void EGOReplanFSM::routeCallback(const quadrotor_msgs::EgoWaypointRoutePtr &msg)
+  {
+    ROS_INFO("[Ego]: Received routeID: %u job: %s droneID: %d waypoints: %lu lookforward: %d",
+             msg->route_id, msg->job_id.c_str(), msg->drone_id, msg->goals.size(), (int)msg->look_forward);
+    if (msg->drone_id != planner_manager_->pp_.drone_id)
+      return;
+    if (msg->goals.empty())
+    {
+      ROS_ERROR("[Ego]: Ignore empty route.");
+      return;
+    }
+    if (!msg->yaw.empty() && msg->yaw.size() != msg->goals.size())
+    {
+      ROS_ERROR("[Ego]: Ignore route with mismatched yaw size.");
+      return;
+    }
+
+    for (const auto &goal : msg->goals)
+    {
+      if (!std::isfinite(goal.x) || !std::isfinite(goal.y) || !std::isfinite(goal.z))
+      {
+        ROS_ERROR("[Ego]: Ignore route with non-finite waypoint.");
+        return;
+      }
+    }
+    for (const float yaw : msg->yaw)
+    {
+      if (!std::isfinite(yaw))
+      {
+        ROS_ERROR("[Ego]: Ignore route with non-finite yaw.");
+        return;
+      }
+    }
+
+    resetMandatoryStopState();
+    if (have_route_)
+      publishRouteResult(false, false, "superseded_by_new_route");
+    clearRouteState();
+    initEgoPlanResult();
+
+    route_wps_.clear();
+    route_yaws_.clear();
+    route_s_.clear();
+    route_yaws_unwrapped_.clear();
+    for (size_t i = 0; i < msg->goals.size(); ++i)
+    {
+      Eigen::Vector3d wp(msg->goals[i].x, msg->goals[i].y, msg->goals[i].z);
+      double yaw = msg->yaw.empty() ? 0.0 : msg->yaw[i];
+      if (yaw > M_PI)
+        yaw -= 2 * M_PI;
+      if (yaw < -M_PI)
+        yaw += 2 * M_PI;
+      // A short final segment or sharp corner is part of the requested path.
+      // Remove numerical duplicates only, retaining the last point and yaw.
+      if (!route_wps_.empty() && (wp - route_wps_.back()).norm() < 1e-6)
+      {
+        route_wps_.back() = wp;
+        route_yaws_.back() = yaw;
+      }
+      else
+      {
+        route_wps_.push_back(wp);
+        route_yaws_.push_back(yaw);
+      }
+    }
+
+    if (route_wps_.empty())
+    {
+      ROS_ERROR("[Ego]: Ignore route after duplicate filtering, no waypoint left.");
+      return;
+    }
+
+    rebuildRouteGeometry();
+
+    if (!route_yaws_.empty())
+    {
+      route_yaws_unwrapped_.resize(route_yaws_.size());
+      route_yaws_unwrapped_[0] = route_yaws_[0];
+      for (size_t i = 1; i < route_yaws_.size(); ++i)
+      {
+        double yaw = route_yaws_[i];
+        while (yaw - route_yaws_unwrapped_[i - 1] > M_PI)
+          yaw -= 2.0 * M_PI;
+        while (yaw - route_yaws_unwrapped_[i - 1] < -M_PI)
+          yaw += 2.0 * M_PI;
+        route_yaws_unwrapped_[i] = yaw;
+      }
+    }
+
+    have_route_ = true;
+    route_result_sent_ = false;
+    route_anchor_idx_ = 0;
+    route_terminal_handoff_active_ = false;
+    route_requested_goal_ = route_wps_.back();
+    route_last_progress_time_ = ros::Time::now();
+    active_route_id_ = msg->route_id;
+    active_job_id_ = msg->job_id;
+    route_look_forward_ = msg->look_forward;
+    route_goal_to_follower_ = msg->goal_to_follower;
+
+    target_pos_ = route_wps_.back();
+    if (hasRouteYawProfile())
+    {
+      size_t best_idx = 0;
+      Eigen::Vector3d best_proj = route_wps_.front();
+      double best_t = 0.0;
+      double best_s = 0.0;
+      target_yaw_ = projectToRoute(odom_pos_, 0, best_idx, best_proj, best_t, best_s) ? interpolateRouteYaw(best_s) : route_yaws_unwrapped_.front();
+    }
+    else
+    {
+      target_yaw_ = route_yaws_.empty() ? 0.0 : route_yaws_.back();
+    }
+    // route 航点 yaw 沿弧长插值，用低角速度档跟随，避免机头抖动。
+    target_yaw_mode_ = quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED;
+    target_yaw_path_mode_ = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST;
+    target_yaw_low_speed_ = true;
+    target_look_forward_ = route_look_forward_;
+
+    final_goal_ = target_pos_;
+    Eigen::Vector3d dxy = target_pos_ - odom_pos_;
+    aim_direction_ = atan2(dxy(1), dxy(0));
+    if (aim_direction_ > M_PI)
+      aim_direction_ -= 2 * M_PI;
+    if (aim_direction_ < -M_PI)
+      aim_direction_ += 2 * M_PI;
+
+    // 仅在接收一条新的外部 route 时同步 yaw 命令历史。不能放在 planNextWaypoint()
+    // 中，否则同一 route 内的重规划会丢失 yaw 跟踪的连续性。
+    traj_server_.syncYawFromOdom(odom_yaw_, "routeCallback");
+
+    if (planNextWaypoint(target_pos_, target_yaw_, target_look_forward_,
+                         target_yaw_mode_, target_yaw_path_mode_))
+      have_trigger_ = true;
+  }
+
+  void EGOReplanFSM::rebuildRouteGeometry()
+  {
+    route_s_.assign(1, 0.0);
+    route_corners_.clear();
+    route_next_corner_ = 0;
+    for (size_t i = 1; i < route_wps_.size(); ++i)
+      route_s_.push_back(route_s_.back() + (route_wps_[i] - route_wps_[i - 1]).norm());
+
+    // A polynomial cannot follow a discontinuous tangent at nonzero speed.
+    // Stop at pronounced corners instead of smoothing away the requested turn.
+    const double corner_cosine = std::cos(route_corner_angle_deg_ * M_PI / 180.0);
+    for (size_t i = route_anchor_idx_ + 1; i + 1 < route_wps_.size(); ++i)
+    {
+      const Eigen::Vector3d incoming = route_wps_[i] - route_wps_[i - 1];
+      const Eigen::Vector3d outgoing = route_wps_[i + 1] - route_wps_[i];
+      if (incoming.norm() > 1e-6 && outgoing.norm() > 1e-6 &&
+          incoming.normalized().dot(outgoing.normalized()) < corner_cosine)
+        route_corners_.push_back(i);
+    }
+  }
+
+  void EGOReplanFSM::updateRouteProgress()
+  {
+    if (!have_route_ || route_wps_.size() < 2)
+      return;
+
+    size_t best_idx = std::min(route_anchor_idx_, route_wps_.size() - 2);
+    Eigen::Vector3d best_proj = route_wps_[best_idx];
+    double best_t = 0.0;
+    double best_s = 0.0;
+    if (!projectToRoute(odom_pos_, best_idx, best_idx, best_proj, best_t, best_s))
+      return;
+
+    route_anchor_idx_ = std::max(route_anchor_idx_, best_idx);
+    if (best_s > route_best_progress_s_ + route_progress_epsilon_)
+    {
+      route_best_progress_s_ = best_s;
+      route_last_progress_time_ = ros::Time::now();
+    }
+    if (route_next_corner_ < route_corners_.size())
+    {
+      const size_t corner = route_corners_[route_next_corner_];
+      const bool reached_by_route = best_idx + 1 >= corner;
+      if (reached_by_route && isWithinRouteFinishThreshold(route_wps_[corner]) &&
+          odom_vel_.norm() <= ego_state_trigger_vel_thresh_)
+      {
+        ROS_INFO("[Ego] Route corner %lu reached and stopped; continuing route=%u.",
+                 corner, active_route_id_);
+        route_anchor_idx_ = corner;
+        ++route_next_corner_;
+        route_window_reaches_stop_ = false;
+        route_last_progress_time_ = ros::Time::now();
+        changeFSMExecState(GEN_NEW_TRAJ, "route_corner_reached");
+      }
+    }
+  }
+
+  bool EGOReplanFSM::projectToRoute(const Eigen::Vector3d &pos, size_t start_idx, size_t &best_idx,
+                                    Eigen::Vector3d &best_proj, double &best_t, double &best_s) const
+  {
+    if (route_wps_.size() < 2 || route_s_.size() != route_wps_.size())
+      return false;
+
+    best_idx = std::min(start_idx, route_wps_.size() - 2);
+    best_proj = route_wps_[best_idx];
+    best_t = 0.0;
+    best_s = route_s_[best_idx];
+    double best_dist = std::numeric_limits<double>::max();
+    const size_t lookahead_waypoints =
+        static_cast<size_t>(route_projection_lookahead_waypoints_);
+    size_t last_segment_idx = std::min(
+        route_wps_.size() - 2,
+        best_idx + lookahead_waypoints);
+    if (route_next_corner_ < route_corners_.size())
+      last_segment_idx = std::min(last_segment_idx, route_corners_[route_next_corner_] - 1);
+    for (size_t i = best_idx; i <= last_segment_idx; ++i)
+    {
+      Eigen::Vector3d seg = route_wps_[i + 1] - route_wps_[i];
+      double seg_len2 = seg.squaredNorm();
+      if (seg_len2 < 1e-12)
+        continue;
+
+      double t = (pos - route_wps_[i]).dot(seg) / seg_len2;
+      t = std::max(0.0, std::min(1.0, t));
+      Eigen::Vector3d proj = route_wps_[i] + t * seg;
+      double dist = (pos - proj).squaredNorm();
+      if (dist < best_dist)
+      {
+        best_dist = dist;
+        best_idx = i;
+        best_proj = proj;
+        best_t = t;
+        best_s = route_s_[i] + t * std::sqrt(seg_len2);
+      }
+    }
+
+    return best_dist < std::numeric_limits<double>::max();
+  }
+
+  double EGOReplanFSM::interpolateRouteYaw(double s) const
+  {
+    if (!hasRouteYawProfile())
+      return 0.0;
+
+    if (s <= route_s_.front())
+      return route_yaws_unwrapped_.front();
+    if (s >= route_s_.back())
+      return route_yaws_unwrapped_.back();
+
+    for (size_t i = 0; i + 1 < route_s_.size(); ++i)
+    {
+      if (s <= route_s_[i + 1])
+      {
+        double ds = route_s_[i + 1] - route_s_[i];
+        if (ds < 1e-6)
+          return route_yaws_unwrapped_[i + 1];
+        double ratio = (s - route_s_[i]) / ds;
+        return route_yaws_unwrapped_[i] + ratio * (route_yaws_unwrapped_[i + 1] - route_yaws_unwrapped_[i]);
+      }
+    }
+
+    return route_yaws_unwrapped_.back();
+  }
+
+  bool EGOReplanFSM::hasRouteYawProfile() const
+  {
+    return have_route_ &&
+           route_wps_.size() >= 2 &&
+           route_yaws_unwrapped_.size() == route_wps_.size() &&
+           route_s_.size() == route_wps_.size();
+  }
+
+  std::vector<Eigen::Vector3d> EGOReplanFSM::buildRouteGuidePath(const Eigen::Vector3d &start_pt)
+  {
+    std::vector<Eigen::Vector3d> guide_path;
+    route_window_reaches_stop_ = false;
+    if (!have_route_ || route_wps_.empty())
+      return guide_path;
+
+    if (route_wps_.size() == 1)
+    {
+      guide_path.push_back(start_pt);
+      guide_path.push_back(route_wps_.front());
+      route_window_reaches_stop_ = true;
+      route_window_stop_ = route_wps_.front();
+      return guide_path;
+    }
+
+    updateRouteProgress();
+    size_t best_idx = std::min(route_anchor_idx_, route_wps_.size() - 2);
+    Eigen::Vector3d best_proj = route_wps_[best_idx];
+    double best_t = 0.0;
+    double best_s = 0.0;
+    if (!projectToRoute(start_pt, best_idx, best_idx, best_proj, best_t, best_s))
+      return guide_path;
+
+    route_anchor_idx_ = std::max(route_anchor_idx_, best_idx);
+    guide_path.push_back(best_proj);
+    const double remaining_route_length = std::max(0.0, route_s_.back() - best_s);
+    route_terminal_handoff_active_ = route_replan_use_guide_path_ &&
+                                     route_terminal_handoff_length_ > 0.0 &&
+                                     remaining_route_length <= route_terminal_handoff_length_;
+    double remaining_window_length = route_replan_use_guide_path_ &&
+                                       !route_terminal_handoff_active_
+                                       ? route_local_window_length_
+                                       : std::numeric_limits<double>::max();
+    const size_t stop_idx = route_next_corner_ < route_corners_.size()
+                                ? route_corners_[route_next_corner_]
+                                : route_wps_.size() - 1;
+    for (size_t i = best_idx + 1; i <= stop_idx; ++i)
+    {
+      const Eigen::Vector3d segment = route_wps_[i] - guide_path.back();
+      const double segment_length = segment.norm();
+      if (segment_length <= 1e-6)
+        continue;
+      if (segment_length >= remaining_window_length)
+      {
+        guide_path.push_back(guide_path.back() +
+                             segment * (remaining_window_length / segment_length));
+        break;
+      }
+      guide_path.push_back(route_wps_[i]);
+      remaining_window_length -= segment_length;
+    }
+    if (guide_path.size() == 1)
+      guide_path.push_back(route_wps_[stop_idx]);
+    route_window_reaches_stop_ =
+        (guide_path.back() - route_wps_[stop_idx]).norm() < 1e-6;
+    route_window_stop_ = route_wps_[stop_idx];
+
+    if (route_replan_use_guide_path_)
+    {
+      ROS_INFO("[Ego] Route guide %s: anchor=%lu points=%lu remaining=%.2fm window=%.2fm overlap=%.2fm",
+               route_terminal_handoff_active_ ? "terminal handoff" : "window",
+               route_anchor_idx_, guide_path.size(), remaining_route_length,
+               route_local_window_length_, route_local_window_overlap_);
+    }
+
+    return guide_path;
+  }
+
+  bool EGOReplanFSM::routeReachedFinal() const
+  {
+    return have_route_ && !route_wps_.empty() &&
+           isWithinRouteFinishThreshold(route_requested_goal_);
+  }
+
+  bool EGOReplanFSM::isWithinRouteFinishThreshold(const Eigen::Vector3d &goal) const
+  {
+    const double route_finish_threshold = 0.20;
+    return (odom_pos_ - goal).norm() < route_finish_threshold;
+  }
+
+  bool EGOReplanFSM::tryFinishRouteByOdom()
+  {
+    if (!have_route_ || !have_odom_ || route_wps_.empty())
+      return false;
+
+    // Require terminal route progress as well as position.  This prevents a
+    // closed route's start point from being mistaken for its final waypoint.
+    updateRouteProgress();
+    const bool terminal_progress = route_wps_.size() < 2 ||
+                                   route_anchor_idx_ >= route_wps_.size() - 2;
+    const bool original_reached = routeReachedFinal();
+    const bool stable = terminal_progress &&
+                        route_next_corner_ == route_corners_.size() &&
+                        original_reached &&
+                        odom_vel_.norm() <= ego_state_trigger_vel_thresh_ &&
+                        odom_acc_.norm() <= ego_state_trigger_acc_thresh_ &&
+                        std::abs(odom_omega_(2)) <= ego_state_trigger_yaw_rate_thresh_;
+    if (!stable)
+    {
+      route_finish_stable_since_ = ros::Time(0);
+      return false;
+    }
+    if (route_finish_stable_since_.isZero())
+      route_finish_stable_since_ = ros::Time::now();
+    if ((ros::Time::now() - route_finish_stable_since_).toSec() < ego_state_trigger_hold_time_)
+      return false;
+
+    have_target_ = false;
+    have_trigger_ = false;
+    publishRouteResult(true, true, "final_goal_reached_by_odom");
+    clearRouteState();
+    changeFSMExecState(WAIT_TARGET, "route_odom_reached");
+    return true;
+  }
+
+  bool EGOReplanFSM::checkRouteProgressTimeout()
+  {
+    // Planning success alone is not progress: repeated short trajectories can
+    // otherwise keep a blocked route alive forever.
+    if (!have_route_ || route_last_progress_time_.isZero() ||
+        (ros::Time::now() - route_last_progress_time_).toSec() < route_no_progress_timeout_)
+      return false;
+
+    ROS_ERROR("[Ego] Route %u made no forward progress for %.1fs; stopping.",
+              active_route_id_, route_no_progress_timeout_);
+    publishRouteResult(false, false, "route_no_progress_timeout");
+    clearRouteState();
+    have_target_ = false;
+    have_trigger_ = false;
+    pending_goal_finish_trigger_ = false;
+    callEmergencyStop(odom_pos_);
+    changeFSMExecState(WAIT_TARGET, "route_no_progress_timeout");
+    return true;
+  }
+
+  void EGOReplanFSM::publishRouteResult(bool success, bool reached_final, const std::string &reason)
+  {
+    if (!have_route_ || route_result_sent_)
+      return;
+
+    quadrotor_msgs::EgoWaypointRouteResult result_msg;
+    result_msg.drone_id = planner_manager_->pp_.drone_id;
+    result_msg.route_id = active_route_id_;
+    result_msg.job_id = active_job_id_;
+    result_msg.success = success;
+    result_msg.reached_final = reached_final;
+    result_msg.reason = reason;
+    route_result_pub_.publish(result_msg);
+    route_result_sent_ = true;
+    ROS_INFO(
+        "[Ego] Publish route result: route=%u job=%s success=%d reached_final=%d reason=%s",
+        result_msg.route_id,
+        result_msg.job_id.c_str(),
+        result_msg.success ? 1 : 0,
+        result_msg.reached_final ? 1 : 0,
+        result_msg.reason.c_str());
+  }
+
+  void EGOReplanFSM::clearRouteState()
+  {
+    have_route_ = false;
+    route_result_sent_ = false;
+    route_terminal_handoff_active_ = false;
+    route_anchor_idx_ = 0;
+    active_route_id_ = 0;
+    active_job_id_.clear();
+    route_wps_.clear();
+    route_yaws_.clear();
+    route_s_.clear();
+    route_yaws_unwrapped_.clear();
+    route_corners_.clear();
+    route_next_corner_ = 0;
+    route_window_reaches_stop_ = false;
+    route_finish_stable_since_ = ros::Time(0);
+    route_last_progress_time_ = ros::Time(0);
+    route_best_progress_s_ = 0.0;
+    route_look_forward_ = true;
+    route_goal_to_follower_ = false;
+  }
+
+  void EGOReplanFSM::resetMandatoryStopState()
+  {
+    mandatory_stop_ = false;
+    enable_fail_safe_ = true;
+    flag_escape_emergency_ = true;
+  }
+
   void EGOReplanFSM::readGivenWpsAndPlan()
   {
     if (waypoint_num_ <= 0)
@@ -1319,6 +1754,11 @@ namespace ego_planner
   {
     mandatory_stop_ = true;
     ROS_ERROR("Received a mandatory stop command!");
+    if (have_route_)
+    {
+      publishRouteResult(false, false, "mandatory_stop");
+      clearRouteState();
+    }
     flag_escape_emergency_ = true;
     changeFSMExecState(EMERGENCY_STOP, "Mandatory Stop");
     enable_fail_safe_ = false;
@@ -1782,12 +2222,10 @@ namespace ego_planner
     ego_plan_result_.planner_goal.z = 0.0;
     ego_plan_result_.plan_status    = false;
     ego_plan_result_.plan_times     = 0;
-    ego_plan_result_.modify_status  = false;
   }
 
   void EGOReplanFSM::updateEgoPlanResult(const Eigen::Vector3d goal, PLAN_RET status) {
     ego_plan_result_.plan_status   = status == PLAN_RET::SUCCESS;
-    ego_plan_result_.modify_status = has_been_modified_;
     if ((ego_plan_result_.planner_goal.x == goal.x() &&
         ego_plan_result_.planner_goal.y == goal.y() &&
         ego_plan_result_.planner_goal.z == goal.z())){

@@ -51,6 +51,8 @@ add_message_files(
   TrackCommand.msg
   EgoPlannerResult.msg
   EgoStateTrigger.msg
+  EgoWaypointRoute.msg
+  EgoWaypointRouteResult.msg
   OccMap3dOld.msg
   OccMap3d.msg
   PolyTraj.msg

@@ -22,6 +22,8 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/PointStamped.h>
 #include <quadrotor_msgs/EgoGoalSet.h>
+#include <quadrotor_msgs/EgoWaypointRoute.h>
+#include <quadrotor_msgs/EgoWaypointRouteResult.h>
 #include <quadrotor_msgs/EgoPlannerResult.h>
 #include <quadrotor_msgs/EgoStateTrigger.h>
 #include <traj_utils/DataDisp.h>
@@ -48,6 +50,7 @@ namespace ego_planner
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   private:
+    friend class RouteExecutionTest;
     /* ---------- flag ---------- */
     enum FSM_EXEC_STATE
     {
@@ -116,7 +119,6 @@ namespace ego_planner
 
     bool have_trigger_, have_target_, have_odom_, cur_traj_to_cur_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
     bool if_handle_yaw_{false};
-    bool has_been_modified_;
     bool pending_goal_finish_trigger_;
     ros::Time goal_finish_stable_start_time_;
     FSM_EXEC_STATE exec_state_;
@@ -135,19 +137,44 @@ namespace ego_planner
     std::vector<Eigen::Vector3d> wps_;
     quadrotor_msgs::EgoPlannerResult ego_plan_result_;
 
+    // route-mode task state
+    bool have_route_{false};
+    bool route_result_sent_{false};
+    size_t route_anchor_idx_{0};
+    uint32_t active_route_id_{0};
+    std::string active_job_id_;
+    std::vector<Eigen::Vector3d> route_wps_;
+    std::vector<double> route_yaws_;
+    std::vector<double> route_s_;
+    std::vector<double> route_yaws_unwrapped_;
+    Eigen::Vector3d route_requested_goal_;
+    std::vector<size_t> route_corners_;
+    size_t route_next_corner_{0};
+    bool route_window_reaches_stop_{false};
+    Eigen::Vector3d route_window_stop_;
+    ros::Time route_finish_stable_since_{ros::Time(0)};
+    ros::Time route_last_progress_time_{ros::Time(0)};
+    double route_best_progress_s_{0.0};
+    bool route_look_forward_{true};
+    bool route_goal_to_follower_{false};
+    bool route_replan_use_guide_path_{false};
+    int route_projection_lookahead_waypoints_{5};
+    double route_local_window_length_{3.0};
+    double route_local_window_overlap_{1.0};
+    double route_terminal_handoff_length_{0.0};
+    bool route_terminal_handoff_active_{false};
+    bool route_guide_allow_obstacle_fallback_{true};
+    double route_progress_epsilon_{0.10};    // route 前进量判定容差，单位米
+    double route_no_progress_timeout_{20.0}; // route 无前进超时，单位秒
+    double route_corner_angle_deg_{55.0};    // 触发必停的转角阈值，单位度
+
     // handle yaw
     Eigen::Vector3d target_pos_;
     double target_yaw_;
     bool target_look_forward_;
+    bool target_yaw_low_speed_{false};
     uint8_t target_yaw_mode_{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
     uint8_t target_yaw_path_mode_{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
-    // 最近一次 planNextWaypoint 的 yaw 配置；mondifyInCollisionFinalGoal 修改
-    // 撞障碍目标后重规划时必须沿用，否则默认 look_forward=true 会把
-    // "保持朝向"命令覆盖成"朝轨迹方向看"，垂直下降时机头会乱转。
-    double goal_yaw_{0.0};
-    bool goal_look_forward_{true};
-    uint8_t goal_yaw_mode_{quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL};
-    uint8_t goal_yaw_path_mode_{quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST};
     void handleYaw();
     double aim_direction_; // rad
     bool yaw_init_finished_{false};
@@ -155,10 +182,10 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, odom_sub_, if_handle_yaw_sub_,
+    ros::Subscriber waypoint_sub_, waypoint_sub_yaw_preset_sub_, route_sub_, odom_sub_, if_handle_yaw_sub_,
                     trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, face_center_sub_;
     ros::Publisher data_disp_pub_, broadcast_ploytraj_pub_, ground_height_pub_, state_pub_, exec_finish_trigger_pub_, ego_state_trigger_pub_;
-    ros::Publisher ego_plan_state_pub_, goal_processed_pub_;
+    ros::Publisher ego_plan_state_pub_, goal_processed_pub_, route_result_pub_;
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);
@@ -173,23 +200,40 @@ namespace ego_planner
     bool callCrashRecovery();
 
     /* local planning */
-    PLAN_RET callReboundReplan(bool flag_use_last_optimal, bool flag_random_init, vector<DensityEvalRayData> *pathes);
+    PLAN_RET callReboundReplan(bool flag_use_last_optimal, bool flag_random_init,
+                               vector<DensityEvalRayData> *pathes,
+                               bool use_route_guide = true);
     bool planFromGlobalTraj(const int trial_times = 1);
     bool planFromLocalTraj(const int trial_times = 1);
     bool getTrajPVAJ(const string data_source);
     void execTraj();
+    std::vector<Eigen::Vector3d> buildRouteGuidePath(const Eigen::Vector3d &start_pt);
+    void updateRouteProgress();
+    void rebuildRouteGeometry();
+    bool checkRouteProgressTimeout();
+    bool projectToRoute(const Eigen::Vector3d &pos, size_t start_idx, size_t &best_idx,
+                        Eigen::Vector3d &best_proj, double &best_t, double &best_s) const;
+    double interpolateRouteYaw(double s) const;
+    bool hasRouteYawProfile() const;
+    bool isWithinRouteFinishThreshold(const Eigen::Vector3d &goal) const;
+    bool routeReachedFinal() const;
+    bool tryFinishRouteByOdom();
+    void publishRouteResult(bool success, bool reached_final, const std::string &reason);
+    void clearRouteState();
+    void resetMandatoryStopState();
 
     /* global trajectory */
     void waypointCallback(const geometry_msgs::PoseStampedPtr &msg);
     void aimCallback(const quadrotor_msgs::EgoGoalSetPtr &msg);
     void aimCallbackYawPreset(const quadrotor_msgs::EgoGoalSetPtr &msg);
+    void routeCallback(const quadrotor_msgs::EgoWaypointRoutePtr &msg);
     void execAim();
     void readGivenWpsAndPlan();
     bool planNextWaypoint(
         const Eigen::Vector3d next_wp, const double next_yaw = 0.0, const bool look_forward = true,
         uint8_t yaw_mode = quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL,
-        uint8_t yaw_path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST);
-    bool mondifyInCollisionFinalGoal();
+        uint8_t yaw_path_mode = quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST,
+        bool yaw_low_speed = false);
 
     /* input-output */
     void mandatoryStopCallback(const std_msgs::Empty &msg);
