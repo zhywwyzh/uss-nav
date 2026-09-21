@@ -614,9 +614,9 @@ class YoloeTensorRtTrackEngine:
             self.last_stamp = 0.0
             self.needs_reinitialize = False
             self.session_conf, self.session_iou = conf, iou_val
-            tracker_cfg_ns = self._load_tracker_cfg(tracker_name)
-            self._pipeline_tracker = TRACKER_MAP[tracker_cfg_ns.tracker_type](args=tracker_cfg_ns)
-            self._pipeline_tracker_cfg = tracker_cfg_ns
+            # 先清除旧会话对象，配置/encoder 构造与首帧推理共用下面的失败边界。
+            self._pipeline_tracker = None
+            self._pipeline_tracker_cfg = None
             self.current_label = label
             self.current_class_id = class_id
             self.current_tracker = tracker_name
@@ -640,8 +640,13 @@ class YoloeTensorRtTrackEngine:
                 f"class_id={class_id} tracker={tracker_name} op={req.operation_id}",
                 flush=True,
             )
-            # ⑥ 首帧推理 + init_bbox 身份匹配
+            # ⑥ 建立 tracker（可能加载 ReID）与首帧推理属于同一会话事务。
+            stage = "tracker_init"
             try:
+                tracker_cfg_ns = self._load_tracker_cfg(tracker_name)
+                self._pipeline_tracker = TRACKER_MAP[tracker_cfg_ns.tracker_type](args=tracker_cfg_ns)
+                self._pipeline_tracker_cfg = tracker_cfg_ns
+                stage = "first_frame"
                 result = self._run_frame(
                     image_bgr,
                     stamp=stamp,
@@ -653,13 +658,24 @@ class YoloeTensorRtTrackEngine:
                     log_seq=int(req.frame_seq),
                 )
             except Exception as exc:
-                # 推理/首帧匹配异常：状态原子性无法确认，关闭会话并标记待重初始化
+                # 保留会话归属和 operation ID 供客户端确认/关闭；释放部分建立的状态，
+                # 重放相同操作只返回这次失败，不能再次构造 tracker 或重复推进首帧。
                 import traceback
                 traceback.print_exc()
                 self.needs_reinitialize = True
                 self.session_active = False
                 self.state = "needs_reinitialize"
-                resp = self._protocol_error("needs_reinitialize", detail=str(exc), session_id=self.session_id)
+                self._pipeline_tracker = None
+                self._pipeline_tracker_cfg = None
+                self._frame_history.clear()
+                self._continuity.clear()
+                self._frame_tracks_snapshot = {}
+                self._target_segment = None
+                self.target_track_id = None
+                self.last_bbox = None
+                self.last_score = 0.0
+                resp = self._protocol_error("needs_reinitialize", detail=f"{stage}: {exc}", session_id=self.session_id)
+                self.latest_result = dict(resp)
                 self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
                 return resp
             if not result.get("ok", False):
