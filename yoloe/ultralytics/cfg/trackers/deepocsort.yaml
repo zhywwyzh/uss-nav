@@ -12,15 +12,21 @@ track_buffer: 25 # (int) Frames to keep lost tracks alive; ~2.5s at 10Hz
 match_thresh: 0.6 # (float) Association IoU threshold; tighter matching
 fuse_score: True # (bool) Fuse detection score with motion/IoU for matching
 
+# 轨迹生命周期保护（方案 §6.1）
+max_oru_gap_frames: 25 # (int) ORU 补算上限：失联超过该帧数的 Lost 轨迹不参与匹配、不恢复旧身份（默认=track_buffer）
+max_lost_stracks: 100 # (int) lost 池数量保护：超限只淘汰最旧（end_frame 最小）的 Lost 轨迹；最小为 1
+
 # OC-SORT specifics (inherited)
 delta_t: 3 # (int) Temporal window for velocity direction computation in OCM
 inertia: 0.2 # (float) Weight of velocity consistency cost in association
 use_byte: False # (bool) Disabled to prevent low-score detections from extending track lifetimes
 
 # Deep OC-SORT specifics
-gmc_method: none # (str) Global motion compensation: sparseOptFlow|orb|sift|ecc|none; disabled for performance test
+gmc_method: none # (str) Global motion compensation: sparseOptFlow|orb|sift|ecc|none；当前关闭（相机运动对照实验时改 sparseOptFlow）
 with_reid: True # (bool) Enable ReID model use; needs extra model and compute
-model: auto # (str) ReID model name/path; "auto" uses detector features when available. Otherwise an exported file (.torchscript / .onnx / .engine / …) or a `.pt` checkpoint.
+model: auto # (str) ReID model name/path; "auto" uses detector backbone features when available. TensorRT engine 服务无法提取原生检测头特征，auto 会回退加载外部 yolo26n-cls.pt（.torchscript / .onnx / .engine 等显式路径可跳过回退）
 proximity_thresh: 0.5 # (float) Min IoU to consider tracks proximate for ReID; higher is stricter
 appearance_thresh: 0.9 # (float) Min appearance similarity for ReID; raise to avoid identity swaps
 alpha_fixed_emb: 0.95 # (float) Base EMA factor for track embedding updates; higher = slower update
+
+max_lost_seconds: 3.0 # 轨迹最大失联秒数（TRT 使用图像时间戳）；0 仅使用帧龄

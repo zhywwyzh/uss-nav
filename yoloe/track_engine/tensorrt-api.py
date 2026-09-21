@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""YOLOE TensorRT 固定词表目标跟踪 API（v2：基于官方 model.track() 方案）。
+"""YOLOE TensorRT 固定词表目标跟踪 API（v3：显式会话协议 + 显式管线）。
 
 与 api.py（动态 text prompt）的区别：
 - 使用预导出的 TensorRT engine，词表在启动时固定
 - 不支持运行时 set_classes()，label 必须在固定词表中
-- 其余逻辑与 api.py v2 一致：model.track(persist=True) + VLM bbox→track_id 匹配
+- 显式会话协议（/session/start、/track、/session/rebind、/session/close）：
+  会话身份 + 帧序号/时钟单调校验 + operation_id/request_id 幂等 + 身份版本
+- 显式管线：detect（进程级 predictor 复用）→ 目标类别过滤 → tracker.update
+  （会话级 tracker，每接受帧恰好一次）→ 身份筛选；不使用模型回调
 """
 
 from __future__ import annotations
@@ -13,10 +16,13 @@ from __future__ import annotations
 import argparse
 import base64
 import gc
+import hashlib
 import os
 import sys
 import threading
 import time
+import uuid
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +30,7 @@ import cv2
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from pydantic import BaseModel, Field
 
 
@@ -39,8 +45,8 @@ torch.backends.cudnn.enabled = False
 torch.backends.cuda.matmul.allow_tf32 = True
 
 from ultralytics import YOLO  # noqa: E402
-from ultralytics.trackers.track import TRACKER_MAP, on_predict_start, on_predict_postprocess_end  # noqa: E402
-from functools import partial  # noqa: E402
+from ultralytics.trackers.track import TRACKER_MAP  # noqa: E402
+from ultralytics.utils import YAML, IterableSimpleNamespace  # noqa: E402
 
 
 def _now() -> float:
@@ -103,34 +109,74 @@ def _normalize_label(label: str) -> str:
 # Request / Response
 # ──────────────────────────────────────────────
 
-class TrackRequest(BaseModel):
-    """单帧 tracking 请求（TensorRT 固定词表版）。
+class ProtocolRequest(BaseModel):
+    class Config:
+        # 不静默接受旧版 reset/init_bbox 等字段，浮点时间和坐标必须有限。
+        extra = "forbid"
+        allow_inf_nan = False
 
-    init_bbox 仅用于首帧匹配目标 track_id。
+
+class SessionStartRequest(ProtocolRequest):
+    """创建 tracking 会话（幂等键：operation_id）。
+
+    首帧必须携带与图像同帧的 init_bbox 用于匹配目标 track_id。
     """
 
-    image_base64: str = Field(..., description="JPEG/PNG 图像的 base64 字符串")
+    operation_id: str = Field(..., min_length=1, description="start 幂等操作 ID")
+    server_instance_id: str = Field(..., description="从 status 同步的服务实例 ID")
+    expected_epoch: int = Field(..., ge=0, description="从 status 同步的会话世代，防止迟到 start 复活")
     label: str = Field(..., min_length=1, description="固定词表中的目标类别名")
-    stamp: float | None = Field(None, description="外部图像时间戳")
-    init_bbox: list[float] | None = Field(None, description="VLM 给出的初始 xyxy 框，用于匹配目标 track_id")
-    reset: bool = Field(False, description="强制重置当前 tracking 会话并重新匹配 init_bbox")
     tracker: str = Field("botsort", description="tracker 类型")
     conf: float | None = Field(None, ge=0.0, le=1.0)
     iou: float | None = Field(None, ge=0.0, le=1.0)
-    imgsz: int | None = Field(None, description="兼容字段；固定形状 engine 忽略")
-    send_seq: int = Field(0, description="客户端发送序列号，服务端回传以验证一一对应")
-
-    # ── 以下参数保留以兼容旧客户端，不再生效 ──
-    strict_identity: bool = Field(True, description="[已废弃]")
-    allow_rebind: bool = Field(False, description="[已废弃]")
-    lost_rebind: bool = Field(False, description="[已废弃]")
-    prompt_mode: str = Field("fixed_vocab", description="[已废弃]")
-    update_visual_prompt: bool = Field(False, description="[已废弃]")
-    visual_prompt_reset_tracker: bool = Field(True, description="[已废弃]")
+    image_base64: str = Field(..., description="首帧图像 base64")
+    init_bbox: list[float] = Field(..., min_items=4, max_items=4, description="首帧同帧 VLM bbox（必填）")
+    stamp: float = Field(..., gt=0, description="首帧图像时间戳")
+    frame_seq: int = Field(1, ge=1, description="客户端帧序号，首帧必须为 1")
 
 
-class ResetRequest(BaseModel):
-    reason: str = ""
+class SessionTrackRequest(ProtocolRequest):
+    """普通跟踪帧：不允许附带 init_bbox / reset / label（协议禁止隐式重绑与建会话）。"""
+
+    server_instance_id: str = Field(..., description="服务实例 ID")
+    session_id: str = Field(..., description="会话 ID")
+    request_id: str = Field(..., min_length=1, description="/track 去重键（重复请求返回缓存，绝不二次更新）")
+    frame_seq: int = Field(..., ge=1, description="客户端帧序号（会话内严格递增）")
+    stamp: float = Field(..., gt=0, description="图像时间戳（同一时钟域内严格递增）")
+    image_base64: str = Field(..., description="当前帧图像 base64")
+    conf: float | None = Field(None, ge=0.0, le=1.0)
+    iou: float | None = Field(None, ge=0.0, le=1.0)
+    send_seq: int = Field(0, description="兼容字段：客户端调试序列号，仅回显")
+
+
+class SessionRebindRequest(ProtocolRequest):
+    """会话内身份重绑（幂等键：operation_id）。
+
+    同帧证据定位：按 VLM 候选框对应图像的 stamp 在服务端帧历史缓存中定位该帧，
+    在该帧候选框中匹配 bbox，并验证候选身份到当前帧仍连续可信；唯一可信匹配才
+    原子提交（identity_revision 递增）；歧义/无匹配/历史过期拒绝且不改动当前身份。
+    """
+
+    server_instance_id: str = Field(..., description="服务实例 ID")
+    session_id: str = Field(..., description="会话 ID")
+    operation_id: str = Field(..., min_length=1, description="rebind 幂等操作 ID")
+    identity_revision: int = Field(..., ge=0, description="客户端当前已提交身份版本")
+    bbox: list[float] = Field(..., min_items=4, max_items=4, description="候选目标框 xyxy")
+    stamp: float = Field(..., gt=0, description="VLM 候选框对应的精确图像时间戳")
+    frame_seq: int = Field(..., ge=1, description="候选框来源帧引用（与 stamp 一起精确校验）")
+
+
+class SessionCloseRequest(ProtocolRequest):
+    """关闭指定会话（幂等键：operation_id）。旧会话的 close 不影响新会话。"""
+
+    server_instance_id: str = Field(..., description="服务实例 ID")
+    session_id: str = Field(..., description="要关闭的会话 ID")
+    operation_id: str = Field(..., min_length=1, description="close 幂等操作 ID")
+    reason: str = Field("", description="关闭原因")
+    pending_start_operation_id: str = ""
+    expected_epoch: int | None = None
+
+
 
 
 # ──────────────────────────────────────────────
@@ -138,7 +184,7 @@ class ResetRequest(BaseModel):
 # ──────────────────────────────────────────────
 
 class YoloeTensorRtTrackEngine:
-    """YOLOE TensorRT 固定词表单目标跟踪引擎（v2）。"""
+    """YOLOE TensorRT 固定词表单目标跟踪引擎（v3）。"""
 
     def __init__(
         self,
@@ -154,6 +200,14 @@ class YoloeTensorRtTrackEngine:
         engine_imgsz: int | tuple[int, int],
         rebuild_engine: bool,
         init_bbox_match_iou: float = 0.1,
+        frame_history_cap: int = 64,
+        frame_history_ttl: float = 8.0,
+        rebind_unique_margin: float = 0.1,
+        op_cache_ttl: float = 120.0,
+        op_cache_max: int = 128,
+        max_queue_age: float = 5.0,
+        identity_confirm_frames: int = 2,
+        log_every: int = 10,
     ) -> None:
         self.pt_model_path = Path(pt_model_path)
         self.engine_path = Path(engine_path)
@@ -170,11 +224,14 @@ class YoloeTensorRtTrackEngine:
         self.class_names = self._load_classes(self.classes_path)
         self.label_to_class_id = self._build_label_index(self.class_names)
 
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.model_lock = threading.Lock()
         self._ensure_engine(rebuild=bool(rebuild_engine))
         self.model = self._load_engine()
         self._warmup_engine()
+        # 显式管线不使用模型回调：清除可能残留的 tracker 回调，
+        # 保证 predict() 只做检测、tracker.update 只由服务端显式调用
+        self._clear_tracker_callbacks()
 
         # tracking 状态
         self.current_label: str = ""
@@ -186,16 +243,52 @@ class YoloeTensorRtTrackEngine:
         self.state: str = "idle"
         self.frame_seq: int = 0
         self.latest_result: dict[str, Any] = {}
+        # 推理/tracker 更新异常后置位：状态原子性无法确认，拒绝普通帧直到显式 reset
+        self.needs_reinitialize: bool = False
+
+        # ── 显式会话协议状态（全部状态修改在 self.lock 内进行）──
+        # 服务实例 ID：进程启动时随机生成，客户端据此检测服务重启并重新同步
+        self.server_instance_id: str = uuid.uuid4().hex
+        # 会话 ID：关闭后保留用于归属错误回显；session_active 表示会话是否存活
+        self.session_id: str | None = None
+        self.session_active: bool = False
+        # 身份版本：rebind 原子提交成功后递增；客户端据此拒绝旧版本在途结果
+        self.identity_revision: int = 0
+        self.epoch = 0
+        self.start_operation_id = ""
+        self.max_queue_age = max(0.1, float(max_queue_age))
+        self.identity_confirm_frames = max(1, int(identity_confirm_frames))
+        self.log_every = max(1, int(log_every))
+        self.rebind_unique_margin = max(0.0, float(rebind_unique_margin))
+        self._continuity = {}
+        self._segment_seq = 0
+        self._target_segment = None
+        # 帧顺序状态：会话内只接受严格递增 frame_seq 与单调 stamp
+        self.last_frame_seq: int = 0
+        self.last_stamp: float = 0.0
+        # 最近接受帧的目标类别检测快照（track_id/bbox/score），供 rebind 匹配
+        self._frame_tracks_snapshot: dict[str, Any] = {}
+        # 帧历史缓存：按 (stamp, frame_seq, entries) 存储每帧目标类别检测，
+        # 供 rebind 做同帧证据定位与历史身份解析；条数 + 墙钟 TTL 双上限有界
+        self._frame_history: deque = deque(maxlen=max(1, int(frame_history_cap)))
+        self._frame_history_ttl = max(0.1, float(frame_history_ttl))
+        # 幂等缓存：operation_id（start/close/rebind）与 request_id（track）→ 缓存结果
+        # 有界（_op_cache_max 条）+ TTL（_op_cache_ttl 秒）淘汰；同 ID 不同指纹拒绝
+        self._op_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._track_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._op_cache_ttl = max(1.0, float(op_cache_ttl))
+        self._op_cache_max = max(1, int(op_cache_max))
 
         # 手动 tracker 实例（跨帧维持状态，只跟踪 target class 的检测框）
-        self._tracker_instance_name: str = ""
-        self._filtered_class_id: int | None = None
-        self._tracking_timings: dict[str, float] = {}
+        # 会话级 tracker：随会话重建（新实例不携带旧 Kalman/GMC/外观平滑/ID 计数状态）；
+        # 检测 predictor 与 ReID encoder 为进程级资源，跨会话复用（方案 §6.2）
+        self._pipeline_tracker: Any = None
+        self._pipeline_tracker_cfg: Any = None
 
         # ── 结构化日志 ──
         self._track_logger = TrackingLogger.get("tracker_server")
 
-    # ── 回调式追踪（复现官方 model.track() 流程）──
+    # ── 回调清理与 tracker 配置（显式管线，不注册模型回调）──
 
     def _clear_tracker_callbacks(self) -> int:
         """移除旧 tracker 回调，避免旧的过滤逻辑污染新调用。"""
@@ -216,43 +309,22 @@ class YoloeTensorRtTrackEngine:
             removed += len(old_items) - len(new_items)
         return removed
 
-    def _filter_boxes_for_target_class(self, predictor: "object", class_id: int) -> None:
-        """on_predict_postprocess_end 回调：过滤掉非目标类别的检测框。
+    def _load_tracker_cfg(self, tracker_name: str) -> Any:
+        """加载 tracker 配置并处理 ReID auto 回退（等价官方 on_predict_start 逻辑）。
 
-        在官方 tracker 回调之前运行，确保 tracker 只看到目标类别的框。
+        TRT engine 后端无法注册 forward hook 提取检测头特征，
+        with_reid 且 model=auto 时回退外部 ReID 模型（yolo26n-cls.pt）；
+        encoder 实例由 reid.build_encoder 的进程级缓存复用。
         """
-        for i in range(len(predictor.results)):
-            boxes = predictor.results[i].boxes
-            if boxes is None or len(boxes) == 0:
-                continue
-            if boxes.cls is None:
-                continue
-            mask = boxes.cls.int().cpu().numpy() == class_id
-            if not mask.any():
-                predictor.results[i] = predictor.results[i][0:0]
-                continue
-            idx = mask.nonzero()[0]
-            predictor.results[i] = predictor.results[i][idx]
-
-    def _register_label_filter(self, class_id: int, tracker_cfg: str) -> None:
-        """注册回复现官方 model.track(): 在 tracker 回调之前插入 class_id 过滤。
-
-        model.track() 内部会调用 register_tracker() 注册两个回调：
-        on_predict_start → on_predict_postprocess_end（tracker 在此处理全部检测框）。
-        我们在 on_predict_postprocess_end 的前面插入自己的回调，
-        过滤掉非目标类别的框后再交由官方 tracker 处理。
-        """
-        self._clear_tracker_callbacks()
-        self._filtered_class_id = int(class_id)
-
-        # 注册过滤回调（先于 tracker 回调执行）
-        self.model.add_callback(
-            "on_predict_postprocess_end",
-            partial(
-                self._filter_boxes_for_target_class,
-                class_id=class_id,
-            ),
-        )
+        cfg = IterableSimpleNamespace(**YAML.load(self._tracker_cfg_path(tracker_name)))
+        cfg.device = self.device  # ReID encoder 运行在服务设备上
+        if (
+            cfg.tracker_type in {"botsort", "tracktrack", "deepocsort"}
+            and cfg.with_reid
+            and cfg.model == "auto"
+        ):
+            cfg.model = "yolo26n-cls.pt"
+        return cfg
 
     # ── 词表 ──
 
@@ -336,220 +408,675 @@ class YoloeTensorRtTrackEngine:
 
     def _tracker_cfg_path(self, tracker: str) -> str:
         tracker = str(tracker).strip().lower() or "deepocsort"
-        if tracker not in TRACKER_MAP:
+        if tracker not in {"botsort", "bytetrack", "deepocsort", "ocsort"}:
             raise ValueError(f"unsupported tracker: {tracker}")
         cfg = self.tracker_dir / f"{tracker}.yaml"
         if not cfg.exists():
             raise FileNotFoundError(f"tracker config not found: {cfg}")
         return str(cfg)
 
-    # ── 核心 track ──
+    # ── 会话协议：校验、幂等与错误构造 ──
 
-    def track(self, req: TrackRequest) -> dict[str, Any]:
-        total_t0 = time.perf_counter()
+    def _protocol_error(
+        self,
+        code: str,
+        *,
+        detail: str = "",
+        session_id: str | None = None,
+        frame_seq: int | None = None,
+    ) -> dict[str, Any]:
+        """构造协议层错误响应（HTTP 200 + error 码，客户端统一解析，不触发 HTTP 异常）。"""
+        resp = {
+            "ok": False,
+            "error": str(code),
+            "reason": str(detail or code),
+            "server_instance_id": self.server_instance_id,
+            "session_id": session_id if session_id is not None else self.session_id,
+            "identity_revision": int(self.identity_revision),
+            "frame_seq": int(frame_seq if frame_seq is not None else self.last_frame_seq),
+            "wall_time": _now(),
+        }
+        print(
+            f"[YOLOE_TRT] protocol reject: code={code} detail={detail!r} session={resp['session_id']}",
+            flush=True,
+        )
+        return resp
+
+    def _check_instance(self, server_instance_id: str) -> str | None:
+        """实例校验：服务重启后旧客户端请求必须经 /status 重新同步。返回 None 表示通过。"""
+        if not server_instance_id or str(server_instance_id) != self.server_instance_id:
+            return "instance_mismatch"
+        return None
+
+    def _check_session(self, server_instance_id: str, session_id: str) -> tuple[str | None, dict[str, Any] | None]:
+        """实例 + 会话校验（锁内）。返回 (错误码, 错误响应)；通过时 (None, None)。"""
+        inst_err = self._check_instance(server_instance_id)
+        if inst_err:
+            return inst_err, self._protocol_error(inst_err, session_id=session_id)
+        if str(session_id) != str(self.session_id or ""):
+            # 旧会话请求（含晚到的旧 update/close）：不影响当前会话，明确拒绝
+            return "session_mismatch", self._protocol_error("session_mismatch", session_id=session_id)
+        if not self.session_active:
+            # 会话已关闭（close / 时钟回退 / 异常标记）
+            code = "needs_reinitialize" if self.needs_reinitialize else "session_closed"
+            return code, self._protocol_error(code, session_id=session_id)
+        return None, None
+
+    def _check_frame_order(self, frame_seq: int, stamp: float) -> tuple[str, str] | None:
+        """帧顺序校验（锁内）。通过时推进 last_frame_seq/last_stamp 并返回 None，否则返回 (错误码, detail)。
+
+        采集时钟回退直接终止会话（session_active=False），客户端需重新建会话。
+        """
+        frame_seq = int(frame_seq)
+        if frame_seq < self.last_frame_seq:
+            return ("out_of_order", f"frame_seq={frame_seq} < last={self.last_frame_seq}")
+        if frame_seq == self.last_frame_seq:
+            return ("stale_frame", f"frame_seq={frame_seq} == last={self.last_frame_seq}")
+        if self.last_stamp > 0.0 and stamp > 0.0 and float(stamp) < self.last_stamp - 1e-6:
+            self.session_active = False
+            return ("clock_regression", f"stamp={stamp:.6f} < last={self.last_stamp:.6f}")
+        if self.last_stamp > 0.0 and stamp <= self.last_stamp:
+            return ("stale_frame", "image stamp must strictly increase")
+        self.last_frame_seq = frame_seq
+        if stamp > 0.0:
+            self.last_stamp = float(stamp)
+        return None
+
+    def _op_cache_get(self, cache: OrderedDict, key: str) -> dict[str, Any] | None:
+        """读取未过期的幂等缓存结果；过期条目就地淘汰。"""
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        if (time.monotonic() - float(entry.get("wall", 0.0))) > self._op_cache_ttl:
+            cache.pop(key, None)
+            return None
+        return entry
+
+    def _op_cache_put(self, cache: OrderedDict, key: str, result: dict[str, Any], fingerprint) -> None:
+        """写入幂等缓存并按容量淘汰（最旧优先），保证缓存有界。"""
+        cache[key] = {"result": result, "wall": time.monotonic(), "fp": fingerprint}
+        while len(cache) > self._op_cache_max:
+            cache.popitem(last=False)
+
+    @staticmethod
+    def _fingerprint(req):
+        """指纹涵盖接口类型和完整请求，避免同 ID 换图像/bbox 后仍命中缓存。"""
+        return hashlib.sha256((type(req).__name__ + req.json()).encode()).hexdigest()
+
+    def _push_frame_history(self, snapshot):
+        """每一张接受帧都记录（包括空检测），身份中断后重新分配连续性段。"""
+        now = time.monotonic()
+        current = {}
+        for entry in snapshot["entries"]:
+            tid = entry["track_id"]
+            previous = self._continuity.get(tid)
+            if previous is None:
+                self._segment_seq += 1
+            segment, count = (previous[0], previous[1] + 1) if previous else (self._segment_seq, 1)
+            entry["segment"] = segment
+            entry["confirmed_frames"] = count
+            current[tid] = (segment, count)
+        self._continuity = current
+        snapshot["monotonic"] = now
+        self._frame_history.append(snapshot)
+        self._expire_history(now)
+
+    def _expire_history(self, now):
+        while self._frame_history and now - self._frame_history[0]["monotonic"] > self._frame_history_ttl:
+            self._frame_history.popleft()
+
+    def _find_history(self, frame_seq, stamp):
+        self._expire_history(time.monotonic())
+        return next((snap for snap in self._frame_history
+                     if snap["frame_seq"] == frame_seq and snap["stamp"] == stamp), None)
+
+    # ── 会话协议操作（HTTP 入口串行校验与执行）──
+
+    def _close_session_locked(self) -> None:
+        """锁内关闭当前会话：释放 tracker 状态，保留检测和 ReID 资源。
+
+        session_id 保留用于后续请求归属回显（session_closed/session_mismatch）。
+        """
+        self.session_active = False
+        self.needs_reinitialize = False
+        self.state = "idle"
+        self.target_track_id = None
+        self.last_bbox = None
+        self.last_score = 0.0
+        self.current_label = ""
+        self.current_class_id = None
+        self._frame_tracks_snapshot = {}
+        self._frame_history.clear()
+        self._continuity.clear()
+        self._target_segment = None
+        self.epoch += 1
+        # 会话级 tracker 随会话释放；检测 predictor（TRT engine）保留复用，
+        # 正常停止不丢弃检测资源，已移除绕过会话身份的无条件 /reset。
+        self._pipeline_tracker = None
+        self._pipeline_tracker_cfg = None
+
+    def session_start(self, req: SessionStartRequest) -> dict[str, Any]:
+        """创建会话并执行首帧：同帧 init_bbox 匹配目标身份。幂等（operation_id）。"""
         timings: dict[str, float] = {}
-        send_seq = int(req.send_seq if req.send_seq is not None else 0)
-
+        total_t0 = time.perf_counter()
         t0 = time.perf_counter()
         image_bgr = _decode_image_base64(req.image_base64)
         timings["decode_ms"] = _ms(time.perf_counter() - t0)
-
-        stamp = float(req.stamp if req.stamp is not None else _now())
+        # HTTP 入口已持有事务锁；解析词表和 tracker 配置。
         label, class_id = self._resolve_label(req.label)
-        tracker_name = req.tracker.strip().lower() or "botsort"
-        tracker_cfg = self._tracker_cfg_path(tracker_name)
+        tracker_name = str(req.tracker or "botsort").strip().lower() or "botsort"
+        self._tracker_cfg_path(tracker_name)  # 仅校验配置存在，cfg 在锁内加载
         conf = float(req.conf if req.conf is not None else self.default_conf)
         iou_val = float(req.iou if req.iou is not None else self.default_iou)
-        imgsz = self.default_imgsz
+        stamp = float(req.stamp if req.stamp is not None else _now())
+        fingerprint = self._fingerprint(req)
 
         lock_t0 = time.perf_counter()
         with self.lock:
             timings["lock_wait_ms"] = _ms(time.perf_counter() - lock_t0)
-            timings["yoloe_trt_gpu"] = float(1 if _uses_cuda_device(self.device) else 0)
-            timings["yoloe_trt_device"] = self.device
-            timings["yoloe_trt_engine"] = str(self.engine_path)
-
-            label_changed = (class_id != self.current_class_id) or (tracker_name != self.current_tracker)
-
-
-            # ── 轨道数量上限裁剪：每帧保持 lost_stracks 最近 15 条，防止 O(n²) 退化 ──
-            reset_t0 = time.perf_counter()
-            pred = self.model.predictor
-            if pred is not None and hasattr(pred, "trackers") and pred.trackers:
-                for t in pred.trackers:
-                    # 只裁剪 lost_stracks（活跃跟踪目标保留不动）
-                    if hasattr(t, "lost_stracks") and len(t.lost_stracks) > 15:
-                        t.lost_stracks = t.lost_stracks[-15:]
-                    if hasattr(t, "removed_stracks"):
-                        t.removed_stracks = []
-            timings["trt_periodic_reset_ms"] = _ms(time.perf_counter() - reset_t0)
-            if req.reset or label_changed:
-                # 注册/更新 label 过滤回调（先于 tracker 回调执行）
-                self._register_label_filter(class_id, tracker_cfg)
-                # 重置 predictor，强制 model.track() 重建 tracker
-                self.model.predictor = None
-                self.current_label = label
-                self.current_class_id = class_id
-                self.current_tracker = tracker_name
-                self.target_track_id = None
-                self.last_bbox = None
-                self.last_score = 0.0
-                self.state = "acquiring"
-                self.frame_seq = 0
-                timings["trt_reset"] = 1.0
+            # ① 幂等：同 operation_id 重放返回缓存结果；同 ID 不同内容拒绝
+            cached = self._op_cache_get(self._op_cache, req.operation_id)
+            if cached is not None:
+                if cached.get("fp") != fingerprint:
+                    return self._protocol_error(
+                        "operation_conflict", detail="same operation_id with different content"
+                    )
+                return dict(cached["result"])
+            # ② 实例校验：客户端已知实例不匹配（服务重启）→ 拒绝，需重新同步
+            if req.server_instance_id and str(req.server_instance_id) != self.server_instance_id:
+                resp = self._protocol_error("instance_mismatch")
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            if req.expected_epoch != self.epoch:
+                return self._protocol_error("epoch_mismatch")
+            # ③ 会话占用检查：健康活动会话拒绝隐式覆盖；needs_reinitialize 死会话允许重建
+            if self.session_active:
+                resp = self._protocol_error(
+                    "session_active",
+                    detail="close the active session before starting a new one",
+                    session_id=self.session_id,
+                )
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            # ④ 创建会话：只重建 tracker/GMC/身份/历史缓存；检测 predictor 与
+            # ReID encoder 为进程级资源跨会话复用（方案 §6.2），
+            # 不以 predictor=None 作为正常停止/重启手段
+            self.session_id = uuid.uuid4().hex
+            self.start_operation_id = req.operation_id
+            self.epoch += 1
+            self._frame_history.clear()
+            self._continuity.clear()
+            self._segment_seq = 0
+            self._target_segment = None
+            self.session_active = True
+            self.identity_revision = 0
+            self.last_frame_seq = 0
+            self.last_stamp = 0.0
+            self.needs_reinitialize = False
+            self.session_conf, self.session_iou = conf, iou_val
+            tracker_cfg_ns = self._load_tracker_cfg(tracker_name)
+            self._pipeline_tracker = TRACKER_MAP[tracker_cfg_ns.tracker_type](args=tracker_cfg_ns)
+            self._pipeline_tracker_cfg = tracker_cfg_ns
+            self.current_label = label
+            self.current_class_id = class_id
+            self.current_tracker = tracker_name
+            self.target_track_id = None
+            self.last_bbox = None
+            self.last_score = 0.0
+            self.state = "acquiring"
+            self._frame_tracks_snapshot = {}
+            # ⑤ 首帧顺序校验
+            order_err = self._check_frame_order(int(req.frame_seq), stamp)
+            if order_err is not None:
+                code, detail = order_err
+                self.session_active = False
+                resp = self._protocol_error(
+                    code, detail=detail, session_id=self.session_id, frame_seq=int(req.frame_seq)
+                )
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            print(
+                f"[YOLOE_TRT] session start sid={self.session_id[:8]} label={label!r} "
+                f"class_id={class_id} tracker={tracker_name} op={req.operation_id}",
+                flush=True,
+            )
+            # ⑥ 首帧推理 + init_bbox 身份匹配
+            try:
+                result = self._run_frame(
+                    image_bgr,
+                    stamp=stamp,
+                    conf=conf,
+                    iou_val=iou_val,
+                    timings=timings,
+                    total_t0=total_t0,
+                    init_bbox=req.init_bbox,
+                    log_seq=int(req.frame_seq),
+                )
+            except Exception as exc:
+                # 推理/首帧匹配异常：状态原子性无法确认，关闭会话并标记待重初始化
+                import traceback
+                traceback.print_exc()
+                self.needs_reinitialize = True
+                self.session_active = False
+                self.state = "needs_reinitialize"
+                resp = self._protocol_error("needs_reinitialize", detail=str(exc), session_id=self.session_id)
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            if not result.get("ok", False):
+                # 首帧未匹配到目标（init_bbox_no_match 等）：会话无意义，服务端直接关闭
+                self.session_active = False
+                self.state = "idle"
                 print(
-                    f"[YOLOE_TRT] reset label={label!r} class_id={class_id} tracker={tracker_name}",
+                    f"[YOLOE_TRT] session start failed ({result.get('reason')}), "
+                    f"closed sid={self.session_id[:8]}",
                     flush=True,
                 )
+            self._op_cache_put(self._op_cache, req.operation_id, result, fingerprint)
+            return dict(result)
 
-            self.frame_seq += 1
+    def session_track(self, req: SessionTrackRequest) -> dict[str, Any]:
+        """普通跟踪帧：实例/会话/顺序校验 → request_id 去重 → 推理 → 目标筛选。"""
+        timings: dict[str, float] = {}
+        total_t0 = time.perf_counter()
+        t0 = time.perf_counter()
+        image_bgr = _decode_image_base64(req.image_base64)
+        timings["decode_ms"] = _ms(time.perf_counter() - t0)
+        conf = float(req.conf if req.conf is not None else self.default_conf)
+        iou_val = float(req.iou if req.iou is not None else self.default_iou)
+        stamp = float(req.stamp if req.stamp is not None else _now())
 
-            # ═══════════════════════════════════════════════════
-            # 复现官方 model.track(): model.track(source, persist=True, tracker=cfg)
-            # 过滤回调 _filter_boxes_for_target_class 已在 on_predict_postprocess_end
-            # 中先于官方 tracker 回调运行，只保留目标 class_id 的检查框。
-            # ═══════════════════════════════════════════════════
-            infer_t0 = time.perf_counter()
-            try:
-                with self.model_lock:
-                    results = self.model.track(
-                        source=image_bgr,
-                        persist=True,
-                        conf=conf,
-                        iou=iou_val,
-                        imgsz=imgsz,
-                        tracker=tracker_cfg,
-                        verbose=False,
+        lock_t0 = time.perf_counter()
+        with self.lock:
+            timings["lock_wait_ms"] = _ms(time.perf_counter() - lock_t0)
+            # ① 实例 + 会话校验
+            err, resp = self._check_session(req.server_instance_id, req.session_id)
+            if err:
+                return resp
+            # ② request_id 去重：重复请求返回缓存结果，绝不二次更新 tracker
+            cached = self._op_cache_get(self._track_cache, req.request_id)
+            if cached is not None:
+                if cached.get("fp") != self._fingerprint(req):
+                    return self._protocol_error(
+                        "operation_conflict",
+                        detail="request_id reused with different frame_seq",
+                        session_id=req.session_id,
+                        frame_seq=int(req.frame_seq),
                     )
-            except Exception:
-                with self.model_lock:
-                    results = self.model.predict(
-                        source=image_bgr,
-                        conf=conf,
-                        iou=iou_val,
-                        imgsz=imgsz,
-                        verbose=False,
-                    )
-            infer_ms = _ms(time.perf_counter() - infer_t0)
-            timings["model_track_ms"] = infer_ms
-            # ── 从 predictor 回读 tracker 内部各阶段耗时 ──
+                return dict(cached["result"])
+            # ③ 帧顺序校验（重复/乱序拒绝；时钟回退同时终止会话）
+            order_err = self._check_frame_order(int(req.frame_seq), stamp)
+            if order_err is not None:
+                code, detail = order_err
+                resp = self._protocol_error(
+                    code, detail=detail, session_id=req.session_id, frame_seq=int(req.frame_seq)
+                )
+                if code != "clock_regression":
+                    self._op_cache_put(self._track_cache, req.request_id, resp, self._fingerprint(req))
+                return resp
+            # ④ 推理 + 目标筛选（普通帧禁止 init_bbox，协议层已删除隐式重绑路径）
             try:
-                pred = self.model.predictor
-                timings["track_on_predict_start_ms"] = float(getattr(pred, "_track_timing_on_predict_start_ms", 0.0))
-                timings["track_compute_extras_ms"] = float(getattr(pred, "_track_timing_compute_extras_ms", 0.0))
-                timings["track_det_copy_ms"] = float(getattr(pred, "_track_timing_det_copy_ms", 0.0))
-                timings["track_tracker_update_ms"] = float(getattr(pred, "_track_timing_tracker_update_ms", 0.0))
-                timings["track_response_update_ms"] = float(getattr(pred, "_track_timing_response_update_ms", 0.0))
-                timings["track_postprocess_end_ms"] = float(getattr(pred, "_track_timing_on_predict_postprocess_end_ms", 0.0))
-            except Exception:
-                pass
-            # ── model.track() 返回后开始计时：class 过滤 + 后续处理 ──
-            filter_t0 = time.perf_counter()
+                result = self._run_frame(
+                    image_bgr,
+                    stamp=stamp,
+                    conf=conf,
+                    iou_val=iou_val,
+                    timings=timings,
+                    total_t0=total_t0,
+                    init_bbox=None,
+                    log_seq=int(req.send_seq or 0),
+                )
+            except Exception as exc:
+                # 状态原子性无法确认：关闭会话 + 标记待重初始化（禁止隐式重试）
+                import traceback
+                traceback.print_exc()
+                self.needs_reinitialize = True
+                self.session_active = False
+                self.state = "needs_reinitialize"
+                return self._protocol_error("needs_reinitialize", detail=str(exc), session_id=req.session_id)
+            self._op_cache_put(self._track_cache, req.request_id, result, self._fingerprint(req))
+            return dict(result)
 
-            result = results[0] if results else None
-            boxes = result.boxes if result is not None else None
-            speed = getattr(result, "speed", None) or {}
-            timings["yoloe_preprocess_ms"] = float(speed.get("preprocess", 0.0))
-            timings["yoloe_inference_ms"] = float(speed.get("inference", 0.0))
-            timings["yoloe_postprocess_ms"] = float(speed.get("postprocess", 0.0))
-            timings["total_ms"] = _ms(time.perf_counter() - total_t0)
+    def session_rebind(self, req: SessionRebindRequest) -> dict[str, Any]:
+        """会话内身份重绑（历史身份解析）：同帧证据定位 → 候选匹配 → 连续性验证 → 原子提交。
 
-            all_count = len(boxes) if boxes is not None else 0
-            timings["all_predicted_count"] = float(all_count)
-
-            # ── 无检测 ──
-            if boxes is None or len(boxes) == 0:
-                timings["candidate_count"] = 0.0
-                self.latest_result = self._lost(stamp, "no_detections", timings)
-                self._log_frame(label, timings)
-                self._track_logger.log(self._build_log_record(send_seq, timings))
-                return dict(self.latest_result)
-
-            # ── 按 class_id 过滤（tracker 已处理过滤后的框，这里只需确认目标类别存在）──
-            if boxes.cls is not None and len(boxes.cls) > 0:
-                cls_arr = boxes.cls.int().cpu().numpy()
-                target_indices = (cls_arr == class_id).nonzero()[0]
-            else:
-                target_indices = []
-
-            timings["filter_class_ms"] = _ms(time.perf_counter() - filter_t0)
-            timings["candidate_count"] = float(len(target_indices))
-            timings["all_candidate_count"] = float(all_count)
-
-            if len(target_indices) == 0:
-                self.latest_result = self._lost(stamp, f"no_class_{label}", timings)
-                self._log_frame(label, timings)
-                self._track_logger.log(self._build_log_record(send_seq, timings))
-                return dict(self.latest_result)
-
-            identify_ms = 0.0
-            # ── VLM init_bbox → 匹配目标 track_id ──
-            if req.init_bbox is not None:
-                clipped = _clip_bbox(req.init_bbox, image_bgr)
-                if clipped is not None:
-                    id_t0 = time.perf_counter()
-                    matched_id = self._identify_target(boxes, target_indices, clipped)
-                    identify_ms += _ms(time.perf_counter() - id_t0)
-                    timings["identify_ms"] = identify_ms
-                    if matched_id is not None:
-                        self.target_track_id = matched_id
-                        self.state = "active"
-                        print(
-                            f"[YOLOE_TRT] init_bbox matched track_id={self.target_track_id} "
-                            f"label={label!r}",
-                            flush=True,
-                        )
-                    else:
-                        self.latest_result = self._lost(stamp, "init_bbox_no_match", timings)
-                        self._log_frame(label, timings)
-                        self._track_logger.log(self._build_log_record(send_seq, timings))
-                        return dict(self.latest_result)
-                else:
-                    self.latest_result = self._lost(stamp, "init_bbox_out_of_bounds", timings)
-                    self._log_frame(label, timings)
-                    self._track_logger.log(self._build_log_record(send_seq, timings))
-                    return dict(self.latest_result)
-
-            timings["identify_ms"] = identify_ms
-            # ── 按 target_track_id 筛选 ──
-            if self.target_track_id is None:
-                self.latest_result = self._lost(stamp, "awaiting_init_bbox", timings)
-                self._log_frame(label, timings)
-                self._track_logger.log(self._build_log_record(send_seq, timings))
-                return dict(self.latest_result)
-
-            id_t0 = time.perf_counter()
-            target = self._find_target_by_id(boxes, target_indices)
-            identify_ms += _ms(time.perf_counter() - id_t0)
-            timings["identify_ms"] = identify_ms
-            if target is None:
-                self.latest_result = self._lost(stamp, "target_missing", timings)
-                self._log_frame(label, timings)
-                self._track_logger.log(self._build_log_record(send_seq, timings))
-                return dict(self.latest_result)
-
-            # ── 目标已锁定 ──
-            self.last_bbox = target["bbox"]
-            self.last_score = target["score"]
+        ① 按 VLM 图像 stamp 在帧历史缓存定位同帧证据，无证据 → history_expired；
+        ② 在该历史帧候选框中匹配 bbox（IoU 门槛 + 第一/第二差距，歧义拒绝）；
+        ③ 连续性验证：候选 ID 的连续性段一致，且当前连续观测数达到门槛；
+        ④ 原子提交 target_track_id 并递增 identity_revision；
+        ⑤ 响应只返回身份验证信息（bbox=None），历史结果不作为当前控制观测。
+        """
+        with self.lock:
+            fingerprint = self._fingerprint(req)
+            cached = self._op_cache_get(self._op_cache, req.operation_id)
+            if cached is not None:
+                if cached.get("fp") != fingerprint:
+                    return self._protocol_error(
+                        "operation_conflict", detail="same operation_id with different content",
+                        session_id=req.session_id,
+                    )
+                return dict(cached["result"])
+            err, resp = self._check_session(req.server_instance_id, req.session_id)
+            if err:
+                return resp
+            # 身份版本一致性：两端版本不同步说明存在未确认的提交/回滚，拒绝重绑
+            if int(req.identity_revision) != int(self.identity_revision):
+                resp = self._protocol_error(
+                    "identity_revision_mismatch",
+                    detail=f"client={req.identity_revision} server={self.identity_revision}",
+                    session_id=req.session_id,
+                )
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            # 必须同时匹配服务端接受的 frame_seq 和 stamp，不保留最近帧兜底。
+            hist = self._find_history(req.frame_seq, req.stamp)
+            if hist is None:
+                resp = self._protocol_error("history_expired", session_id=req.session_id)
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            # ② 在历史帧候选框中匹配 VLM bbox
+            entries = list(hist.get("entries") or [])
+            best_iou, best_entry, second_iou = 0.0, None, 0.0
+            for entry in entries:
+                iou_val = _bbox_iou(entry["bbox"], list(req.bbox))
+                if iou_val > best_iou:
+                    second_iou, best_iou = best_iou, iou_val
+                    best_entry = entry
+                elif iou_val > second_iou:
+                    second_iou = iou_val
+            unique_margin = self.rebind_unique_margin  # 歧义保护间隔（CLI 可配）
+            ambiguous = second_iou >= self.init_bbox_match_iou and (best_iou - second_iou) < unique_margin
+            if best_entry is None or best_iou < self.init_bbox_match_iou or ambiguous:
+                resp = self._protocol_error(
+                    "identity_unverified",
+                    detail=f"best_iou={best_iou:.3f} second_iou={second_iou:.3f} candidates={len(entries)}",
+                    session_id=req.session_id,
+                )
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            # 同一数字 ID 丢失后恢复不能证明同一身份，必须连续性段也一致。
+            current = self._continuity.get(int(best_entry["track_id"]))
+            if (current is None or current[0] != best_entry["segment"]
+                    or current[1] < self.identity_confirm_frames):
+                resp = self._protocol_error("identity_unverified", session_id=req.session_id)
+                self._op_cache_put(self._op_cache, req.operation_id, resp, fingerprint)
+                return resp
+            # ④ 原子提交：更新目标身份并递增版本（失败路径不进入这里，当前身份保持不变）
+            self.target_track_id = int(best_entry["track_id"])
+            self._target_segment = best_entry["segment"]
+            self.identity_revision += 1
             self.state = "active"
-
-            rb_t0 = time.perf_counter()
-            self.latest_result = self._make_response(
+            # ⑤ 身份专用响应：不携带 bbox（历史结果不作为当前控制观测，
+            #    客户端等待下一张正常新帧输出）
+            result = self._make_response(
                 ok=True,
-                stamp=stamp,
-                bbox=self.last_bbox,
+                stamp=float(hist.get("stamp") or 0.0),
+                bbox=None,
                 track_id=self.target_track_id,
-                score=self.last_score,
-                cls=class_id,
-                reason="",
-                timings=timings,
+                score=0.0,
+                cls=self.current_class_id,
+                reason="rebind_committed",
+                timings={},
             )
-            timings["response_build_ms"] = _ms(time.perf_counter() - rb_t0)
-            # 响应中的 timings 也补上 response_build_ms，与日志保持一致
-            self.latest_result["timings"] = dict(timings)
+            result["identity_revision"] = int(self.identity_revision)
+            result["verified_frame_seq"] = int(hist.get("frame_seq") or 0)
+            result["verified_stamp"] = float(hist.get("stamp") or 0.0)
+            print(
+                f"[YOLOE_TRT] rebind committed sid={str(req.session_id)[:8]} "
+                f"track_id={self.target_track_id} revision={self.identity_revision} "
+                f"verified_frame={result['verified_frame_seq']} iou={best_iou:.3f}",
+                flush=True,
+            )
+            self._op_cache_put(self._op_cache, req.operation_id, result, fingerprint)
+            return dict(result)
+
+    def session_close(self, req: SessionCloseRequest) -> dict[str, Any]:
+        """关闭指定会话（幂等）。旧会话的 close 不影响新会话。"""
+        with self.lock:
+            fingerprint = self._fingerprint(req)
+            cached = self._op_cache_get(self._op_cache, req.operation_id)
+            if cached is not None:
+                if cached.get("fp") != fingerprint:
+                    return self._protocol_error(
+                        "operation_conflict", detail="same operation_id with different content",
+                        session_id=req.session_id,
+                    )
+                return dict(cached["result"])
+            base = {
+                "ok": True,
+                "server_instance_id": self.server_instance_id,
+                "session_id": str(req.session_id),
+                "identity_revision": int(self.identity_revision),
+                "reason": str(req.reason or ""),
+                "wall_time": _now(),
+            }
+            inst_err = self._check_instance(req.server_instance_id)
+            if inst_err:
+                # 服务已重启：目标会话必然不存在，视为已关闭（幂等安全）
+                base["already_closed"] = True
+                base["reason"] = f"instance_restarted:{req.reason}"
+            elif (req.pending_start_operation_id and
+                  ((self.start_operation_id == req.pending_start_operation_id)
+                   or (not self.session_active and req.expected_epoch == self.epoch))):
+                # start 响应丢失时，关闭已创建会话或提升 epoch 拒绝尚未执行的迟到 start。
+                self._close_session_locked()
+            elif str(req.session_id) != str(self.session_id or ""):
+                base["noop"] = "stale_session"
+            else:
+                self._close_session_locked()
+            base["epoch"] = self.epoch
+            self._op_cache_put(self._op_cache, req.operation_id, base, fingerprint)
+            return dict(base)
+
+    # ── 帧执行核心 ──
+
+    def _run_frame(
+        self,
+        image_bgr: np.ndarray,
+        *,
+        stamp: float,
+        conf: float,
+        iou_val: float,
+        timings: dict[str, float],
+        total_t0: float,
+        init_bbox: list[float] | None = None,
+        log_seq: int = 0,
+    ) -> dict[str, Any]:
+        """锁内执行一帧：检测 → 类别过滤 → tracker.update → 身份匹配/目标筛选 → 响应。
+
+        显式管线（方案 §6.2）：复用进程级检测 predictor 与 ReID encoder，
+        每个接受帧恰好调用一次 tracker.update；init_bbox 非 None 仅为会话
+        首帧（同帧 VLM bbox 匹配目标身份）。异常向上抛出，由会话操作统一处理。
+        """
+        label = self.current_label
+        class_id = self.current_class_id
+        timings["yoloe_trt_gpu"] = float(1 if _uses_cuda_device(self.device) else 0)
+        timings["yoloe_trt_device"] = self.device
+        timings["yoloe_trt_engine"] = str(self.engine_path)
+
+        # tracker 池诊断（只读）：生命周期统一由 tracker 内部管理，服务端不做破坏性裁剪
+        diag_t0 = time.perf_counter()
+        if self._pipeline_tracker is not None:
+            diag = self._pipeline_tracker.get_diagnostics()
+            timings["tracked_count"] = float(diag["tracked"])
+            timings["lost_count"] = float(diag["lost"])
+            timings["removed_count"] = float(diag["removed"])
+            timings["max_lost_age_frames"] = float(diag["max_lost_age_frames"])
+        timings["tracker_diag_ms"] = _ms(time.perf_counter() - diag_t0)
+
+        # 日志/响应使用客户端帧序号（会话内严格递增）
+        self.frame_seq = int(self.last_frame_seq)
+
+        # ═══════════════════════════════════════════════════
+        # 显式管线：detect（复用进程级 predictor，无 tracker 回调）→
+        # 目标类别过滤 → tracker.update（每接受帧恰好一次）→ 身份筛选。
+        # 数据流与官方 on_predict_postprocess_end 保持一致
+        # （det = boxes.cpu().numpy()，img = orig_img，空检测同样推进一帧）。
+        # ═══════════════════════════════════════════════════
+        infer_t0 = time.perf_counter()
+        with self.model_lock:
+            results = self.model.predict(
+                source=image_bgr,
+                conf=conf,
+                iou=iou_val,
+                imgsz=self.default_imgsz,
+                device=self.device,
+                verbose=False,
+            )
+        timings["detect_infer_ms"] = _ms(time.perf_counter() - infer_t0)
+
+        filter_t0 = time.perf_counter()
+        result = results[0] if results else None
+        boxes = result.boxes if result is not None else None
+        # 目标类别过滤（原 _filter_boxes_for_target_class 回调的显式等价实现；
+        # result[idx] 同步切片 boxes/masks，保持分割输出一致）
+        if boxes is not None and len(boxes) > 0 and boxes.cls is not None:
+            cls_mask = boxes.cls.int().cpu().numpy() == int(class_id)
+            if not cls_mask.any():
+                result = result[0:0]
+            else:
+                result = result[cls_mask.nonzero()[0]]
+        # tracker.update：会话级 tracker 实例，更新耗时显式计时
+        update_t0 = time.perf_counter()
+        det = result.boxes.cpu().numpy()
+        self._pipeline_tracker.protected_track_id = self.target_track_id
+        tracks = self._pipeline_tracker.update(det, result.orig_img, stamp=stamp)
+        diagnostics = self._pipeline_tracker.get_diagnostics()
+        timings.update(diagnostics)
+        timings.update(self._pipeline_tracker.reid_timings)
+        timings.update(tracked_count=diagnostics["tracked"], lost_count=diagnostics["lost"],
+                       removed_count=diagnostics["removed"])
+        timings["track_tracker_update_ms"] = _ms(time.perf_counter() - update_t0)
+        timings["filter_class_ms"] = _ms(time.perf_counter() - filter_t0)
+        if len(tracks):
+            # 按 tracker 输出行回填：最后一列为检测索引，同步重排检测框
+            track_idx = tracks[:, -1].astype(int)
+            result = result[track_idx]
+            result.update(boxes=torch.as_tensor(tracks[:, :-1], device=result.boxes.data.device))
+        timings["model_track_ms"] = _ms(time.perf_counter() - infer_t0)
+
+        boxes = result.boxes
+        speed = getattr(result, "speed", None) or {}
+        timings["yoloe_preprocess_ms"] = float(speed.get("preprocess", 0.0))
+        timings["yoloe_inference_ms"] = float(speed.get("inference", 0.0))
+        timings["yoloe_postprocess_ms"] = float(speed.get("postprocess", 0.0))
+        timings["total_ms"] = _ms(time.perf_counter() - total_t0)
+
+        all_count = len(boxes) if boxes is not None else 0
+        timings["all_predicted_count"] = float(all_count)
+
+        # ── 无检测 ──
+        if boxes is None or len(boxes) == 0:
+            timings["candidate_count"] = 0.0
+            self._frame_tracks_snapshot = {
+                "frame_seq": int(self.last_frame_seq),
+                "stamp": float(stamp),
+                "entries": [],
+            }
+            self._push_frame_history(self._frame_tracks_snapshot)
+            self.latest_result = self._lost(stamp, "no_detections", timings)
             self._log_frame(label, timings)
-            self._track_logger.log(self._build_log_record(send_seq, timings))
             return dict(self.latest_result)
+
+        # ── 按 class_id 过滤（tracker 已处理过滤后的框，这里只需确认目标类别存在）──
+        if boxes.cls is not None and len(boxes.cls) > 0:
+            cls_arr = boxes.cls.int().cpu().numpy()
+            target_indices = (cls_arr == class_id).nonzero()[0]
+        else:
+            target_indices = []
+
+        timings["filter_class_ms"] = _ms(time.perf_counter() - filter_t0)
+        timings["candidate_count"] = float(len(target_indices))
+        timings["all_candidate_count"] = float(all_count)
+
+        # ── 目标类别检测快照：供 rebind 的精确同帧身份查询──
+        if boxes.id is not None:
+            track_ids = boxes.id.int().cpu().tolist()
+            self._frame_tracks_snapshot = {
+                "frame_seq": int(self.last_frame_seq),
+                "stamp": float(stamp),
+                "entries": [
+                    {
+                        "track_id": int(track_ids[i]),
+                        "bbox": [int(round(v)) for v in boxes.xyxy[i].cpu().tolist()[:4]],
+                        "score": float(boxes.conf[i]) if boxes.conf is not None and len(boxes.conf) > i else 1.0,
+                    }
+                    for i in target_indices
+                ],
+            }
+        else:
+            self._frame_tracks_snapshot = {"frame_seq": int(self.last_frame_seq), "stamp": float(stamp), "entries": []}
+
+        self._push_frame_history(self._frame_tracks_snapshot)
+        if len(target_indices) == 0:
+            self.latest_result = self._lost(stamp, f"no_class_{label}", timings)
+            self._log_frame(label, timings)
+            return dict(self.latest_result)
+
+        identify_ms = 0.0
+        # ── 首帧 init_bbox → 匹配目标 track_id（普通帧由协议禁止携带）──
+        if init_bbox is not None:
+            clipped = _clip_bbox(init_bbox, image_bgr)
+            if clipped is not None:
+                id_t0 = time.perf_counter()
+                matched_id = self._identify_target(boxes, target_indices, clipped)
+                identify_ms += _ms(time.perf_counter() - id_t0)
+                timings["identify_ms"] = identify_ms
+                if matched_id is not None:
+                    self.target_track_id = matched_id
+                    self._target_segment = self._continuity[matched_id][0]
+                    self.state = "active"
+                    print(
+                        f"[YOLOE_TRT] init_bbox matched track_id={self.target_track_id} "
+                        f"label={label!r}",
+                        flush=True,
+                    )
+                else:
+                    self.latest_result = self._lost(stamp, "init_bbox_no_match", timings)
+                    self._log_frame(label, timings)
+                    return dict(self.latest_result)
+            else:
+                self.latest_result = self._lost(stamp, "init_bbox_out_of_bounds", timings)
+                self._log_frame(label, timings)
+                return dict(self.latest_result)
+
+        timings["identify_ms"] = identify_ms
+        # ── 按 target_track_id 筛选 ──
+        if self.target_track_id is None:
+            self.latest_result = self._lost(stamp, "awaiting_init_bbox", timings)
+            self._log_frame(label, timings)
+            return dict(self.latest_result)
+
+        id_t0 = time.perf_counter()
+        target = self._find_target_by_id(boxes, target_indices)
+        identify_ms += _ms(time.perf_counter() - id_t0)
+        timings["identify_ms"] = identify_ms
+        if target is None:
+            self.latest_result = self._lost(stamp, "target_missing", timings)
+            self._log_frame(label, timings)
+            return dict(self.latest_result)
+
+        # ── 目标已锁定 ──
+        self.last_bbox = target["bbox"]
+        self.last_score = target["score"]
+        self.state = "active"
+
+        rb_t0 = time.perf_counter()
+        self.latest_result = self._make_response(
+            ok=True,
+            stamp=stamp,
+            bbox=self.last_bbox,
+            track_id=self.target_track_id,
+            score=self.last_score,
+            cls=class_id,
+            reason="",
+            timings=timings,
+        )
+        timings["response_build_ms"] = _ms(time.perf_counter() - rb_t0)
+        # 返回前刷新端到端总耗时（含响应构造），并回填到响应 timings 保持与日志一致
+        timings["total_ms"] = _ms(time.perf_counter() - total_t0)
+        self.latest_result["timings"] = dict(timings)
+        self._log_frame(label, timings)
+        return dict(self.latest_result)
 
     def _build_log_record(self, send_seq: int, timings: dict[str, float]) -> dict[str, Any]:
         """构造结构化 JSON 日志记录：send_seq/frame_seq/state/label + 全量 timings + CUDA/GC 快照。"""
@@ -585,6 +1112,11 @@ class YoloeTensorRtTrackEngine:
     def _find_target_by_id(self, boxes, indices) -> dict | None:
         """在目标类别中按 track_id 查找。"""
         if self.target_track_id is None or boxes.id is None:
+            return None
+        continuity = self._continuity.get(self.target_track_id)
+        if continuity is None or continuity[0] != self._target_segment:
+            return None
+        if self.frame_seq > 1 and continuity[1] < self.identity_confirm_frames:
             return None
         track_ids = boxes.id.int().cpu().tolist()
         for i in indices:
@@ -624,6 +1156,13 @@ class YoloeTensorRtTrackEngine:
             "reason": str(reason or ""),
             "timings": dict(timings or {}),
             "wall_time": _now(),
+            # 会话身份字段：客户端据此做会话归属与身份版本校验
+            "server_instance_id": self.server_instance_id,
+            "session_id": self.session_id,
+            "identity_revision": int(self.identity_revision),
+            "protocol_version": 3,
+            "epoch": self.epoch,
+            "start_operation_id": self.start_operation_id,
         }
 
     def _lost(
@@ -669,37 +1208,39 @@ class YoloeTensorRtTrackEngine:
 
     # ── API 管理 ──
 
-    def reset(self, reason: str = "") -> dict[str, Any]:
-        with self.lock:
-            self.model.predictor = None
-            gc.collect()
-            if _uses_cuda_device(self.device):
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-            self.current_label = ""
-            self.current_class_id = None
-            self.target_track_id = None
-            self.last_bbox = None
-            self.last_score = 0.0
-            self.state = "idle"
-            self.frame_seq = 0
-            self.latest_result = self._make_response(ok=False, reason=reason or "reset")
-            print(f"[YOLOE_TRT] manual reset reason={reason!r}", flush=True)
-            return dict(self.latest_result)
-
     def status(self) -> dict[str, Any]:
         with self.lock:
-            return {
+            resp = {
+                "server_instance_id": self.server_instance_id,
                 "state": self.state,
+                "session_id": self.session_id,
+                "session_active": self.session_active,
+                "protocol_version": 3,
+                "epoch": self.epoch,
+                "start_operation_id": self.start_operation_id,
+                "operation_ttl": self._op_cache_ttl,
+                "identity_revision": int(self.identity_revision),
+                "last_frame_seq": int(self.last_frame_seq),
+                "needs_reinitialize": self.needs_reinitialize,
                 "label": self.current_label,
                 "class_id": self.current_class_id,
                 "tracker": self.current_tracker,
                 "track_id": self.target_track_id,
                 "last_bbox": self.last_bbox,
                 "last_score": self.last_score,
-                "frame_seq": self.frame_seq,
+                "frame_seq": int(self.frame_seq),
                 "engine": str(self.engine_path),
+                "device": self.device,
+                "conf": self.default_conf,
+                "iou": self.default_iou,
             }
+            tracker_name = self.current_tracker or "deepocsort"
+        # tracker 实际生效配置（ReID/GMC 等）在锁外读取 YAML
+        try:
+            resp["tracker_cfg"] = YAML.load(self._tracker_cfg_path(tracker_name))
+        except Exception as exc:
+            resp["tracker_cfg_error"] = str(exc)
+        return resp
 
     def latest(self) -> dict[str, Any]:
         with self.lock:
@@ -711,36 +1252,54 @@ class YoloeTensorRtTrackEngine:
 # ──────────────────────────────────────────────
 
 def create_app(engine: YoloeTensorRtTrackEngine) -> FastAPI:
-    app = FastAPI(title="YOLOE TensorRT Track Engine v2")
+    app = FastAPI(title="YOLOE TensorRT Track Engine v3")
+
+    @app.middleware("http")
+    async def capture_entry(request, call_next):
+        request.state.received = time.perf_counter()
+        return await call_next(request)
+
+    def dispatch(handler, req, request):
+        entered = time.perf_counter()
+        with engine.lock:
+            if time.perf_counter() - request.state.received > engine.max_queue_age:
+                return engine._protocol_error("stale_request")
+            # 幂等缓存前也检查实例；旧实例的 close 允许安全地返回已关闭。
+            if handler != engine.session_close and req.server_instance_id != engine.server_instance_id:
+                return engine._protocol_error("instance_mismatch")
+            lock_wait_ms = _ms(time.perf_counter() - entered)
+            result = dict(handler(req))
+            result["operation_id" if hasattr(req, "operation_id") else "request_id"] = (
+                getattr(req, "operation_id", None) or req.request_id)
+            result["recv_ms"] = _ms(entered - request.state.received)
+            result["timings"] = dict(result.get("timings") or {})
+            result["timings"]["lock_wait_ms"] = lock_wait_ms
+            result["timings"]["total_ms"] = _ms(time.perf_counter() - request.state.received)
+            if engine.frame_seq % engine.log_every == 0 or not result.get("ok"):
+                log_record = dict(result, cuda_memory=cuda_memory_snapshot())
+                log_record["rss_mb"] = int(Path("/proc/self/statm").read_text().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1048576
+                engine._track_logger.log(log_record)
+            return result
+
+    @app.post("/session/start")
+    def start(req: SessionStartRequest, request: Request):
+        return dispatch(engine.session_start, req, request)
 
     @app.post("/track")
-    def track(req: TrackRequest):
-        recv_ts = time.perf_counter()
-        try:
-            call_ts = time.perf_counter()
-            result = engine.track(req)
-            # recv_ms：从收到请求到开始调用 track() 的处理/排队耗时
-            result["recv_ms"] = _ms(call_ts - recv_ts)
-            # send_seq 一一对应验证：结果中若携带 send_seq 则回传，否则回传请求值
-            result["echo_send_seq"] = result.get("send_seq", req.send_seq)
-            return result
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            print(f"YOLOE TRT track API request failed: {exc}", flush=True)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    def track(req: SessionTrackRequest, request: Request):
+        return dispatch(engine.session_track, req, request)
 
-    @app.post("/reset")
-    def reset(req: ResetRequest | None = None):
-        return engine.reset(reason="" if req is None else req.reason)
+    @app.post("/session/rebind")
+    def rebind(req: SessionRebindRequest, request: Request):
+        return dispatch(engine.session_rebind, req, request)
+
+    @app.post("/session/close")
+    def close(req: SessionCloseRequest, request: Request):
+        return dispatch(engine.session_close, req, request)
 
     @app.get("/status")
     def status():
         return engine.status()
-
-    @app.get("/latest")
-    def latest():
-        return engine.latest()
 
     return app
 
@@ -762,7 +1321,7 @@ def _parse_imgsz(value: str) -> int | tuple[int, int]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="YOLOE TensorRT Track Engine v2 (official model.track)")
+    parser = argparse.ArgumentParser(description="YOLOE TensorRT Track Engine v3 (explicit sessions)")
     parser.add_argument("--pt-model", default=str(YOLOE_ROOT / "yoloe-v8m-seg.pt"),
                         help="PyTorch 模型路径（用于导出 engine）")
     parser.add_argument("--engine", default=str(YOLOE_ROOT / "pretrain/yoloe-26n-seg.engine"),
@@ -780,6 +1339,19 @@ def parse_args() -> argparse.Namespace:
                         help="强制重新导出 TensorRT engine")
     parser.add_argument("--init-bbox-match-iou", type=float, default=0.1,
                         help="VLM init_bbox 与 tracker 输出匹配的最小 IoU 阈值")
+    parser.add_argument("--frame-history-cap", type=int, default=64,
+                        help="rebind 同帧证据的帧历史缓存条数上限")
+    parser.add_argument("--frame-history-ttl", type=float, default=8.0,
+                        help="帧历史缓存墙钟 TTL（秒），超龄条目不再作为同帧证据")
+    parser.add_argument("--rebind-unique-margin", type=float, default=0.1,
+                        help="rebind 歧义保护间隔：最佳与次优 IoU 差距小于该值且次优达标时拒绝")
+    parser.add_argument("--op-cache-ttl", type=float, default=120.0,
+                        help="operation_id/request_id 幂等缓存 TTL（秒）")
+    parser.add_argument("--op-cache-max", type=int, default=128,
+                        help="幂等缓存容量上限（条，最旧优先淘汰）")
+    parser.add_argument("--max-queue-age", type=float, default=5.0)
+    parser.add_argument("--identity-confirm-frames", type=int, default=2)
+    parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2250)
     return parser.parse_args()
@@ -799,6 +1371,27 @@ def main() -> None:
         engine_imgsz=args.engine_imgsz,
         rebuild_engine=args.rebuild_engine,
         init_bbox_match_iou=args.init_bbox_match_iou,
+        frame_history_cap=args.frame_history_cap,
+        frame_history_ttl=args.frame_history_ttl,
+        rebind_unique_margin=args.rebind_unique_margin,
+        op_cache_ttl=args.op_cache_ttl,
+        op_cache_max=args.op_cache_max,
+        max_queue_age=args.max_queue_age, identity_confirm_frames=args.identity_confirm_frames,
+        log_every=args.log_every,
+    )
+    # 启动横幅：打印实际生效的资源与配置，便于与 YAML/脚本参数核对
+    try:
+        cpu_set = ",".join(str(c) for c in sorted(os.sched_getaffinity(0)))
+    except Exception:
+        cpu_set = "unknown"
+    print(
+        f"[YOLOE_TRT] server starting: protocol=3 instance={engine.server_instance_id[:8]} "
+        f"engine={engine.engine_path} imgsz={engine.engine_imgsz} device={engine.device} "
+        f"tracker_dir={engine.tracker_dir} cpus=[{cpu_set}] "
+        f"frame_history(cap={args.frame_history_cap},ttl={args.frame_history_ttl}s) "
+        f"rebind_margin={args.rebind_unique_margin} "
+        f"op_cache(ttl={args.op_cache_ttl}s,max={args.op_cache_max})",
+        flush=True,
     )
     app = create_app(engine)
     uvicorn.run(app, host=args.host, port=args.port, reload=False, workers=1)

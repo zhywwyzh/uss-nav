@@ -227,28 +227,16 @@ class YoloeTrackEngine:
             # 核心：使用官方 model.track() 单帧跟踪
             # ═══════════════════════════════════════════
             infer_t0 = time.perf_counter()
-            try:
-                results = self.model.track(
-                    source=image_bgr,
-                    persist=True,
-                    conf=conf,
-                    iou=iou_val,
-                    imgsz=imgsz,
-                    tracker=tracker_cfg,
-                    device=self.device,
-                    verbose=False,
-                )
-            except Exception:
-                # track() 首次调用的内部注册失败时，回退到不带 tracker 的 predict，
-                # 下一帧会自动注册
-                results = self.model.predict(
-                    source=image_bgr,
-                    conf=conf,
-                    iou=iou_val,
-                    imgsz=imgsz,
-                    device=self.device,
-                    verbose=False,
-                )
+            results = self.model.track(
+                source=image_bgr,
+                persist=True,
+                conf=conf,
+                iou=iou_val,
+                imgsz=imgsz,
+                tracker=tracker_cfg,
+                device=self.device,
+                verbose=False,
+            )
             infer_ms = _ms(time.perf_counter() - infer_t0)
             timings["model_track_ms"] = infer_ms
 

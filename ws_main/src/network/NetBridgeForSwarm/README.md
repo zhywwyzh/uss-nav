@@ -4,6 +4,7 @@
 
 - Support PointCloud2 message compression transmission. The bandwidth consumption is greatly reduced.
 - Support PointCloud2 message downsampling transmission.
+- Support `sensor_msgs/CompressedImage` UDP passthrough transmission (jpeg only). The JPEG byte stream is forwarded as-is without decode/re-encode; the `format` field is sent in a 4-byte-length-prefixed header and cached on the receiver side after the first frame.
 
 ## 1. Introduction
 ROS1 has always been a challenge for multi-machine communication support. There are many existing solutions that require the project to be bound, which are not flexible enough to meet the needs of users.
@@ -19,6 +20,7 @@ This is a multi-machine communication middleware that can forward messages from 
 - All swarm agents use the same configuration file, which can flexibly configure the topics, services, and images (as a subtype of ros topic) to be forwarded, reducing the configuration complexity.
 - Support custom message types, which can be added to `include/msgs_macro.hpp` and specified in the yaml file.
 - Support ros video stream (sensor_msgs/Image) UDP transmission (custom compression ratio), ros topic TCP transmission, and ros service TCP transmission.
+- Support `sensor_msgs/CompressedImage` UDP passthrough (jpeg only, point-to-point pipeline required).
 - Completely restructured code framework, making it more user-friendly, flexible, and extensible.
 
 ### 1.2 Future Work
@@ -83,7 +85,7 @@ The specific configuration method is as follows:
 topics:
   - topic_name: /ekf_quat/ekf_odom  # send the messages of this ROS topic
     msg_type: nav_msgs/Odometry     # ROS message type (rosmsg style)
-    imgResizeRate: 0.5              # only for image topic, resize rate, default: 1.0(raw image) [only used for image topic]                         
+    imgResizeRate: 0.5              # only for image topic, resize rate, default: 1.0(raw image) [only used for image topic]
     cloudCompress: true             # only for [sensors_msgs/PointCloud2], default = false
     cloudDownsample: 0.1            # only for [sensors_msgs/PointCloud2], range [1e-4, 1e4] (default = -1.0, disable), value more, point less
     srcIP:
@@ -96,6 +98,21 @@ topics:
       - groundStation1
     prefix: true                    # add namespace prefix, default: true
     same_prefix: false              # prefix namespace with same name, default: false (multi adress to one topic)
+```
+
+For `sensor_msgs/CompressedImage`, UDP passthrough is used (jpeg only, no decode/re-encode). The topic must be configured as point-to-point pipeline (single srcIP and single dstIP). The `format` field is sent in a 4-byte-length-prefixed header before the JPEG data, and cached on the receiver side after the first frame; the receiver fills `header.frame_id="camera_link"` and `header.stamp=now`. `imgResizeRate` is ignored for CompressedImage (compressed byte streams cannot be resized losslessly).
+
+```yaml
+- topic_name: /yoloe/plot
+  msg_type: sensor_msgs/CompressedImage
+  srcIP:
+    - drone1
+  srcPort: 3008
+  max_freq: 10
+  dstIP:
+    - groundStation0
+  prefix: false
+  same_prefix: false
 ```
 
 The `all_drone` keyword represents all drones, `srcIP` and `dstIP` should correspond to the hostname in the IP field. 

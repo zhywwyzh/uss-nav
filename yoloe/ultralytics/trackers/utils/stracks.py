@@ -44,13 +44,17 @@ def merge_track_pools(
     tracker.tracked_stracks = [t for t in tracker.tracked_stracks if t.state == TrackState.Tracked]
     tracker.tracked_stracks = joint_stracks(tracker.tracked_stracks, activated)
     tracker.tracked_stracks = joint_stracks(tracker.tracked_stracks, refind)
+    # 先把本帧标记 Removed 的轨迹并入 removed 池，再从 lost 池剔除全部 Removed（本帧 + 历史），
+    # 保证 Removed 对象当帧即离开 lost 池，下一帧绝不参与匹配
+    tracker.removed_stracks.extend(removed)
     tracker.lost_stracks = sub_stracks(tracker.lost_stracks, tracker.tracked_stracks)
     tracker.lost_stracks.extend(lost)
     tracker.lost_stracks = sub_stracks(tracker.lost_stracks, tracker.removed_stracks)
+    # 防御式兜底：按状态再过滤一次，杜绝任何 Removed 残留
+    tracker.lost_stracks = [t for t in tracker.lost_stracks if t.state != TrackState.Removed]
     tracker.tracked_stracks, tracker.lost_stracks = remove_duplicate_stracks(
         tracker.tracked_stracks, tracker.lost_stracks
     )
-    tracker.removed_stracks.extend(removed)
     if len(tracker.removed_stracks) > removed_buffer:
         tracker.removed_stracks = tracker.removed_stracks[-removed_buffer:]
 

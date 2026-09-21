@@ -4,6 +4,7 @@
 
 - 支持 sensors::PointCloud2 消息压缩传输 实测可大幅减小带宽占用
 - 支持 sensors::PointCloud2 点云降采样传输
+- 支持 `sensor_msgs/CompressedImage` UDP 透传传输（仅 jpeg）。JPEG 字节流原样转发，不做解码/重编码；`format` 字段以 4 字节长度前缀头的形式发送，接收端首帧解析后缓存复用。
 
 ## 1. 介绍
 ROS1 对多机通讯的支持一直是个难题，现存的解决方案大多需要与项目绑定，难以定制化的满足使用需求。
@@ -19,6 +20,7 @@ ROS1 对多机通讯的支持一直是个难题，现存的解决方案大多需
 - 所有智能体使用 `同一个配置文件`，可灵活配置需要转发的topic，service, image(作为ros topic的子类型)， 免去繁琐的配置过程
 - 支持**自定义消息类型**，只需在`include/msgs_macro.hpp`中添加自定义topic/service类型，并在yaml文件中指定消息类型即可
 - 支持ros视频流(sensor_msgs/Image)UDP传输（可自定义压缩比）， ros topic TCP传输， ros service TCP传输
+- 支持 `sensor_msgs/CompressedImage` UDP 透传（仅 jpeg，需点对点配置）
 - 完全重构的代码框架，使其更加易用、灵活且易于扩展
 
 ### 1.2 后续计划
@@ -80,7 +82,7 @@ config:
 topics:
   - topic_name: /ekf_quat/ekf_odom  # send the messages of this ROS topic
     msg_type: nav_msgs/Odometry     # ROS message type (rosmsg style)
-    imgResizeRate: 0.5              # only for image topic, resize rate, default: 1.0(raw image) [only used for image topic]                         
+    imgResizeRate: 0.5              # only for image topic, resize rate, default: 1.0(raw image) [only used for image topic]
     cloudCompress: true             # only for [sensors_msgs/PointCloud2], default = false
     cloudDownsample: 0.1            # only for [sensors_msgs/PointCloud2], range [1e-4, 1e4] (default = -1.0, disable), value more, point less
     srcIP:
@@ -93,6 +95,21 @@ topics:
       - groundStation1
     prefix: true                    # add namespace prefix, default: true
     same_prefix: false              # prefix namespace with same name, default: false (multi adress to one topic)
+```
+
+`sensor_msgs/CompressedImage` 走 UDP 透传（仅 jpeg，不做解码/重编码），需配置为点对点链路（单一 srcIP 和单一 dstIP）。`format` 字段以 4 字节长度前缀头形式发送在 JPEG 数据前，接收端首帧解析后缓存复用；接收端固定填 `header.frame_id="camera_link"`、`header.stamp=now`。CompressedImage 不解析 `imgResizeRate`（压缩字节流无法无损缩放）。
+
+```yaml
+- topic_name: /yoloe/plot
+  msg_type: sensor_msgs/CompressedImage
+  srcIP:
+    - drone1
+  srcPort: 3008
+  max_freq: 10
+  dstIP:
+    - groundStation0
+  prefix: false
+  same_prefix: false
 ```
 
 可用关键字`all_drone`代表所有飞机，`srcIP`和`dstIP`都要对应IP字段内填写的hostname，

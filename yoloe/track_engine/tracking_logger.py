@@ -1,64 +1,88 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""共享的结构化 JSON 文件日志模块，供 YOLOE tracker 服务端和 agent 客户端使用。"""
-
+"""有界异步 JSONL 日志：按大小轮转，慢磁盘不阻塞 tracking 主链路。"""
 from __future__ import annotations
 
 import json
+import logging
 import os
+import queue
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 
 class TrackingLogger:
-    """线程安全的结构化 JSON 行日志写入器（每行一个 JSON 对象）。
-
-    服务端日志路径：/home/diff/gwq/logs/tracker_server_YYYYMMDD_HHMMSS.jsonl
-    客户端日志路径：/home/diff/gwq/logs/tracker_client_YYYYMMDD_HHMMSS.jsonl
-    """
-
-    _instances: dict[str, TrackingLogger] = {}
+    _instances = {}
     _lock = threading.Lock()
 
-    def __init__(self, name: str, log_dir: str = "/gwq/logs"):
-        self._name = str(name)
-        self._log_dir = Path(log_dir)
-        self._log_dir.mkdir(parents=True, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        self._path = self._log_dir / f"{self._name}_{ts}.jsonl"
-        self._file_lock = threading.Lock()
+    def __init__(self, name: str, log_dir: str | None = None):
+        self._name = name
+        directory = Path(log_dir or os.getenv("TRACKING_LOG_DIR", "logs/tracking"))
+        directory.mkdir(parents=True, exist_ok=True)
+        # 固定进程名的轮转文件，重启服务也不会留下无限个时间戳文件。
+        self._path = directory / f"{name}.jsonl"
         self._count = 0
-        print(f"[TRACKING_LOG] {self._name} → {self._path}", flush=True)
+        self.dropped = 0
+        self.write_errors = 0
+        self._counter_lock = threading.Lock()
+        self.enabled = os.getenv("TRACKING_LOG_ENABLED", "1") != "0"
+        self._queue = queue.Queue(maxsize=max(1, int(os.getenv("TRACKING_LOG_QUEUE_SIZE", "256"))))
+        self._handler = RotatingFileHandler(
+            self._path, maxBytes=max(1024, int(os.getenv("TRACKING_LOG_MAX_BYTES", "10485760"))),
+            backupCount=max(1, int(os.getenv("TRACKING_LOG_BACKUPS", "3"))), encoding="utf-8",
+        )
+        self._handler.setFormatter(logging.Formatter("%(message)s"))
+        self._worker = threading.Thread(target=self._write_loop, name=f"{name}-log", daemon=True)
+        self._worker.start()
+        print(f"[TRACKING_LOG] {name} -> {self._path}", flush=True)
 
     @classmethod
-    def get(cls, name: str, log_dir: str = "/gwq/logs") -> TrackingLogger:
+    def get(cls, name: str, log_dir: str | None = None):
         with cls._lock:
             if name not in cls._instances:
-                cls._instances[name] = cls(name, log_dir=log_dir)
+                cls._instances[name] = cls(name, log_dir)
             return cls._instances[name]
 
     @property
-    def path(self) -> Path:
+    def path(self):
         return self._path
 
-    def log(self, data: dict[str, Any]) -> None:
-        """追加一条 JSON 日志记录。"""
-        self._count += 1
-        record = {
-            "_idx": self._count,
-            "_ts": time.time(),
-            "_isotime": time.strftime("%Y-%m-%dT%H:%M:%S.", time.localtime())
-            + f"{time.time() % 1:.6f}"[2:],
-        }
+    def log(self, data: dict[str, Any]):
+        if not self.enabled:
+            return
+        with self._counter_lock:
+            self._count += 1
+            record = dict(_idx=self._count, _ts=time.time(), log_dropped=self.dropped,
+                          log_write_errors=self.write_errors)
         record.update(data)
         line = json.dumps(record, ensure_ascii=False, default=str)
-        with self._file_lock:
-            with open(self._path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+        try:
+            self._queue.put_nowait(line)
+        except queue.Full:
+            with self._counter_lock:
+                self.dropped += 1
 
-    def get_count(self) -> int:
+    def _write_loop(self):
+        while True:
+            line = self._queue.get()
+            try:
+                # 直接执行轮转和写入，使磁盘异常可以计数而不是被 logging 静默吞掉。
+                record = logging.LogRecord(self._name, logging.INFO, "", 0, line, (), None)
+                if self._handler.shouldRollover(record):
+                    self._handler.doRollover()
+                self._handler.stream.write(line + "\n")
+                self._handler.flush()
+            except OSError as exc:
+                self.write_errors += 1
+                if self.write_errors == 1:
+                    print(f"[TRACKING_LOG] write failed: {exc}", flush=True)
+            finally:
+                self._queue.task_done()
+
+    def get_count(self):
         return self._count
 
 

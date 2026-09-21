@@ -11,7 +11,7 @@ YOLOE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 #       设为 0.1 表示：只要 VLM bbox 与 tracker 中某个目标有 10% 重叠即可匹配
 #       YOLOE_TRACK_INIT_BBOX_IOU 环境变量可覆盖
 python3 "${SCRIPT_DIR}/api.py" \
-  --model "${YOLOE_DIR}/yoloe-v8m-seg.pt" \
+  --model "${YOLOE_DIR}/yoloe-26m-seg.pt" \
   --host "${YOLOE_TRACK_HOST:-127.0.0.1}" \
   --port "${YOLOE_TRACK_PORT:-2250}" \
   --device "${YOLOE_TRACK_DEVICE:-cuda:0}" \

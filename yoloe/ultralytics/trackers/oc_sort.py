@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
@@ -42,6 +43,9 @@ class OCSortTrack(STrack):
         self.delta_t = delta_t
         self._saved_mean: np.ndarray | None = None
         self._saved_covariance: np.ndarray | None = None
+        # ORU 诊断：最近一次 ORU 的失联帧数与实际补算步数
+        self.oru_last_gap: int = 0
+        self.oru_replay_steps: int = 0
 
     def activate(self, kalman_filter, frame_id: int) -> None:
         """Activate a new tracklet and seed its observation history.
@@ -53,6 +57,7 @@ class OCSortTrack(STrack):
         super().activate(kalman_filter, frame_id)
         self.last_observation = self.xyxy.copy()
         self.observations[frame_id] = self.xyxy.copy()
+        self._prune_observations()
         self._saved_mean = self.mean.copy()
         self._saved_covariance = self.covariance.copy()
 
@@ -83,6 +88,7 @@ class OCSortTrack(STrack):
         obs = new_track.xyxy.copy()
         self.last_observation = obs
         self.observations[frame_id] = obs
+        self._prune_observations()
         super().re_activate(new_track, frame_id, new_id)
         self._saved_mean = self.mean.copy()
         self._saved_covariance = self.covariance.copy()
@@ -142,6 +148,8 @@ class OCSortTrack(STrack):
 
         last_frame = max(self.observations.keys())
         gap = current_frame_id - last_frame
+        self.oru_last_gap = gap
+        self.oru_replay_steps = 0
         if gap <= 1:
             return
 
@@ -153,6 +161,7 @@ class OCSortTrack(STrack):
 
         # Replay with virtual observations
         for t in range(1, gap):
+            self.oru_replay_steps += 1
             alpha = t / gap
             virtual_xyxy = (1 - alpha) * last_obs + alpha * new_observation_xyxy
             # Convert xyxy to tlwh then to xyah for Kalman measurement
@@ -191,6 +200,21 @@ class OCSORT(BYTETracker):
         self.delta_t = getattr(args, "delta_t", 3)
         self.inertia = getattr(args, "inertia", 0.2)
         self.use_byte = getattr(args, "use_byte", False)
+        # ORU 补算上限：失联超过该帧数的轨迹不再恢复旧身份；默认不大于 track_buffer
+        self.max_oru_gap_frames = min(self.max_frames_lost,
+            max(1, int(getattr(args, "max_oru_gap_frames", 0) or self.max_frames_lost)))
+
+    def _build_strack_pool(self, tracked_stracks: list[OCSortTrack]) -> list[OCSortTrack]:
+        """ORU 补算上限：失联超过 max_oru_gap_frames 的 Lost 轨迹不参与匹配。
+
+        这些轨迹随后会被帧龄淘汰移出 lost 池；对应检测走 _init_new_tracks 重新确认，
+        避免对超长 gap 逐帧补算 Kalman 状态与旧身份复活。
+        """
+        pool = super()._build_strack_pool(tracked_stracks)
+        return [
+            t for t in pool
+            if t.state == TrackState.Tracked or self.frame_id - t.end_frame <= self.max_oru_gap_frames
+        ]
 
     def init_track(self, results, img: np.ndarray | None = None) -> list[OCSortTrack]:
         """Build `OCSortTrack` instances from a `Results`-like object."""
@@ -241,7 +265,11 @@ class OCSORT(BYTETracker):
                 track.update(det, self.frame_id)
                 activated.append(track)
             else:
+                oru_start = time.perf_counter()
                 track.apply_oru(det.xyxy, self.frame_id)
+                self.oru_gap = max(self.oru_gap, track.oru_last_gap)
+                self.oru_steps += track.oru_replay_steps
+                self.oru_ms += (time.perf_counter() - oru_start) * 1000.0
                 track.re_activate(det, self.frame_id, new_id=False)
                 refind.append(track)
         return list(u_track), list(u_det)

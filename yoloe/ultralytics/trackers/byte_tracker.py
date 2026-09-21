@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
@@ -259,12 +260,22 @@ class BYTETracker:
         self.frame_id = 0
         self.args = args
         self.max_frames_lost = args.track_buffer
+        self.max_lost_stracks = max(1, int(getattr(args, "max_lost_stracks", 100)))
+        self.max_lost_seconds = max(0.0, float(getattr(args, "max_lost_seconds", 3.0)))
         self.kalman_filter = self.get_kalmanfilter()
         self.reset_id()
 
     def update(self, results, img: np.ndarray | None = None, feats: np.ndarray | None = None, **kwargs) -> np.ndarray:
         """Update the tracker with new detections and return the current list of tracked objects."""
         self.frame_id += 1
+        self._update_stamp = float(kwargs.get("stamp", time.monotonic()))
+        # 必须在关联前淘汰超龄对象，否则本帧复活后会绕过末尾超龄检查。
+        expired = []
+        self._remove_stale_lost(expired)
+        self.lost_stracks = [t for t in self.lost_stracks if t.state == TrackState.Lost]
+        self.removed_stracks = (self.removed_stracks + expired)[-1000:]
+        self.oru_gap = self.oru_steps = 0
+        self.oru_ms = 0.0
         activated_stracks = []
         refind_stracks = []
         lost_stracks = []
@@ -272,13 +283,18 @@ class BYTETracker:
 
         results_high, results_low, mask_high, mask_low = self._split_detections(results)
         detections = self.init_track(results_high, self._input_for(img, feats, mask_high))
+        encoder = getattr(self, "encoder", None)
+        high_times = dict(getattr(encoder, "timings", {})) if len(results_high) else {}
         detections_second = self.init_track(results_low, self._input_for(img, feats, mask_low))
+        low_times = dict(getattr(encoder, "timings", {})) if len(results_low) else {}
+        self.reid_timings = {key: high_times.get(key, 0) + low_times.get(key, 0)
+                             for key in high_times.keys() | low_times.keys()}
         for tracks, mask in ((detections, mask_high), (detections_second, mask_low)):
             for track, i in zip(tracks, np.flatnonzero(mask)):
                 track.idx = i  # idx must be in full detection-set space; parse_bboxes only sees the subset
 
         unconfirmed, tracked_stracks = self._split_tracked()
-        strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
+        strack_pool = self._build_strack_pool(tracked_stracks)
         self.multi_predict(strack_pool)
         self._pre_first_associate(strack_pool, unconfirmed, img, results_high)
 
@@ -294,8 +310,14 @@ class BYTETracker:
         )
         self._init_new_tracks(u_detection, detections, activated_stracks, refind_stracks)
         self._remove_stale_lost(removed_stracks)
-
         merge_track_pools(self, activated_stracks, refind_stracks, lost_stracks, removed_stracks)
+        # 合并新 lost 后才限制容量，保证本帧新丢失对象也计入上限。
+        evicted = []
+        self._enforce_lost_cap(evicted)
+        self.lost_stracks = [t for t in self.lost_stracks if t.state == TrackState.Lost]
+        self.removed_stracks = (self.removed_stracks + evicted)[-1000:]
+        for track in self.tracked_stracks:
+            track.last_observed_stamp = self._update_stamp
         return self._format_output()
 
     def _split_detections(self, results: Any) -> tuple[Any, Any, np.ndarray, np.ndarray]:
@@ -482,9 +504,47 @@ class BYTETracker:
     def _remove_stale_lost(self, removed: list[STrack]) -> None:
         """Remove lost tracks that have exceeded the maximum allowed frames."""
         for track in self.lost_stracks:
-            if self.frame_id - track.end_frame > self.max_frames_lost:
+            age_seconds = self._update_stamp - getattr(track, "last_observed_stamp", self._update_stamp)
+            if (self.frame_id - track.end_frame > self.max_frames_lost
+                    or (self.max_lost_seconds > 0 and age_seconds > self.max_lost_seconds)):
                 track.mark_removed()
                 removed.append(track)
+
+    def _build_strack_pool(self, tracked_stracks: list[STrack]) -> list[STrack]:
+        """构造关联池：Tracked + Lost；Removed 状态一律排除，不参与任何匹配。"""
+        lost_pool = [t for t in self.lost_stracks if t.state == TrackState.Lost]
+        return joint_stracks(tracked_stracks, lost_pool)
+
+    def _enforce_lost_cap(self, removed: list[STrack]) -> None:
+        """数量保护：lost 池超过 max_lost_stracks 时只淘汰最旧（end_frame 最小）的 Lost 轨迹。
+
+        在年龄上限以内优先保留 protected_track_id，其他对象按观测时间淘汰；
+        被淘汰对象本帧即标记 Removed 并在 merge_track_pools 中离开 lost 池。
+        """
+        cap = self.max_lost_stracks
+        if cap <= 0:
+            return
+        candidates = [t for t in self.lost_stracks if t.state == TrackState.Lost]
+        if len(candidates) <= cap:
+            return
+        evict = sorted(candidates, key=lambda t: (t.track_id == getattr(self, "protected_track_id", None), t.end_frame))[: len(candidates) - cap]
+        for track in evict:
+            track.mark_removed()
+            removed.append(track)
+
+    def get_diagnostics(self) -> dict:
+        """返回池规模与年龄诊断（供服务端结构化日志使用，只读无副作用）。"""
+        max_lost_age = max((self.frame_id - t.end_frame for t in self.lost_stracks), default=0)
+        return {
+            "tracked": len(self.tracked_stracks),
+            "lost": len(self.lost_stracks),
+            "removed": len(self.removed_stracks),
+            "max_lost_age_frames": int(max_lost_age),
+            "frame_id": int(self.frame_id),
+            "oru_gap": getattr(self, "oru_gap", 0),
+            "oru_steps": getattr(self, "oru_steps", 0),
+            "oru_ms": getattr(self, "oru_ms", 0.0),
+        }
 
     def _format_output(self) -> np.ndarray:
         """Format the current tracked objects into the output array."""

@@ -10,6 +10,8 @@ backbones).
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import torch
 
@@ -94,7 +96,11 @@ class ReID:
     @torch.no_grad()
     def __call__(self, img: np.ndarray, dets: np.ndarray) -> list[np.ndarray | None]:
         """Extract embeddings for detected objects."""
+        started = time.perf_counter()
         crops = self._crop_detections(img, dets)
+        self.timings = {"reid_crop_ms": (time.perf_counter() - started) * 1000.0,
+                        "reid_candidates": len(crops), "reid_inference_ms": 0.0}
+        infer_started = time.perf_counter()
         valid = [bool(c.size) for c in crops]
         valid_crops = [crop for crop, keep in zip(crops, valid) if keep]
         if not valid_crops:
@@ -120,8 +126,16 @@ class ReID:
                 feats = torch.cat(outs, 0)[:n]
             valid_feats = [f.cpu().numpy() for f in feats]
 
+        self.timings["reid_inference_ms"] = (time.perf_counter() - infer_started) * 1000.0
         valid_feats = iter(valid_feats)
         return [next(valid_feats) if keep else None for keep in valid]
+
+
+# 进程级 ReID encoder 缓存：同一 (model, device) 组合只加载/预热一次，
+# 会话级 tracker 重建时直接复用同一实例（方案 §6.2 显式依赖注入），
+# 消除每次会话重建 tracker 时重复加载 ReID 模型的开销
+_ENCODER_CACHE: dict = {}
+_ENCODER_CACHE_MAX = 8
 
 
 def build_encoder(with_reid: bool, model: str | None, device: str | torch.device | None = None):
@@ -146,7 +160,17 @@ def build_encoder(with_reid: bool, model: str | None, device: str | torch.device
             return [f.cpu().numpy() for f in feats]
 
         return _auto_encoder
-    return ReID(model, device=device)
+    # 命中缓存：直接复用已加载/预热的 encoder 实例
+    key = (str(model), str(device or ""))
+    cached = _ENCODER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    encoder = ReID(model, device=device)
+    if len(_ENCODER_CACHE) >= _ENCODER_CACHE_MAX:
+        # (model, device) 组合极少，超限时直接清空重建即可保持有界
+        _ENCODER_CACHE.clear()
+    _ENCODER_CACHE[key] = encoder
+    return encoder
 
 
 def smooth_feature(

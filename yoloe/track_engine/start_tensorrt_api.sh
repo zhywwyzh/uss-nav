@@ -6,12 +6,19 @@ YOLOE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${YOLOE_ROOT}"
 
-# v2: 使用官方 model.track(persist=True) + VLM bbox→track_id 匹配
-# 默认 tracker: botsort (自带 GMC + 低分救援，适合无人机)
-# HTTP 请求中可通过 "tracker" 字段覆盖: botsort/bytetrack/deepocsort/ocsort
-# CPU7: 检测器单核
-# python track_engine/tensorrt-api.py \
-taskset -c 7 python track_engine/tensorrt-api.py \
+# v3: 显式会话协议 + 显式管线（detect → 类别过滤 → tracker.update → 身份筛选）
+# tracker 类型由客户端 /session/start 请求指定（run_main 默认 deepocsort），
+# 实际生效的 tracker/ReID/GMC 配置见启动横幅与会话 start 日志
+#
+# CPU 亲和性：默认绑定 CPU7（整个进程及继承亲和性的线程）；设 YOLOE_TRT_CPUS 为
+# 空串则不绑核（用于资源对照实验），或设为逗号分隔的核集合（如 "6,7"）
+CPUS="${YOLOE_TRT_CPUS-7}"
+RUN_PREFIX=()
+if [[ -n "${CPUS}" ]]; then
+  RUN_PREFIX=(taskset -c "${CPUS}")
+fi
+
+"${RUN_PREFIX[@]}" python track_engine/tensorrt-api.py \
   --pt-model "${YOLOE_ROOT}/pretrain/yoloe-26n-seg.pt" \
   --engine "${YOLOE_ROOT}/pretrain/yoloe-26n-seg.engine" \
   --classes "${YOLOE_ROOT}/prompt/prompt.txt" \
