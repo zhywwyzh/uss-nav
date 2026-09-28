@@ -20,6 +20,8 @@
 #include <quadrotor_msgs/Instruction.h>
 #include <quadrotor_msgs/AgentPrompt.h>
 #include <quadrotor_msgs/GPSPosition.h>
+#include <quadrotor_msgs/TakeoffLand.h>
+#include <quadrotor_msgs/EgoWaypointRouteResult.h>
 #include <sensor_msgs/BatteryState.h>
 #include <nav_msgs/Path.h>
 // include your msg type here
@@ -45,6 +47,8 @@
   X("quadrotor_msgs/AgentPrompt", quadrotor_msgs::AgentPrompt)         \
   X("std_msgs/Int32", std_msgs::Int32)                                 \
   X("quadrotor_msgs/GPSPosition", quadrotor_msgs::GPSPosition)         \
+  X("quadrotor_msgs/TakeoffLand", quadrotor_msgs::TakeoffLand)         \
+  X("quadrotor_msgs/EgoWaypointRouteResult", quadrotor_msgs::EgoWaypointRouteResult) \
   X("sensor_msgs/BatteryState", sensor_msgs::BatteryState)             \
   X("nav_msgs/Path", nav_msgs::Path)                                   
 
