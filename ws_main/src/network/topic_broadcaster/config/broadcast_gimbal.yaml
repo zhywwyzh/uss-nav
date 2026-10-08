@@ -1,0 +1,42 @@
+# 广播器节点配置（云台相机版 / Gimbal）
+# 复制自 broadcast_real.yaml：Realsense 已替换为 Z-1Mini 云台相机。
+# - rgb 改用 /gimbal_bridge/image/compressed（10Hz JPEG）
+# - depth 无真实来源，由 fake_gimbal_depth.py 发布同戳恒值深度（仅满足推理服务组帧要求）
+# - in 话题与 realsense 链路共用 /yoloe/encodemask（两条链路单连接互斥，不会同时跑）；假深度仅用于组帧，禁用于 3D 重建
+
+connection:
+  server_ip: "127.0.0.1"    # 外部服务地址（外部服务为 TCP server）
+  server_port: 9010          # 外部服务监听端口
+  reconnect_min_sec: 1.0     # 重连最小退避时间(秒)
+  reconnect_max_sec: 5.0     # 重连最大退避时间(秒，指数退避封顶)
+  send_timeout_ms: 100       # 单帧发送超时(毫秒)，超时即放弃该帧
+  queue_size: 8              # 上行发送队列容量(帧)，队满丢最旧
+
+# 同步打包发送（sync_pack）：云台版。
+# rgb/depth 假深度同戳（fake_gimbal_depth.py 复制 rgb 的 header.stamp），
+# ApproximateTime 恒命中；odom 取最近缓存值。
+sync_pack:
+  enable: true
+  rgb_topic: /gimbal_bridge/image/compressed
+  depth_topic: /gimbal_bridge/depth/compressed
+  odom_topic: /ekf_quat/ekf_odom
+  rgb_depth_slop: 0.1        # rgb/depth 强同步容差(秒)
+  odom_slop: 0.1              # odom 允许的延迟(秒)，取最近值即可
+  max_freq: 20                # 组合帧节流上限(Hz)
+  topic_id: 50                # 组合帧的帧协议话题号
+
+# sync_pack 启用后，下方 out 独立三条被跳过（不生效），仅作参考。
+broadcast_topics:
+  out:
+    - topic: /gimbal_bridge/image/compressed
+      codec: raw
+      max_freq: 10
+    - topic: /gimbal_bridge/depth/compressed
+      codec: raw
+      max_freq: 10
+    - topic: /ekf_quat/ekf_odom
+      codec: json
+      max_freq: 30
+  in:
+    - topic: /yoloe/encodemask
+      codec: encodemask
