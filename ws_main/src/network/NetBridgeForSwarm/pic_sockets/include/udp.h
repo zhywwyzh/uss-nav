@@ -36,7 +36,7 @@ namespace udp
 
 #define UDP_PACK_SIZE   512
 #define UDP_QUE_SIZE    1000
-#define PACK_TIMEOUT    200  // ms
+#define PACK_TIMEOUT    2000  // ms
 #define PIECE_TIMEOUT   50   // ms
 
 #define MIN_PACK_SIZE   64

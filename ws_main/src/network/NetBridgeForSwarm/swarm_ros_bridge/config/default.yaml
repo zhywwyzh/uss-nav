@@ -1,4 +1,3 @@
-
 config:
   debug: false                    # for debug only
   odom_convert: true              # convert odom to posestamped using odom_convert_node
@@ -17,22 +16,12 @@ services:
     srcPort: 2000
     prefix: true
 
+# --------- L3 v3: 6-topic real link ---------- #
+# 机载 VLA 桥(bridge_drone.launch)用的表,必须与站侧
+#   Real-Flight/src/ros_bridge/swarm_ros_bridge/config/obj_nav_cfg.yaml 的 topics 段逐条一致
+#   (同 topic/msg_type/端口/src-dst)。
 topics:
-# --------- Swarm Info ---------- #
-# - topic_name: /drone_0_ego_planner_node/grid_map/occupancy_inflate
-#   msg_type: sensor_msgs/PointCloud2
-#   cloudCompress: true
-#   cloudDownsample: -1.0
-#   cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
-#   srcIP:
-#     - drone1
-#   srcPort: 3001
-#   max_freq: 5
-#   dstIP:
-#     - groundStation0
-#   prefix: true
-#   same_prefix: true
-
+# odom: drone -> station
 - topic_name: /ekf_quat/ekf_odom
   msg_type: nav_msgs/Odometry
   srcIP:
@@ -44,45 +33,106 @@ topics:
   prefix: false
   same_prefix: false
 
-- topic_name: /goal_with_id_from_station
-  msg_type: quadrotor_msgs/GoalSet
+# fov-limited cloud: drone -> station
+- topic_name: /cloud_fov_limited
+  msg_type: sensor_msgs/PointCloud2
+  cloudCompress: false
+  cloudDownsample: -1.0
+  cloudType: normal
+  srcIP:
+    - drone1
+  srcPort: 3006
+  max_freq: 10
+  dstIP:
+    - groundStation0
+  prefix: false
+  same_prefix: false
+
+# full omni cloud (FAST-LIO world frame, MID-360 360°): drone -> station
+# 世界模型 metric depth 用;max_freq 5 + 0.10m 体素降采样控制带宽
+- topic_name: /cloud_registered
+  msg_type: sensor_msgs/PointCloud2
+  cloudCompress: false
+  cloudDownsample: 0.10
+  cloudType: normal
+  srcIP:
+    - drone1
+  srcPort: 3016
+  max_freq: 5
+  dstIP:
+    - groundStation0
+  prefix: false
+  same_prefix: false
+
+# scene graph markers: drone -> station
+- topic_name: /scene_graph/vis
+  msg_type: visualization_msgs/MarkerArray
+  srcIP:
+    - drone1
+  srcPort: 3007
+  max_freq: 10
+  dstIP:
+    - groundStation0
+  prefix: false
+  same_prefix: false
+
+# instruction: station -> drone
+- topic_name: /bridge/Instruct
+  msg_type: quadrotor_msgs/Instruction
   srcIP:
     - groundStation0
-  srcPort: 3003
+  srcPort: 3008
   max_freq: -1
   dstIP:
-    - drone0
+    - drone1
   prefix: false
   same_prefix: false
 
+# agent prompt: station -> drone
+- topic_name: /agent_prompt
+  msg_type: quadrotor_msgs/AgentPrompt
+  srcIP:
+    - groundStation0
+  srcPort: 3009
+  max_freq: -1
+  dstIP:
+    - drone1
+  prefix: false
+  same_prefix: false
+
+# camera: drone -> station (imgResizeRate 在发送侧生效)
 - topic_name: /camera/color/image_raw
   msg_type: sensor_msgs/Image
-  imgResizeRate: 0.5
+  imgResizeRate: 1.0
   srcIP:
-    - drone0
-  srcPort: 3005
-  max_freq: 24
+    - drone1
+  srcPort: 4012
+  max_freq: 5
   dstIP:
     - groundStation0
   prefix: false
   same_prefix: false
 
-# - topic_name: /drone_0_ego_planner_node/grid_map/occupancy
-#   msg_type: sensor_msgs/PointCloud2
-#   cloudCompress: true
-#   cloudDownsample: -1.0
-#   cloudType: normal        # Options: "normal" (PointXYZ), "rgb" (PointXYZRGB), "rgba" (PointXYZRGBA)
-#   srcIP:
-#     - drone1
-#   srcPort: 3006
-#   max_freq: 5
-#   dstIP:
-#     - groundStation0
-#   prefix: true
-#   same_prefix: true
+# planner mode trigger: station -> drone(世界模型下发前的模式 burst)
+- topic_name: /uav_planner/trigger
+  msg_type: std_msgs/Int32
+  srcIP:
+    - groundStation0
+  srcPort: 3019
+  max_freq: -1
+  dstIP:
+    - drone1
+  prefix: false
+  same_prefix: false
 
-
-
-
-
-
+# takeoff/land controller command: station -> drone(世界模型 LAND_ON_TARGET)
+- topic_name: /px4ctrl/takeoff_land
+  msg_type: quadrotor_msgs/TakeoffLand
+  srcIP:
+    - groundStation0
+  srcPort: 3020
+  max_freq: -1
+  dstIP:
+    - drone1
+  prefix: false
+  same_prefix: false

@@ -1211,6 +1211,7 @@ namespace ego_planner
     int piece_id = end_id / K;
     double end_time = duras.block(0, 0, piece_id, 1).sum() +
                       (piece_id < duras.size() ? duras(piece_id) / K * (end_id % K) : 0.0);
+    end_time = std::max(0.0, std::min(end_time, traj.getTotalDuration()));
     traj_.setLocalTraj(traj, end_time, ros::Time::now().toSec(), pp_.drone_id, (set_uk_info ? &(poly_traj_opt_->getControlPoints().ent_uk) : NULL));
 
     return true;

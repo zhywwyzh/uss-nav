@@ -26,6 +26,7 @@
     <arg name="target4_z" default="0.0"/>
     <!-- topic of your odometry such as VIO or LIO -->
     <arg name="odom_topic" default="/ekf_quat/ekf_odom"/>
+    <arg name="cloud_topic" default="/cloud_registered"/>
     <arg name="tracking_backend" default="ego"/>
     <arg name="tracking_target_odom_topic" default="/target_ekf_odom"/>
     <arg name="planner_cmd_mux_ego_topic" default="/planner_mux/ego_position_cmd"/>
@@ -58,8 +59,7 @@
         <arg name="depth_topic" value="pcl_render_node/depth"/>
         <!-- topic of point cloud measurement, such as from LIDAR  -->
         <!-- don't set camera pose and depth, if you already set this one! -->
-        <arg name="cloud_topic" value="/cloud_fov_limited"/>
-        <!-- <arg name="cloud_topic" value="laserMapping/cloud_registered"/> -->
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <!-- intrinsic params of the depth camera -->
         <arg name="cx" value="327.096"/>
         <arg name="cy" value="242.697"/>

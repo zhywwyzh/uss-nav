@@ -446,6 +446,12 @@ namespace ego_planner
     last_pos_ = pos;
   }
 
+  void TrajServer::silencePublishing() {
+    receive_traj_ = false;
+    yaw_given_.reach_given_yaw_ = true;
+    yaw_given_.look_forward = true;
+  }
+
   void TrajServer::cmdThread(void *obj)
   {
     TrajServer *tsvr = reinterpret_cast<TrajServer *>(obj);

@@ -27,10 +27,9 @@ bool SceneGraph::initSceneGraph(const Eigen::Vector3d &cur_pos, double yaw) {
         INFO_MSG("Init SceneGraph Success!");
         return true;
     }else {
-        ROS_ERROR("Init SceneGraph Error, Please Reboot!");
-        exit(1);
+        ROS_WARN("Init SceneGraph failed, will retry in next WARM_UP cycle");
+        return false;
     }
-    return false;
 }
 
 void SceneGraph::updateSceneGraph(const Eigen::Vector3d &cur_pos, const double &yaw, bool &new_topo) {

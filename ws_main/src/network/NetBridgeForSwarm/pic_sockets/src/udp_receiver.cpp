@@ -560,7 +560,7 @@ void UDPReceiver::work_func()
         {
             RecvHead* head = it->second;
 
-            if (timestamp - head->timestamp > PACK_TIMEOUT * 1000)
+            if (timestamp - head->timestamp > pack_timeout * 1000)
             {   // 超时，认为丢包，交付。
                 head->flag = FLAG_LOST;
                 delete[] head->buffer;

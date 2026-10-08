@@ -458,11 +458,29 @@ namespace ego_planner
       cout << " SX" << flag_escape_emergency_ << "|" << enable_fail_safe_ << "|" << odom_vel_.norm() << flush;
       if (flag_escape_emergency_) // Avoiding repeated calls
       {
-        callEmergencyStop(odom_pos_);
+        if (mandatory_stop_)
+        {
+          traj_server_.silencePublishing();
+        }
+        else
+        {
+          callEmergencyStop(odom_pos_);
+        }
       }
       else
       {
-        if (enable_fail_safe_ && odom_vel_.norm() < 0.1)
+        if (mandatory_stop_ && odom_vel_.norm() < 0.1)
+        {
+          ROS_WARN("Mandatory stop recovered (velocity ~0), waiting for a new target.");
+          resetMandatoryStopState();
+          flag_escape_emergency_ = false;
+          have_target_ = false;
+          have_trigger_ = false;
+          pending_goal_finish_trigger_ = false;
+          goal_finish_stable_start_time_ = ros::Time(0);
+          changeFSMExecState(WAIT_TARGET, "Mandatory Stop Recover");
+        }
+        else if (enable_fail_safe_ && odom_vel_.norm() < 0.1)
           changeFSMExecState(GEN_NEW_TRAJ, "EGOFSM");
       }
 
@@ -725,6 +743,8 @@ namespace ego_planner
                                     : traj->duration;
     const double t_step = map->cur_->getResolution() /
                           ((traj->traj.getJuncPos(0) - traj->traj.getJuncPos(traj->traj.getPieceNum())).norm() / should_be_safe_dura) / 2;
+    if (!std::isfinite(t_step) || t_step <= 1e-6)
+      return;
     int occ = 0;
     for (double t = t_cur; t <= end_chk_time && !dangerous && occ != GRID_MAP_OUTOFREGION_FLAG; t += t_step)
     {

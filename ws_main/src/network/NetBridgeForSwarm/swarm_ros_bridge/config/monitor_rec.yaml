@@ -1,0 +1,84 @@
+# monitor_rec.yaml —— rec 扩展桥(rec-diff one-off;不改 default.yaml / obj_nav_cfg.yaml)
+#
+# 主桥只带 L3 v3 的 6 条 topic;这里补 DiffPaw 真机链路需要、而主桥没有的:
+#   /monitor/vla_state           (4013)  agent FSM(站侧 IO 测试/UI)
+#   /agent_run/log               (4014)  agent 过程日志
+#   /agent_run/worldmodel_result (4015)  worldmodel 任务结果(std_msgs/String)
+#   /rtk/gps_position            (4016)  RTK 定位(DiffPaw amap 导航起点)
+#   /mavros/battery              (4017)  电池电压/电量(DiffPaw 运行时上下文)
+# 独立 bridge 节点加载,端口与主桥(≤4012)不重叠;两侧端口/类型必须一致。
+config:
+  debug: false
+  odom_convert: true
+  monitor_node: false
+  warn_threshold: 3
+  monitor_rate_hz: 500
+
+services: []
+
+topics:
+  - topic_name: /monitor/vla_state
+    msg_type: std_msgs/Int32
+    srcIP:
+      - drone1
+    srcPort: 4013
+    max_freq: 10
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /agent_run/log
+    msg_type: std_msgs/String
+    srcIP:
+      - drone1
+    srcPort: 4014
+    max_freq: -1
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /agent_run/worldmodel_result
+    msg_type: std_msgs/String
+    srcIP:
+      - drone1
+    srcPort: 4015
+    max_freq: -1
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /rtk/gps_position
+    msg_type: quadrotor_msgs/GPSPosition
+    srcIP:
+      - drone1
+    srcPort: 4016
+    max_freq: 10
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /mavros/battery
+    msg_type: sensor_msgs/BatteryState
+    srcIP:
+      - drone1
+    srcPort: 4017
+    max_freq: 10
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false
+
+  - topic_name: /planning/route_exec_result
+    msg_type: quadrotor_msgs/EgoWaypointRouteResult
+    srcIP:
+      - drone1
+    srcPort: 4018
+    max_freq: -1
+    dstIP:
+      - groundStation0
+    prefix: false
+    same_prefix: false

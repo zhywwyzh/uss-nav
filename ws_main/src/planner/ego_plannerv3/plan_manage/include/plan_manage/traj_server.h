@@ -110,6 +110,7 @@ namespace ego_planner
         void syncYawFromOdom(const double yaw, const std::string& source = "");
         void feedDog();
         void resetLastPos(const Eigen::Vector3d pos);
+        void silencePublishing();
 
         YAW_GIVEN yaw_given_;
 
