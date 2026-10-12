@@ -121,6 +121,8 @@ namespace ego_planner
     bool if_handle_yaw_{false};
     bool pending_goal_finish_trigger_;
     ros::Time goal_finish_stable_start_time_;
+    ros::Time aim_finish_stable_since_{ros::Time(0)};
+    uint8_t active_goal_source_task_id_{255};
     FSM_EXEC_STATE exec_state_;
 
     Eigen::Vector3d start_pt_, start_vel_, start_acc_, start_jerk_; // start state
@@ -218,6 +220,7 @@ namespace ego_planner
     bool isWithinRouteFinishThreshold(const Eigen::Vector3d &goal) const;
     bool routeReachedFinal() const;
     bool tryFinishRouteByOdom();
+    bool tryFinishAimByOdom();
     void publishRouteResult(bool success, bool reached_final, const std::string &reason);
     void clearRouteState();
     void resetMandatoryStopState();
