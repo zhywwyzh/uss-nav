@@ -73,6 +73,9 @@ add_message_files(
   DetectOut.msg
   VLASwarmBBox.msg
   VLASwarmTarget.msg
+  ScanGoalRequest.msg
+  ScanGoalFeedback.msg
+  ScanInspectionResult.msg
 )
 
 generate_messages(

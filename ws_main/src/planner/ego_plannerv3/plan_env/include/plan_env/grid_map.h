@@ -221,6 +221,7 @@ public:
   inline int getOccupancy(const Eigen::Vector3d &pos, bool ignore_virtual_wall = false) const;
   inline int getInflateOccupancy(const Eigen::Vector3d &pos) const;
   inline int getRawInflateOccupancy(const Eigen::Vector3d &pos) const;
+  inline bool isKnownFreeForGoal(const Eigen::Vector3d &pos); // Phase B: 扫描候选组合安全查询
   inline double getDistance(const Eigen::Vector3d &pos) const;
   inline double getDistance(const Eigen::Vector3i &id) const; // not recommaneded
   inline double getDistancePessi(const Eigen::Vector3d &pos) const;
@@ -670,6 +671,26 @@ inline int GridMap::getRawInflateOccupancy(const Eigen::Vector3d &pos) const
     return 0;
 
   return int(md_.occ_buf_inf_[globalIdx2InfBufIdx(pos2GlobalIdx(pos))]);
+}
+
+// Phase B: 扫描候选点组合安全查询 —— 当前是否为"已知自由"。
+// 仅当地图已初始化、点在 raw 与膨胀缓冲内且未越虚拟墙、raw occupancy==FREE 且 raw inflated==0 时返回 true。
+// 短时锁 mtx_ 保护读取, 不进行轨迹规划/不嵌套输出拷贝锁。
+// 返回 false 表示"当前不可确认可用", 不代表永久不可达。
+inline bool GridMap::isKnownFreeForGoal(const Eigen::Vector3d &pos)
+{
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!isInited())
+    return false;
+  if (mp_.enable_virtual_walll_ && (pos(2) >= mp_.virtual_ceil_ || pos(2) <= mp_.virtual_ground_))
+    return false;
+  if (!isInBuf(pos) || !isInInfBuf(pos))
+    return false;
+  if (getRawOccupancy(pos) != FREE)
+    return false;
+  if (getRawInflateOccupancy(pos) != 0)
+    return false;
+  return true;
 }
 
 inline double GridMap::getDistance(const Eigen::Vector3d &pos) const
