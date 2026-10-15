@@ -102,6 +102,7 @@ namespace ego_planner
     if_handle_yaw_sub_ = nh.subscribe("if_handle_yaw", 10, &EGOReplanFSM::ifHandleYawCallback, this);
     face_center_sub_ = nh.subscribe("/planning/face_target_center", 10,
                                     &EGOReplanFSM::faceTargetCenterCallback, this);
+    scan_goal_sub_ = nh.subscribe("scan_local_goal", 10, &EGOReplanFSM::scanGoalCallback, this);
 
     /* Use MINCO trajectory to minimize the message size in wireless communication */
     broadcast_ploytraj_pub_ = nh.advertise<traj_utils::MINCOTraj>("planning/broadcast_traj_send", 10);
@@ -118,6 +119,8 @@ namespace ego_planner
     ego_state_trigger_pub_ = nh.advertise<quadrotor_msgs::EgoStateTrigger>("/planning/ego_state_trigger", 10);
     goal_processed_pub_ = nh.advertise<geometry_msgs::PointStamped>("/planning/goal_processed", 10);
     route_result_pub_ = nh.advertise<quadrotor_msgs::EgoWaypointRouteResult>("/planning/route_exec_result", 10);
+    scan_feedback_pub_ = nh.advertise<quadrotor_msgs::ScanGoalFeedback>("scan_goal_feedback", 10);
+    scan_feedback_ready_ = true;
 
     // ROS_INFO("Wait for 3 seconds.");
     // ros::Time t0 = ros::Time::now();
@@ -413,6 +416,7 @@ namespace ego_planner
             gp_msg.point.z = final_goal_.z();
             goal_processed_pub_.publish(gp_msg);
           }
+          scanOnTrajectoryEnded(true);
           changeFSMExecState(WAIT_TARGET, "EGOFSM");
         }
         else
@@ -429,6 +433,7 @@ namespace ego_planner
             gp_msg.point.z = final_goal_.z();
             goal_processed_pub_.publish(gp_msg);
           }
+          scanOnTrajectoryEnded(false);
           changeFSMExecState(WAIT_TARGET, "EGOFSM"); // no better choises
         }
       }
@@ -1120,6 +1125,8 @@ namespace ego_planner
     // if (msg->goal[2] < -0.1)
     //   return;
 
+    if (scan_active_)
+      scanSupersede("superseded_by_waypoint");
     Eigen::Vector3d end_wp;
     end_wp << msg->pose.position.x, msg->pose.position.y, 1.0;
 
@@ -1139,6 +1146,8 @@ namespace ego_planner
       return;
     std::cout << "[Ego]: <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << std::endl;
 
+    if (scan_active_)
+      scanSupersede("superseded_by_yaw_preset");
     clearRouteState();
     initEgoPlanResult();
     Eigen::Vector3d end_wp(msg->goal[0], msg->goal[1], msg->goal[2]);
@@ -1204,6 +1213,8 @@ namespace ego_planner
       return;
 
     std::cout << "[Ego]: <<<<<<<<<<<<<<<<<< New Goal <<<<<<<<<<<<<<<<<< " << std::endl;
+    if (scan_active_)
+      scanSupersede("superseded_by_aim");
     clearRouteState();
     initEgoPlanResult();
     target_pos_ = Eigen::Vector3d(msg->goal[0], msg->goal[1], msg->goal[2]);
@@ -1304,6 +1315,8 @@ namespace ego_planner
     resetMandatoryStopState();
     if (have_route_)
       publishRouteResult(false, false, "superseded_by_new_route");
+    if (scan_active_)
+      scanSupersede("superseded_by_route");
     clearRouteState();
     initEgoPlanResult();
 
@@ -1723,6 +1736,257 @@ namespace ego_planner
     flag_escape_emergency_ = true;
   }
 
+  /* ----------------- scan goal feedback (graph6) ----------------- */
+
+  void EGOReplanFSM::scanClearContext()
+  {
+    // 保留 session/request/last_terminal 作为同请求去重记录, 只清活动态。
+    scan_active_ = false;
+    scan_candidates_.clear();
+    scan_candidate_cursor_ = 0;
+    scan_candidate_index_ = -1;
+  }
+
+  void EGOReplanFSM::scanPublishFeedback(uint8_t status, const std::string &reason)
+  {
+    quadrotor_msgs::ScanGoalFeedback fb;
+    fb.header.stamp = ros::Time::now();
+    fb.header.frame_id = "world";
+    fb.drone_id = (planner_manager_ ? planner_manager_->pp_.drone_id : 0);
+    fb.session_id = scan_session_id_;
+    fb.request_id = scan_request_id_;
+    fb.waypoint_id = scan_waypoint_id_;
+    fb.event_seq = scan_event_seq_++;
+    fb.status = status;
+    fb.requested_goal.x = scan_requested_goal_(0);
+    fb.requested_goal.y = scan_requested_goal_(1);
+    fb.requested_goal.z = scan_requested_goal_(2);
+    fb.execution_goal.x = scan_execution_goal_(0);
+    fb.execution_goal.y = scan_execution_goal_(1);
+    fb.execution_goal.z = scan_execution_goal_(2);
+    fb.candidate_index = scan_candidate_index_;
+    fb.map_seq = 0;
+    fb.reason = reason;
+    if (scan_feedback_ready_)
+      scan_feedback_pub_.publish(fb);
+    if (status == quadrotor_msgs::ScanGoalFeedback::REACHED ||
+        status == quadrotor_msgs::ScanGoalFeedback::REJECTED ||
+        status == quadrotor_msgs::ScanGoalFeedback::FAILED ||
+        status == quadrotor_msgs::ScanGoalFeedback::CANCELLED)
+    {
+      scan_terminal_sent_ = true;
+      scan_last_terminal_status_ = status;
+    }
+    ROS_INFO("[Ego][SCAN] feedback status=%u req=%u wp=%u seq=%u reason=%s",
+             static_cast<unsigned int>(status), scan_request_id_, scan_waypoint_id_,
+             fb.event_seq, reason.c_str());
+  }
+
+  void EGOReplanFSM::scanCancel(const std::string &reason)
+  {
+    if (!scan_active_)
+      return;
+    scanPublishFeedback(quadrotor_msgs::ScanGoalFeedback::CANCELLED, reason);
+    scanClearContext();
+    have_target_ = false;
+    have_trigger_ = false;
+    pending_goal_finish_trigger_ = false;
+    goal_finish_stable_start_time_ = ros::Time(0);
+    clearRouteState();
+    callEmergencyStop(odom_pos_);
+    changeFSMExecState(WAIT_TARGET, "scan_cancel");
+  }
+
+  void EGOReplanFSM::scanSupersede(const std::string &reason)
+  {
+    if (!scan_active_)
+      return;
+    // 被普通目标替代: 只终结旧扫描上下文, 不额外停车 (由新目标接管)。
+    scanPublishFeedback(quadrotor_msgs::ScanGoalFeedback::CANCELLED, reason);
+    scanClearContext();
+  }
+
+  void EGOReplanFSM::scanOnTrajectoryEnded(bool touch_goal)
+  {
+    if (!scan_active_)
+      return;
+    const double age = last_odom_stamp_.isZero()
+                           ? std::numeric_limits<double>::infinity()
+                           : (ros::Time::now() - last_odom_stamp_).toSec();
+    const double dist = (odom_pos_ - scan_execution_goal_).norm();
+    const bool near_goal = (age <= scan_odom_max_age_ && dist <= scan_reach_tolerance_);
+    bool reached = false;
+    std::string reason;
+    if (touch_goal)
+    {
+      reached = near_goal;
+      reason = reached ? "reached" : "reached_but_offset";
+    }
+    else
+    {
+      // 轨迹端点未触及目标 (目标被改写/未严格收敛): ego-planner 常把碰撞目标改写到附近安全点,
+      // 无人机实际已停在容差内却因 touch_goal_ 为假被误判不可达。此处补上 odom 距离判据:
+      // 只要实际位置已在执行点容差内且 odom 新鲜, 仍判 REACHED, 避免把"已到位"当成 unreachable。
+      reached = near_goal;
+      reason = reached ? "reached_near_offset" : "unreachable";
+    }
+    scanPublishFeedback(reached ? quadrotor_msgs::ScanGoalFeedback::REACHED
+                                : quadrotor_msgs::ScanGoalFeedback::FAILED,
+                        reason);
+    scanClearContext();
+  }
+
+  void EGOReplanFSM::scanGoalCallback(const quadrotor_msgs::ScanGoalRequestConstPtr &msg)
+  {
+    if (msg->goal.drone_id != planner_manager_->pp_.drone_id)
+      return;
+
+    const bool same_context =
+        (msg->session_id == scan_session_id_) && (msg->request_id == scan_request_id_);
+
+    if (msg->command == quadrotor_msgs::ScanGoalRequest::CANCEL)
+    {
+      if (scan_active_ && same_context)
+        scanCancel("cancel_request");
+      else if (scan_terminal_sent_ && same_context)
+        scanPublishFeedback(scan_last_terminal_status_, "cancel_resend");
+      // 其他会话/旧请求的 CANCEL: 忽略
+      return;
+    }
+
+    if (msg->command != quadrotor_msgs::ScanGoalRequest::EXECUTE)
+      return;
+
+    if (scan_active_ && same_context)
+    {
+      ROS_INFO("[Ego][SCAN] duplicate EXECUTE req=%u ignored.", scan_request_id_);
+      return; // 同请求重传: 幂等
+    }
+    if (scan_terminal_sent_ && same_context)
+    {
+      scanPublishFeedback(scan_last_terminal_status_, "terminal_resend");
+      return;
+    }
+
+    if (scan_active_)
+      scanSupersede("superseded_by_new_request");
+
+    // 装载上下文 (即使目标非法也要先可被反馈识别)
+    scan_session_id_ = msg->session_id;
+    scan_request_id_ = msg->request_id;
+    scan_waypoint_id_ = msg->waypoint_id;
+    scan_goal_kind_ = msg->goal_kind;
+    scan_event_seq_ = 0;
+    scan_terminal_sent_ = false;
+    scan_candidates_.clear();
+    for (const auto &p : msg->candidates)
+      scan_candidates_.push_back(Eigen::Vector3d(p.x, p.y, p.z));
+
+    for (int i = 0; i < 3; ++i)
+    {
+      if (!std::isfinite(msg->goal.goal[i]))
+      {
+        ROS_ERROR("[Ego][SCAN] reject non-finite goal.");
+        scan_requested_goal_ = Eigen::Vector3d::Zero();
+        scan_execution_goal_ = Eigen::Vector3d::Zero();
+        scan_candidate_index_ = -1;
+        scan_active_ = true;
+        scanPublishFeedback(quadrotor_msgs::ScanGoalFeedback::REJECTED, "non_finite_goal");
+        scanClearContext();
+        return;
+      }
+    }
+
+    scan_requested_goal_ = Eigen::Vector3d(msg->goal.goal[0], msg->goal.goal[1], msg->goal.goal[2]);
+    const double rt = msg->reach_tolerance;
+    scan_reach_tolerance_ = (std::isfinite(rt) && rt > 0.0) ? rt : 1.0;
+    const double age = msg->odom_max_age;
+    scan_odom_max_age_ = (std::isfinite(age) && age > 0.0) ? age : 1.0;
+
+    // Phase B: 从所给候选列表选择第一个地图"已知自由"的候选, 每请求只执行一个候选。
+    scan_candidate_cursor_ = 0;
+    int chosen = -1;
+    Eigen::Vector3d chosen_pos = scan_requested_goal_;
+    if (msg->goal_kind == quadrotor_msgs::ScanGoalRequest::GOAL_KIND_OBSERVATION &&
+        planner_manager_ && planner_manager_->map_ && planner_manager_->map_->cur_)
+    {
+      for (size_t i = 0; i < scan_candidates_.size(); ++i)
+      {
+        if (planner_manager_->map_->cur_->isKnownFreeForGoal(scan_candidates_[i]))
+        {
+          chosen = static_cast<int>(i);
+          chosen_pos = scan_candidates_[i];
+          break;
+        }
+      }
+      if (chosen < 0)
+      {
+        // 候选全部非"已知自由" (首次到访/未建图区域): 回退到请求原点尝试, 与 legacy EgoGoalSet 行为一致。
+        // 仍由 planner 负责碰撞规避: 不可达会回 FAILED 由扫描端恢复/跳过, 不会静默飞向已占据格点。
+        ROS_WARN("[Ego][SCAN] no known-free candidate; trying requested goal (unmapped fallback).");
+        chosen_pos = scan_requested_goal_;
+      }
+    }
+    scan_candidate_index_ = (chosen >= 0) ? chosen : (scan_candidates_.empty() ? -1 : 0);
+    scan_execution_goal_ = (chosen >= 0) ? chosen_pos : scan_requested_goal_;
+    scan_active_ = true;
+
+    ROS_INFO("[Ego][SCAN] EXECUTE req=%u wp=%u goal=(%.2f, %.2f, %.2f)",
+             scan_request_id_, scan_waypoint_id_, scan_execution_goal_(0),
+             scan_execution_goal_(1), scan_execution_goal_(2));
+
+    clearRouteState();
+    initEgoPlanResult();
+    target_pos_ = scan_execution_goal_;
+    visualization_->displayGoalPoint(target_pos_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
+
+    double yaw = msg->goal.yaw;
+    target_yaw_mode_ = msg->goal.yaw_mode;
+    if (target_yaw_mode_ == quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL && msg->goal.yaw_low_speed)
+      target_yaw_mode_ = quadrotor_msgs::EgoGoalSet::YAW_MODE_LOW_SPEED;
+    target_yaw_path_mode_ = msg->goal.yaw_path_mode;
+    if (target_yaw_path_mode_ == quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST)
+    {
+      while (yaw > M_PI) yaw -= 2 * M_PI;
+      while (yaw < -M_PI) yaw += 2 * M_PI;
+    }
+    target_yaw_ = yaw;
+    target_look_forward_ = msg->goal.look_forward;
+
+    Eigen::Vector3d dxy = target_pos_ - odom_pos_;
+    aim_direction_ = atan2(dxy(1), dxy(0));
+    if (aim_direction_ > M_PI) aim_direction_ -= 2 * M_PI;
+    if (aim_direction_ < -M_PI) aim_direction_ += 2 * M_PI;
+
+    bool started = false;
+    if (if_handle_yaw_ && !traj_server_.hasFaceCenter())
+    {
+      changeFSMExecState(HANDLE_YAW, "scan_goal");
+      started = true;
+    }
+    else if (planNextWaypoint(target_pos_, target_yaw_, target_look_forward_,
+                              target_yaw_mode_, target_yaw_path_mode_))
+    {
+      have_trigger_ = true;
+      started = true;
+    }
+
+    if (started)
+    {
+      // 实际执行点与请求原目标不一致 (选中了改写候选) 时发 ADJUSTED, 让扫描端知道视角被调整;
+      // 只有实际目标确实变动才发, 不在高频 tick 重复广播。
+      const bool adjusted = (scan_execution_goal_ - scan_requested_goal_).norm() > 1e-3;
+      scanPublishFeedback(adjusted ? quadrotor_msgs::ScanGoalFeedback::ADJUSTED
+                                   : quadrotor_msgs::ScanGoalFeedback::ACCEPTED,
+                          adjusted ? "adjusted_candidate" : "accepted");
+    }
+    else
+    {
+      scanPublishFeedback(quadrotor_msgs::ScanGoalFeedback::REJECTED, "dispatch_failed");
+      scanClearContext();
+    }
+  }
+
   void EGOReplanFSM::readGivenWpsAndPlan()
   {
     if (waypoint_num_ <= 0)
@@ -1758,6 +2022,11 @@ namespace ego_planner
     {
       publishRouteResult(false, false, "mandatory_stop");
       clearRouteState();
+    }
+    if (scan_active_)
+    {
+      scanPublishFeedback(quadrotor_msgs::ScanGoalFeedback::CANCELLED, "mandatory_stop");
+      scanClearContext();
     }
     flag_escape_emergency_ = true;
     changeFSMExecState(EMERGENCY_STOP, "Mandatory Stop");

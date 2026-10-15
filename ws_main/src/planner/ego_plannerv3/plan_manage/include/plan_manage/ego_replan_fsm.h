@@ -22,6 +22,8 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/PointStamped.h>
 #include <quadrotor_msgs/EgoGoalSet.h>
+#include <quadrotor_msgs/ScanGoalRequest.h>
+#include <quadrotor_msgs/ScanGoalFeedback.h>
 #include <quadrotor_msgs/EgoWaypointRoute.h>
 #include <quadrotor_msgs/EgoWaypointRouteResult.h>
 #include <quadrotor_msgs/EgoPlannerResult.h>
@@ -51,6 +53,7 @@ namespace ego_planner
 
   private:
     friend class RouteExecutionTest;
+    friend class ScanGoalFeedbackTest;
     /* ---------- flag ---------- */
     enum FSM_EXEC_STATE
     {
@@ -168,6 +171,24 @@ namespace ego_planner
     double route_no_progress_timeout_{20.0}; // route 无前进超时，单位秒
     double route_corner_angle_deg_{55.0};    // 触发必停的转角阈值，单位度
 
+    // scan-mode task state (graph6 feedback): 独立于普通 EgoGoalSet 路径
+    bool scan_active_{false};        // 当前是否有活动扫描请求
+    bool scan_terminal_sent_{false}; // 本请求是否已发终态
+    bool scan_feedback_ready_{false}; // scan_feedback_pub_ 是否已 advertise (init 后置 true)
+    std::string scan_session_id_;
+    uint32_t scan_request_id_{0};
+    uint32_t scan_waypoint_id_{0};
+    uint8_t scan_goal_kind_{0};
+    Eigen::Vector3d scan_requested_goal_; // 请求原目标 (world)
+    Eigen::Vector3d scan_execution_goal_; // 实际执行目标 (world)
+    int32_t scan_candidate_index_{-1};    // 选定候选索引, 未选定为 -1
+    uint32_t scan_event_seq_{0};          // 每请求递增
+    uint8_t scan_last_terminal_status_{0};
+    double scan_reach_tolerance_{1.0};
+    double scan_odom_max_age_{1.0};
+    std::vector<Eigen::Vector3d> scan_candidates_;
+    size_t scan_candidate_cursor_{0};
+
     // handle yaw
     Eigen::Vector3d target_pos_;
     double target_yaw_;
@@ -186,6 +207,8 @@ namespace ego_planner
                     trigger_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, face_center_sub_;
     ros::Publisher data_disp_pub_, broadcast_ploytraj_pub_, ground_height_pub_, state_pub_, exec_finish_trigger_pub_, ego_state_trigger_pub_;
     ros::Publisher ego_plan_state_pub_, goal_processed_pub_, route_result_pub_;
+    ros::Publisher scan_feedback_pub_;
+    ros::Subscriber scan_goal_sub_;
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);
@@ -221,6 +244,14 @@ namespace ego_planner
     void publishRouteResult(bool success, bool reached_final, const std::string &reason);
     void clearRouteState();
     void resetMandatoryStopState();
+
+    /* scan goal feedback (graph6) */
+    void scanGoalCallback(const quadrotor_msgs::ScanGoalRequestConstPtr &msg);
+    void scanCancel(const std::string &reason);    // 显式取消: 清目标 + 停车 + WAIT_TARGET
+    void scanSupersede(const std::string &reason); // 被普通目标替代: 仅终结扫描上下文
+    void scanPublishFeedback(uint8_t status, const std::string &reason);
+    void scanClearContext();
+    void scanOnTrajectoryEnded(bool touch_goal);
 
     /* global trajectory */
     void waypointCallback(const geometry_msgs::PoseStampedPtr &msg);
