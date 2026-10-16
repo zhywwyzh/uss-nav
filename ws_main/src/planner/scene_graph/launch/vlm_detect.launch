@@ -1,5 +1,5 @@
 <launch>
-    <arg name="vlm_base_url"    default="http://119.45.181.200:8002/v1" />
+    <arg name="vlm_base_url"    default="http://175.178.162.198:8002/v1" />
     <arg name="vlm_api_key_env" default="DOUBAO_API_KEY" />
     <arg name="query_interval_s" default="2.0" />
     <arg name="rgb_topic"       default="/camera1/color_sync/image/compressed" />

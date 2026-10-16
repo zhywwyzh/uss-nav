@@ -36,12 +36,12 @@ NODE_NAME = "LLM_LOCAL_API_NODE"
 # 普通 SceneGraph 与 VLA-Swarm 文本 Prompt 默认使用 8002（Qwen3.6-35B-A3B）。
 TEXT_BASE_URL = os.environ.get(
     "SCENE_GRAPH_LOCAL_TEXT_BASE_URL",
-    "http://119.45.181.200:8002/v1",
+    "http://175.178.162.198:8002/v1",
 )
 # SmallMap 和前视 Observation 等视觉 Prompt 默认使用 8002。
 VISION_BASE_URL = os.environ.get(
     "SCENE_GRAPH_LOCAL_VISION_BASE_URL",
-    "http://119.45.181.200:8002/v1",
+    "http://175.178.162.198:8002/v1",
 )
 API_KEY = os.environ.get("SCENE_GRAPH_LOCAL_API_KEY", "EMPTY")
 TEXT_MODEL = os.environ.get("SCENE_GRAPH_LOCAL_TEXT_MODEL", "")
