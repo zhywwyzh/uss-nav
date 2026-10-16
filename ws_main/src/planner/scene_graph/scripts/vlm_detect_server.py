@@ -51,7 +51,7 @@ class VlmDetectServer:
         self.result_pub = rospy.Publisher(encodemask_topic, EncodeMask, queue_size=5)
 
         # ---- VLM 配置 ----
-        vlm_base_url = rospy.get_param("~vlm_base_url", "http://119.45.181.200:8002/v1")
+        vlm_base_url = rospy.get_param("~vlm_base_url", "http://134.175.217.70:8002/v1")
         vlm_api_key_env = rospy.get_param("~vlm_api_key_env", "DOUBAO_API_KEY")
         vlm_api_key = os.environ.get(vlm_api_key_env, "EMPTY")
         self.vlm_temperature = rospy.get_param("~vlm_temperature", 0.8)
