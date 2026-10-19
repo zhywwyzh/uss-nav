@@ -67,6 +67,38 @@ HEADER_SIZE = struct.calcsize(HEADER_STRUCT)  # 28 字节
 COMPRESSED_DEPTH_HEADER = struct.pack("<iff", 0, 0.0, 0.0)
 
 
+def _letterbox_params(orig_hw, canvas_hw):
+    """原图 -> letterbox 画布的缩放比与 padding（与 ultralytics 内部约定一致）。
+
+    返回 (r, pad_x, pad_y, new_w, new_h)。orig_hw == canvas_hw 时
+    r=1.0、pad_x=pad_y=0，调用方据此走恒等快路径。
+    """
+    oh, ow = float(orig_hw[0]), float(orig_hw[1])
+    ch, cw = float(canvas_hw[0]), float(canvas_hw[1])
+    r = min(cw / ow, ch / oh)
+    new_w, new_h = int(round(ow * r)), int(round(oh * r))
+    pad_x = int(round((cw - new_w) / 2.0 - 0.1))
+    pad_y = int(round((ch - new_h) / 2.0 - 0.1))
+    return r, pad_x, pad_y, new_w, new_h
+
+
+def _mask_to_canvas(mask, orig_shape, canvas_hw):
+    """把 ultralytics 的 letterbox mask 还原到 canvas_hw 画布。
+
+    mask 的空间尺寸可能小于 canvas（不同模型 stride 不同，实测出现过
+    480x384），因此按 mask 自身尺寸推导 letterbox 参数，而非假定等于
+    canvas。orig_shape 与 canvas_hw 相等时（仿真 640x480）直接返回，
+    不做任何重采样，保证字节级不变。
+    """
+    mh, mw = mask.shape[:2]
+    ch, cw = canvas_hw
+    if (mh, mw) == (ch, cw) and tuple(orig_shape) == (ch, cw):
+        return mask
+    _r, pad_x, pad_y, new_w, new_h = _letterbox_params(orig_shape, (mh, mw))
+    cropped = mask[pad_y:pad_y + new_h, pad_x:pad_x + new_w]
+    return cv2.resize(cropped, (cw, ch), interpolation=cv2.INTER_NEAREST)
+
+
 class FrameParser:
     """TCP 字节流帧解析器：处理粘包 / 半包（实现与 yoloe_remote_service.py 一致）。
 
@@ -783,16 +815,20 @@ class YoloRealTcpService:
                 # C++ 端 encodemask_codec 把 mask.format 写为 "png"，
                 # object_factory 走 cv_bridge PNG 解码分支还原为 480x640 单通道 Mat。
                 #
-                # 兜底策略（detect 模型无 masks.data）：
-                # - segment 模型：用 result.masks.data 生成真实分割 mask
-                # - detect 模型：从 result.boxes.xyxy 构造 480x640 矩形 mask
-                #   坐标系直接对齐 imgsz=(480,640)，无需缩放；下游 nav_yolo_mixin
-                #   用 np.where(mask>0) 取质心 + boundingRect 取 bbox，矩形 mask
-                #   在语义上等价于 bbox，深度投影仍由下游 mask+depth 路径完成。
+                # 坐标系说明（两分支语义不同，勿混用）：
+                # - segment 分支：result.masks.data 是 letterbox 空间（含上下/左右 pad），
+                #   需经 _mask_to_canvas 去 pad 后重采样到 480x640；
+                # - detect 分支：result.boxes.xyxy 是原图坐标，需按纯拉伸比例
+                #   (imgsz_w/orig_w, imgsz_h/orig_h) 映射到画布（下游 _normalize_mask_to_shape
+                #   把画布纯拉伸回原图，故不能做 letterbox 映射）。
+                #   下游 nav_yolo_mixin 用 np.where(mask>0) 取质心 + boundingRect 取 bbox，
+                #   矩形 mask 在语义上等价于 bbox，深度投影仍由下游 mask+depth 路径完成。
                 if masks_np is not None:
-                    # segment 分支：直接用模型输出的真实分割 mask
+                    # segment 分支：masks_np 是 letterbox 空间，先还原到 480x640 画布
+                    canvas_hw = (self.imgsz_h, self.imgsz_w)
+                    orig_shape = tuple(result.orig_shape)
                     for i in range(len(masks_np)):
-                        single_mask = masks_np[i]
+                        single_mask = _mask_to_canvas(masks_np[i], orig_shape, canvas_hw)
                         binary_mask = (single_mask * 255).astype(np.uint8)
                         ok_png, png_buf = cv2.imencode(".png", binary_mask)
                         if ok_png:
@@ -800,21 +836,30 @@ class YoloRealTcpService:
                         else:
                             objects[i]["mask_b64"] = ""
                 else:
-                    # detect 分支：从 boxes.xyxy 构造矩形 mask 兜底
+                    # detect 分支：boxes.xyxy 是原图坐标，按纯拉伸比例映射到 480x640 画布
+                    # （下游 _normalize_mask_to_shape 把画布直接拉伸回原图，故此处必须纯拉伸）
                     boxes_xyxy = result.boxes.xyxy.cpu().numpy() \
                         if hasattr(result, 'boxes') and result.boxes is not None else None
                     if boxes_xyxy is not None:
+                        oh, ow = result.orig_shape
+                        sx = float(self.imgsz_w) / float(ow)
+                        sy = float(self.imgsz_h) / float(oh)
                         for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
                             if i >= len(objects):
                                 break
+                            # 原图坐标 -> 画布坐标（orig_shape == canvas 时 sx=sy=1.0，位级恒等）
+                            x1 = float(x1) * sx
+                            x2 = float(x2) * sx
+                            y1 = float(y1) * sy
+                            y2 = float(y2) * sy
                             bbox_mask = np.zeros(
                                 (self.imgsz_h, self.imgsz_w), dtype=np.uint8
                             )
                             # 坐标裁剪到 [0, imgsz]，防止越界
-                            x1_i = max(0, min(self.imgsz_w, int(round(float(x1)))))
-                            y1_i = max(0, min(self.imgsz_h, int(round(float(y1)))))
-                            x2_i = max(0, min(self.imgsz_w, int(round(float(x2)))))
-                            y2_i = max(0, min(self.imgsz_h, int(round(float(y2)))))
+                            x1_i = max(0, min(self.imgsz_w, int(round(x1))))
+                            y1_i = max(0, min(self.imgsz_h, int(round(y1))))
+                            x2_i = max(0, min(self.imgsz_w, int(round(x2))))
+                            y2_i = max(0, min(self.imgsz_h, int(round(y2))))
                             # 非法 bbox（零面积或越界）跳过，保留初始 None
                             if x2_i <= x1_i or y2_i <= y1_i:
                                 continue
