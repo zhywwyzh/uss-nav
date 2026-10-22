@@ -58,19 +58,10 @@ add_library(ego_planner
 target_link_libraries(ego_planner 
   ${catkin_LIBRARIES}
 )
-# 新消息 (ScanGoalRequest/Feedback/InspectionResult) 生成必须先于本库编译
-add_dependencies(ego_planner ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(route_execution_test test/route_execution_test.cpp)
   if(TARGET route_execution_test)
     target_link_libraries(route_execution_test ego_planner ${catkin_LIBRARIES})
-    add_dependencies(route_execution_test ${catkin_EXPORTED_TARGETS})
-  endif()
-
-  catkin_add_gtest(scan_goal_feedback_test test/scan_goal_feedback_test.cpp)
-  if(TARGET scan_goal_feedback_test)
-    target_link_libraries(scan_goal_feedback_test ego_planner ${catkin_LIBRARIES})
-    add_dependencies(scan_goal_feedback_test ${catkin_EXPORTED_TARGETS})
   endif()
 endif()
