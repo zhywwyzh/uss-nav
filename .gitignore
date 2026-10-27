@@ -216,3 +216,7 @@ ws_main/src/planner/uav_simulator/map_generator/pcd/20260629-magic1.pcd
 # Runtime-generated tracking label cache (do not commit)
 yoloe/prompt/detection_list.txt
 yoloe/prompt/detection_list_nav.txt
+
+# Large binary assets: not tracked (map point clouds, sample videos)
+*.pcd
+*.mp4
