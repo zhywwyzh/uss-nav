@@ -158,7 +158,7 @@ uss-nav/
 建议单独建立 Python 环境：
 
 ```bash
-cd /home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav
+cd /home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav
 python3 -m venv .venv-yoloe
 source .venv-yoloe/bin/activate
 pip install --upgrade pip
@@ -180,7 +180,7 @@ pip install -r yoloe/requirements.txt
 当前 `ws_main` 是标准 catkin workspace `catkin_make`：
 
 ```bash
-cd /home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main
+cd /home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main
 catkin_make -DCMAKE_EXPORT_COMPILE_COMMANDS=1 -DPYTHON_EXECUTABLE=/usr/bin/python3
 source devel/setup.bash
 ```
@@ -198,7 +198,7 @@ source devel/setup.bash
 终端 1：
 
 ```bash
-cd /home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main
+cd /home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main
 source devel/setup.bash
 roslaunch mission_fsm rviz.launch
 ```
@@ -206,7 +206,7 @@ roslaunch mission_fsm rviz.launch
 终端 2：
 
 ```bash
-cd /home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main
+cd /home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main
 source devel/setup.bash
 roslaunch ego_planner obj_nav.launch
 ```
@@ -244,7 +244,7 @@ roslaunch ego_planner obj_nav.launch
 规划入口命令：
 
 ```bash
-cd /home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main
+cd /home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main
 source /opt/ros/noetic/setup.bash
 source devel/setup.bash
 roslaunch ego_planner obj_nav_real.launch odom_topic:=/ekf_quat/ekf_odom
@@ -318,7 +318,7 @@ roslaunch ego_planner obj_nav_real.launch odom_topic:=/ekf_quat/ekf_odom
 推荐真实机场景的启动方式：
 
 ```bash
-cd /home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav
+cd /home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav
 source ws_main/devel/setup.bash
 source .venv-yoloe/bin/activate
 
@@ -347,7 +347,7 @@ python3 yoloe/predict_realtime_cam_sim.py
 再运行：
 
 ```bash
-cd /home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main
+cd /home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main
 source devel/setup.bash
 python3 src/planner/scene_graph/scripts/LLM_interface_thread.py
 ```

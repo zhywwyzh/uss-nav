@@ -13,7 +13,7 @@
 ## 启动 API
 
 ```bash
-cd /home/gwq/workspace/VLA_Diff/ros_ws/uss-nav/yoloe
+cd /home/gwq/workspace/cloud/VLA-Diff/ros_ws/uss-nav/yoloe
 bash track_engine/start_yoloe_tracking_api.sh
 ```
 

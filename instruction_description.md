@@ -2,8 +2,8 @@
 
 本文档基于以下两处源码整理：
 
-- [ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:1)
-- [ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1523)
+- [ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:1)
+- [ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1523)
 
 目标是明确说明：
 
@@ -53,7 +53,7 @@ FSM 订阅的是：
 
 见：
 
-- [fast_exploration_fsm.cpp:127](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:127)
+- [fast_exploration_fsm.cpp:127](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:127)
 
 所以如果你想直接打到这个 FSM，上游应发布到 `/bridge/Instruct`。  
 如果你发布到别的话题，例如 `/instruction`，只有在系统其他部分做了转发的前提下，这个 FSM 才能收到。
@@ -68,7 +68,7 @@ if (msg->robot_id != md_->drone_id_) return;
 
 见：
 
-- [fast_exploration_fsm.cpp:1525](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1525)
+- [fast_exploration_fsm.cpp:1525](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1525)
 
 因此：
 
@@ -87,8 +87,8 @@ if (msg->robot_id != md_->drone_id_) return;
 
 见：
 
-- [fast_exploration_fsm.cpp:1529](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1529)
-- [fast_exploration_fsm.cpp:1536](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1536)
+- [fast_exploration_fsm.cpp:1529](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1529)
+- [fast_exploration_fsm.cpp:1536](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1536)
 
 ### 2.4 INIT/WARM_UP 状态下的行为
 
@@ -99,15 +99,15 @@ if (msg->robot_id != md_->drone_id_) return;
 
 见：
 
-- [fast_exploration_fsm.cpp:1548](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1548)
-- [fast_exploration_fsm.cpp:1573](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1573)
-- [fast_exploration_fsm.cpp:1580](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1580)
+- [fast_exploration_fsm.cpp:1548](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1548)
+- [fast_exploration_fsm.cpp:1573](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1573)
+- [fast_exploration_fsm.cpp:1580](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1580)
 
 ## 3. `Instruction.msg` 字段功能速查
 
 来自：
 
-- [Instruction.msg:1-48](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:1)
+- [Instruction.msg:1-48](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:1)
 
 | 字段 | 当前 FSM 是否读取 | 用途 |
 | --- | --- | --- |
@@ -138,11 +138,11 @@ if (msg->robot_id != md_->drone_id_) return;
 
 定义位置：
 
-- [Instruction.msg:33](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:33)
+- [Instruction.msg:33](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:33)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1610-1618](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1610)
+- [fast_exploration_fsm.cpp:1610-1618](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1610)
 
 #### 必须发布的内容
 
@@ -183,11 +183,11 @@ command: "find the toilet"
 
 定义位置：
 
-- [Instruction.msg:34](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:34)
+- [Instruction.msg:34](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:34)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1585-1590](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1585)
+- [fast_exploration_fsm.cpp:1585-1590](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1585)
 
 #### 必须发布的内容
 
@@ -221,11 +221,11 @@ target_obj_id: 15
 
 定义位置：
 
-- [Instruction.msg:35](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:35)
+- [Instruction.msg:35](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:35)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1620-1625](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1620)
+- [fast_exploration_fsm.cpp:1620-1625](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1620)
 
 #### 必须发布的内容
 
@@ -252,11 +252,11 @@ instruction_type: 3
 
 定义位置：
 
-- [Instruction.msg:36](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:36)
+- [Instruction.msg:36](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:36)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1627-1637](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1627)
+- [fast_exploration_fsm.cpp:1627-1637](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1627)
 
 #### 必须发布的内容
 
@@ -293,13 +293,13 @@ command: "demonstrate how to find a chair"
 
 定义位置：
 
-- [Instruction.msg:37](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:37)
+- [Instruction.msg:37](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:37)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1639-1641](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1639)
-- [fast_exploration_fsm.cpp:153-183](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:153)
-- [fast_exploration_fsm.cpp:1363-1376](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1363)
+- [fast_exploration_fsm.cpp:1639-1641](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1639)
+- [fast_exploration_fsm.cpp:153-183](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:153)
+- [fast_exploration_fsm.cpp:1363-1376](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1363)
 
 #### 必须发布的内容
 
@@ -361,12 +361,12 @@ look_forward: true
 
 定义位置：
 
-- [Instruction.msg:38](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:38)
+- [Instruction.msg:38](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:38)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1643-1678](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1643)
-- 跟踪目标更新辅助逻辑见 [fast_exploration_fsm.cpp:185-235](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:185)
+- [fast_exploration_fsm.cpp:1643-1678](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1643)
+- 跟踪目标更新辅助逻辑见 [fast_exploration_fsm.cpp:185-235](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:185)
 
 #### 这类指令有两种用法
 暂未开放
@@ -375,11 +375,11 @@ look_forward: true
 
 定义位置：
 
-- [Instruction.msg:39](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:39)
+- [Instruction.msg:39](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:39)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1592-1608](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1592)
+- [fast_exploration_fsm.cpp:1592-1608](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1592)
 
 #### 必须发布的内容
 
@@ -423,11 +423,11 @@ nav_yaw: [0.0]
 
 定义位置：
 
-- [Instruction.msg:44](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:44)
+- [Instruction.msg:44](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:44)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1680-1688](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1680)
+- [fast_exploration_fsm.cpp:1680-1688](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1680)
 
 #### 必须发布的内容
 
@@ -459,11 +459,11 @@ map_folder: "snapshot_20260416_test"
 
 定义位置：
 
-- [Instruction.msg:45](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:45)
+- [Instruction.msg:45](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:45)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1548-1572](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1548)
+- [fast_exploration_fsm.cpp:1548-1572](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1548)
 
 #### 必须发布的内容
 
@@ -503,11 +503,11 @@ map_folder: "snapshot_20260329_183344"
 
 定义位置：
 
-- [Instruction.msg:48](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:48)
+- [Instruction.msg:48](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/utils/quadrotor_msgs/msg/Instruction.msg:48)
 
 处理分支：
 
-- [fast_exploration_fsm.cpp:1573-1577](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1573)
+- [fast_exploration_fsm.cpp:1573-1577](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1573)
 
 #### 必须发布的内容
 
@@ -584,8 +584,8 @@ instruction_type: 11
 
 见：
 
-- [fast_exploration_fsm.cpp:178-182](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:178)
-- [fast_exploration_fsm.cpp:1367-1376](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1367)
+- [fast_exploration_fsm.cpp:178-182](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:178)
+- [fast_exploration_fsm.cpp:1367-1376](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1367)
 
 ### 6.4 `TURN_TRACKING` 允许一条消息同时做“开 tracking + 推送当前目标”
 
@@ -607,7 +607,7 @@ instruction_type: 11
 
 见：
 
-- [fast_exploration_fsm.cpp:1690-1693](/home/zhywwyzh/workspace/VLA_Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1690)
+- [fast_exploration_fsm.cpp:1690-1693](/home/zhywwyzh/workspace/cloud/VLA-Diff/ros_ws/uss-nav/ws_main/src/planner/exploration/exploration_manager/src/fast_exploration_fsm.cpp:1690)
 
 
 然后根据具体 `instruction_type` 只填本文第 4 节列出的必填字段即可。
