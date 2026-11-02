@@ -462,7 +462,7 @@ namespace ego_planner
       }
       else
       {
-        if (enable_fail_safe_ && odom_vel_.norm() < 0.1)
+        if (enable_fail_safe_ && !mandatory_stop_ && odom_vel_.norm() < 0.1)
           changeFSMExecState(GEN_NEW_TRAJ, "EGOFSM");
       }
 
@@ -760,7 +760,7 @@ namespace ego_planner
         }
       }
 
-      if (dangerous)
+      if (dangerous && !mandatory_stop_)
       {
         if (t_cur < 0.01)
           ROS_WARN("Find collision immediately after planning a safe traj?");
@@ -1046,6 +1046,7 @@ namespace ego_planner
                                       const bool look_forward, const uint8_t yaw_mode,
                                       const uint8_t yaw_path_mode, bool yaw_low_speed)
   {
+    resetMandatoryStopState();
     final_goal_ = next_wp;
     glb_start_pt_ = odom_pos_;
     have_target_ = true;
@@ -1144,6 +1145,7 @@ namespace ego_planner
     clearRouteState();
     initEgoPlanResult();
     Eigen::Vector3d end_wp(msg->goal[0], msg->goal[1], msg->goal[2]);
+    final_goal_ = end_wp;
 
     uint8_t yaw_mode = msg->yaw_mode;
     if (yaw_mode == quadrotor_msgs::EgoGoalSet::YAW_MODE_NORMAL && msg->yaw_low_speed)
@@ -1211,6 +1213,7 @@ namespace ego_planner
     clearRouteState();
     initEgoPlanResult();
     target_pos_ = Eigen::Vector3d(msg->goal[0], msg->goal[1], msg->goal[2]);
+    final_goal_ = target_pos_;
     visualization_->displayGoalPoint(target_pos_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
     double yaw = msg->yaw;
     if (msg->yaw_path_mode == quadrotor_msgs::EgoGoalSet::YAW_PATH_SHORTEST)
