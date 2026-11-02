@@ -1137,6 +1137,8 @@ namespace ego_planner
             msg->drone_id, msg->goal[0], msg->goal[1], msg->goal[2], (int)msg->look_forward, msg->yaw);
     if (msg->drone_id != planner_manager_->pp_.drone_id)
       return;
+    // 新目标到达：解除 mandatory_stop 锁，避免 enable_fail_safe_ 残留。
+    resetMandatoryStopState();
     std::cout << "[Ego]: <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << std::endl;
 
     clearRouteState();
@@ -1203,6 +1205,8 @@ namespace ego_planner
     if (msg->drone_id != planner_manager_->pp_.drone_id)
       return;
 
+    // 新目标到达：解除 mandatory_stop 锁，避免 enable_fail_safe_ 残留。
+    resetMandatoryStopState();
     std::cout << "[Ego]: <<<<<<<<<<<<<<<<<< New Goal <<<<<<<<<<<<<<<<<< " << std::endl;
     clearRouteState();
     initEgoPlanResult();
