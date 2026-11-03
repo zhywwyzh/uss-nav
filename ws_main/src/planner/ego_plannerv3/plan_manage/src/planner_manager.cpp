@@ -725,6 +725,8 @@ namespace ego_planner
         (((double)rand()) / RAND_MAX - 0.5) *
             path_total_len * vertical_dir * 0.4 * (-0.978 / (continous_failures_count_ + 0.989) + 0.989);
 
+    random_mid_pt.z() = std::max(random_mid_pt.z(), std::min(start_pt.z(), end_pt.z()) - 0.35);
+
     return random_mid_pt;
   }
 
@@ -877,6 +879,8 @@ namespace ego_planner
     Eigen::Vector3d u_dir = dir.cross(Eigen::Vector3d(0, 0, 1.0)).normalized();
     Eigen::Vector3d v_dir = u_dir.cross(dir).normalized();
     Eigen::Vector3d mid_p_cen = start_pt + horizon * MidPlanePosRatio * dir;
+    const double z_ref = std::min(start_pt.z(), final_goal.z());
+    const double z_floor = z_ref - 0.35;
     for (double u = -MajorAxis; u < MajorAxis; u += MidPlaneSTEP)
       for (double v = -MinorAxis; v < MinorAxis; v += MidPlaneSTEP)
       {
@@ -887,6 +891,8 @@ namespace ego_planner
           rd.start_p = start_pt;
           rd.mid_p = mid_p_cen + u_dir * u + v_dir * v;
           rd.norm_devi = sqrt(devi2);
+          if (rd.mid_p.z() < z_floor)
+            continue;
           rays.push_back(rd);
         }
       }
@@ -894,6 +900,7 @@ namespace ego_planner
     const double reso = map_->big_->getResolution();
     for (auto &ray : rays)
     {
+      bool hit_unknown = false;
       ray.safe_margin = 1000; // can not be std::numeric_limits<double>::max() !!!
       auto mpt_dir = (ray.mid_p - start_pt).normalized();
       const double phase1_l = (ray.mid_p - start_pt).norm();
@@ -915,11 +922,11 @@ namespace ego_planner
         }
         double dist = map_->big_->getDistance(pt); // if use getDistancePersii, then safe_margin out of the map will be zero.
         // cout << "dist=" << dist << endl;
-        if (dist > GRID_MAP_UNKNOWN_ESDF_FLAG_COMP) // goes out of the map, no need to check more in optimistic map.
+        if (dist > GRID_MAP_UNKNOWN_ESDF_FLAG_COMP) // unknown region is not free space
         {
-          // cout << "phase2_l=" << phase2_l << endl;
-          ray.safe_l = phase2_l;
-          ray.end_p = ray.mid_p + (phase2_l - phase1_l) * dir;
+          ray.safe_l = l;
+          ray.end_p = pt;
+          hit_unknown = true;
           break;
         }
         // cout << "l=" << l << endl;
@@ -933,11 +940,14 @@ namespace ego_planner
         l += max(dist, reso);
       } while (true);
 
-      ray.safe = l >= phase2_l;
+      const double z_drop = std::max(0.0, z_ref - std::min(ray.mid_p.z(), ray.end_p.z()));
+      ray.safe = (l >= phase2_l) && !hit_unknown;
       ray.score = HORIZON * ray.safe +                                  /*HORIZON is the weight here*/
                   (3.0) * (HORIZON - (final_goal - ray.end_p).norm()) + /*HORIZON is to make it positive*/
                   (10.0) * min(ray.safe_margin, SafeMarginCutoff) +
-                  (8.0) * (1 - ray.norm_devi); /* 1 is to make it positive */
+                  (8.0) * (1 - ray.norm_devi) /* 1 is to make it positive */
+                  - (60.0) * z_drop
+                  - (hit_unknown ? 15.0 : 0.0);
 
       // cout << "score=" << ray.score << " A=" << (HORIZON - (final_goal - ray.end_p).norm()) << " B=" << ray.safe_margin << " C=" << (1 - ray.norm_devi) << endl;
 

@@ -111,6 +111,8 @@ namespace ego_planner
     double ego_state_trigger_hold_time_;
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
+    double low_altitude_stop_z_;
+    bool low_altitude_stop_;
     bool enable_ground_height_measurement_;
     bool flag_escape_emergency_;
     bool flag_wait_crash_rec_;

@@ -26,6 +26,8 @@ namespace ego_planner
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
+    nh.param("fsm/low_altitude_stop_z", low_altitude_stop_z_, 0.35);
+    low_altitude_stop_ = false;
     nh.param("fsm/ground_height_measurement", enable_ground_height_measurement_, false);
     nh.param("fsm/ego_state_trigger_pos_thresh", ego_state_trigger_pos_thresh_, 0.30);
     nh.param("fsm/ego_state_trigger_vel_thresh", ego_state_trigger_vel_thresh_, 0.15);
@@ -462,7 +464,7 @@ namespace ego_planner
       }
       else
       {
-        if (enable_fail_safe_ && !mandatory_stop_ && odom_vel_.norm() < 0.1)
+        if (enable_fail_safe_ && !mandatory_stop_ && !low_altitude_stop_ && odom_vel_.norm() < 0.1)
           changeFSMExecState(GEN_NEW_TRAJ, "EGOFSM");
       }
 
@@ -694,6 +696,21 @@ namespace ego_planner
 
     if (exec_state_ == WAIT_TARGET || traj->traj_id <= 0)
     {
+      return;
+    }
+
+    if (odom_pos_.z() < low_altitude_stop_z_)
+    {
+      if (exec_state_ != EMERGENCY_STOP)
+      {
+        if (!low_altitude_stop_)
+        {
+          ROS_ERROR("[SAFETY] Low altitude %.2f < %.2f, emergency stop.",
+                    odom_pos_.z(), low_altitude_stop_z_);
+          low_altitude_stop_ = true;
+          changeFSMExecState(EMERGENCY_STOP, "LOW_ALT");
+        }
+      }
       return;
     }
 
@@ -1047,6 +1064,8 @@ namespace ego_planner
                                       const uint8_t yaw_path_mode, bool yaw_low_speed)
   {
     resetMandatoryStopState();
+    if (next_wp.z() >= low_altitude_stop_z_)
+      low_altitude_stop_ = false;
     final_goal_ = next_wp;
     glb_start_pt_ = odom_pos_;
     have_target_ = true;
