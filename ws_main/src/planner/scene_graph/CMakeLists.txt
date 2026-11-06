@@ -111,7 +111,7 @@ add_library(scene_graph
     ${LEIDENALG_SRC}
     include/nlohmann/json.hpp
 )
-add_dependencies(scene_graph libleidenalg)
+add_dependencies(scene_graph libleidenalg ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(scene_graph
     ${catkin_LIBRARIES}
     ${PCL_LIBRARIES}
@@ -136,7 +136,7 @@ add_executable(yolo_recv_test
 
         test/obj_test.cpp
 )
-add_dependencies(yolo_recv_test libleidenalg)
+add_dependencies(yolo_recv_test libleidenalg ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(yolo_recv_test
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
